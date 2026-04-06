@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"
+      - "18080:8080"
     environment:
       APP_ENV: docker
     volumes:
@@ -36,16 +36,16 @@ services:
       QDRANT__SERVICE__HTTP_PORT: 6333
       QDRANT__SERVICE__GRPC_PORT: 6334
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:6333/healthz"]
+      test: ["CMD-SHELL", "ls /proc/1/status || exit 1"]
       interval: 10s
       timeout: 3s
-      start_period: 5s
-      retries: 3
+      start_period: 10s
+      retries: 5
 
   postgres:
     image: postgres:17-alpine
     ports:
-      - "5432:5432"
+      - "15432:5432"
     environment:
       POSTGRES_USER: kenjaku
       POSTGRES_PASSWORD: kenjaku
@@ -62,7 +62,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "16379:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes

@@ -14,7 +14,7 @@ version = "0.1.0"
 edition = "2024"
 authors = ["Sam Wang <sam.wang@example.com>"]
 license = "MIT"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 # Async runtime
