@@ -6,14 +6,18 @@ use tracing::info;
 use kenjaku_core::config::load_config;
 use kenjaku_infra::embedding::create_embedding_provider;
 use kenjaku_infra::llm::GeminiProvider;
-use kenjaku_infra::postgres::{create_pool, run_migrations, FeedbackRepository, TrendingRepository};
+use kenjaku_infra::postgres::{
+    create_pool, run_migrations, ConversationRepository, FeedbackRepository, TrendingRepository,
+};
 use kenjaku_infra::qdrant::QdrantClient;
 use kenjaku_infra::redis::RedisClient;
 use kenjaku_infra::telemetry::init_telemetry;
 
 use kenjaku_service::autocomplete::AutocompleteService;
 use kenjaku_service::component::ComponentService;
+use kenjaku_service::conversation::ConversationService;
 use kenjaku_service::feedback::FeedbackService;
+use kenjaku_service::intent::LlmIntentClassifier;
 use kenjaku_service::retriever::HybridRetriever;
 use kenjaku_service::search::SearchService;
 use kenjaku_service::translation::TranslationService;
@@ -53,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
     // Create repositories
     let feedback_repo = FeedbackRepository::new(pg_pool.clone());
     let trending_repo = TrendingRepository::new(pg_pool.clone());
+    let conversation_repo = ConversationRepository::new(pg_pool.clone());
 
     // Create services
     let retriever = Arc::new(HybridRetriever::new(
@@ -62,6 +67,8 @@ async fn main() -> anyhow::Result<()> {
         config.search.bm25_weight,
         config.search.over_retrieve_factor,
     ));
+
+    let intent_classifier = Arc::new(LlmIntentClassifier::new(llm_provider.clone()));
 
     let component_service = ComponentService::new(config.search.component_layout.clone());
     let translation_service = TranslationService::new(llm_provider.clone());
@@ -73,23 +80,30 @@ async fn main() -> anyhow::Result<()> {
     let autocomplete_service = AutocompleteService::new(trending_repo.clone(), qdrant.clone());
     let feedback_service = FeedbackService::new(feedback_repo);
 
+    // Conversation service with async flush worker (buffer 1024 records)
+    let (conversation_service, conversation_worker) =
+        ConversationService::new(conversation_repo, 1024);
+
     let search_service = SearchService::new(
         retriever,
         llm_provider,
+        intent_classifier,
         component_service,
         translation_service,
         trending_service.clone(),
+        conversation_service,
         config.qdrant.collection_name.clone(),
         config.search.suggestion_count,
     );
 
-    // Spawn background worker
+    // Spawn background workers
     let flush_worker = TrendingFlushWorker::new(
         redis.clone(),
         trending_repo,
         config.trending.clone(),
     );
     tokio::spawn(flush_worker.run());
+    tokio::spawn(conversation_worker.run());
 
     // Build app state
     let state = Arc::new(AppState {

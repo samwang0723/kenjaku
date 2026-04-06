@@ -1,6 +1,8 @@
 pub mod autocomplete;
 pub mod component;
+pub mod conversation;
 pub mod feedback;
+pub mod intent;
 pub mod reranker;
 pub mod retriever;
 pub mod search;

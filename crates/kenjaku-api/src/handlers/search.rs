@@ -20,9 +20,17 @@ pub async fn search(
     State(state): State<Arc<AppState>>,
     Json(dto): Json<SearchRequestDto>,
 ) -> impl IntoResponse {
+    // Validate locale
+    let locale = match dto.parse_locale() {
+        Ok(l) => l,
+        Err(e) => {
+            return Json(ApiResponse::<SearchResponseDto>::err(e.to_string())).into_response();
+        }
+    };
+
     let req = SearchRequest {
         query: dto.query,
-        locale: dto.locale,
+        locale,
         session_id: dto.session_id,
         request_id: dto.request_id,
         streaming: dto.streaming,

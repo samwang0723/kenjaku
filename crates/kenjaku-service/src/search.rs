@@ -3,17 +3,21 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use futures::Stream;
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 use kenjaku_core::error::Result;
+use kenjaku_core::traits::intent::IntentClassifier;
 use kenjaku_core::traits::llm::LlmProvider;
 use kenjaku_core::traits::retriever::Retriever;
 use kenjaku_core::types::component::SuggestionSource;
+use kenjaku_core::types::conversation::CreateConversation;
+use kenjaku_core::types::intent::Intent;
 use kenjaku_core::types::search::{
     SearchMetadata, SearchRequest, SearchResponse, StreamChunk,
 };
 
 use crate::component::ComponentService;
+use crate::conversation::ConversationService;
 use crate::translation::TranslationService;
 use crate::trending::TrendingService;
 
@@ -21,29 +25,36 @@ use crate::trending::TrendingService;
 pub struct SearchService {
     retriever: Arc<dyn Retriever>,
     llm: Arc<dyn LlmProvider>,
+    intent_classifier: Arc<dyn IntentClassifier>,
     component_service: ComponentService,
     translation_service: TranslationService,
     trending_service: TrendingService,
+    conversation_service: ConversationService,
     collection_name: String,
     suggestion_count: usize,
 }
 
 impl SearchService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         retriever: Arc<dyn Retriever>,
         llm: Arc<dyn LlmProvider>,
+        intent_classifier: Arc<dyn IntentClassifier>,
         component_service: ComponentService,
         translation_service: TranslationService,
         trending_service: TrendingService,
+        conversation_service: ConversationService,
         collection_name: String,
         suggestion_count: usize,
     ) -> Self {
         Self {
             retriever,
             llm,
+            intent_classifier,
             component_service,
             translation_service,
             trending_service,
+            conversation_service,
             collection_name,
             suggestion_count,
         }
@@ -57,27 +68,43 @@ impl SearchService {
     pub async fn search(&self, req: &SearchRequest) -> Result<SearchResponse> {
         let start = Instant::now();
 
-        // Step 1: Translate if needed
-        let (search_query, translated) = if req.locale != "en" {
+        // Step 1: Classify intent (run in parallel with translation if possible)
+        let intent = match self.intent_classifier.classify(&req.query).await {
+            Ok(classification) => {
+                info!(
+                    intent = %classification.intent,
+                    confidence = classification.confidence,
+                    "Query intent classified"
+                );
+                classification.intent
+            }
+            Err(e) => {
+                warn!(error = %e, "Intent classification failed, defaulting to Unknown");
+                Intent::Unknown
+            }
+        };
+
+        // Step 2: Translate if needed
+        let (search_query, translated) = if req.locale.needs_translation() {
             let translated = self
                 .translation_service
-                .translate(&req.query, &req.locale)
+                .translate(&req.query, req.locale.as_str())
                 .await?;
             (translated.clone(), Some(translated))
         } else {
             (req.query.clone(), None)
         };
 
-        // Step 2: Retrieve with hybrid search
+        // Step 3: Retrieve with hybrid search
         let chunks = self
             .retriever
             .retrieve(&search_query, &self.collection_name, req.top_k)
             .await?;
 
-        // Step 3: Generate LLM response
+        // Step 4: Generate LLM response
         let llm_response = self.llm.generate(&search_query, &chunks).await?;
 
-        // Step 4: Get suggestions (LLM first, fallback to Qdrant titles)
+        // Step 5: Get suggestions (LLM first, fallback to Qdrant titles)
         let suggestions = match self
             .llm
             .suggest(&search_query, &llm_response.answer)
@@ -85,7 +112,6 @@ impl SearchService {
         {
             Ok(s) if s.len() >= self.suggestion_count => s[..self.suggestion_count].to_vec(),
             _ => {
-                // Fallback: use Qdrant document titles
                 chunks
                     .iter()
                     .map(|c| c.title.clone())
@@ -100,40 +126,68 @@ impl SearchService {
             SuggestionSource::VectorStore
         };
 
-        // Step 5: Assemble components
+        // Step 6: Assemble components
         let components = self.component_service.assemble(
             &llm_response,
             suggestions,
             suggestion_source,
         );
 
-        // Step 6: Record trending
+        // Step 7: Record trending (fire-and-forget)
         let _ = self
             .trending_service
-            .record_query(&req.locale, &req.query)
+            .record_query(req.locale.as_str(), &req.query)
             .await;
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
-        info!(
-            request_id = %req.request_id,
-            latency_ms = latency_ms,
-            chunks_retrieved = chunks.len(),
-            "Search completed"
-        );
-
-        Ok(SearchResponse {
+        let response = SearchResponse {
             request_id: req.request_id.clone(),
             session_id: req.session_id.clone(),
             components,
             metadata: SearchMetadata {
                 original_query: req.query.clone(),
                 translated_query: translated,
-                locale: req.locale.clone(),
+                locale: req.locale,
+                intent,
                 retrieval_count: chunks.len(),
                 latency_ms,
             },
-        })
+        };
+
+        // Step 8: Queue conversation for async persistence (fire-and-forget)
+        let meta = serde_json::to_value(&response).unwrap_or_default();
+        self.conversation_service
+            .record(CreateConversation {
+                session_id: req.session_id.clone(),
+                request_id: req.request_id.clone(),
+                query: req.query.clone(),
+                response_text: response
+                    .components
+                    .iter()
+                    .find_map(|c| {
+                        if let kenjaku_core::types::component::Component::LlmAnswer(a) = c {
+                            Some(a.answer.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default(),
+                locale: req.locale,
+                intent,
+                meta,
+            })
+            .await;
+
+        info!(
+            request_id = %req.request_id,
+            latency_ms = latency_ms,
+            intent = %intent,
+            chunks_retrieved = chunks.len(),
+            "Search completed"
+        );
+
+        Ok(response)
     }
 
     /// Execute a streaming search (returns SSE stream).
@@ -145,28 +199,34 @@ impl SearchService {
         &self,
         req: &SearchRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>> {
-        // Step 1: Translate if needed
-        let search_query = if req.locale != "en" {
+        // Step 1: Classify intent
+        let _intent = match self.intent_classifier.classify(&req.query).await {
+            Ok(c) => c.intent,
+            Err(_) => Intent::Unknown,
+        };
+
+        // Step 2: Translate if needed
+        let search_query = if req.locale.needs_translation() {
             self.translation_service
-                .translate(&req.query, &req.locale)
+                .translate(&req.query, req.locale.as_str())
                 .await?
         } else {
             req.query.clone()
         };
 
-        // Step 2: Retrieve
+        // Step 3: Retrieve
         let chunks = self
             .retriever
             .retrieve(&search_query, &self.collection_name, req.top_k)
             .await?;
 
-        // Step 3: Stream LLM response
+        // Step 4: Stream LLM response
         let stream = self.llm.generate_stream(&search_query, &chunks).await?;
 
-        // Step 4: Record trending
+        // Step 5: Record trending
         let _ = self
             .trending_service
-            .record_query(&req.locale, &req.query)
+            .record_query(req.locale.as_str(), &req.query)
             .await;
 
         Ok(stream)

@@ -1,9 +1,7 @@
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use kenjaku_core::types::component::{
-    Component, LlmAnswerComponent, SourcesComponent, SuggestionsComponent,
-};
+use kenjaku_core::types::component::Component;
 use kenjaku_core::types::search::SearchResponse;
 
 /// API response envelope.
@@ -76,6 +74,7 @@ pub struct SearchMetadataDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub translated_query: Option<String>,
     pub locale: String,
+    pub intent: String,
     pub retrieval_count: usize,
     pub latency_ms: u64,
 }
@@ -135,7 +134,8 @@ impl From<SearchResponse> for SearchResponseDto {
             metadata: SearchMetadataDto {
                 original_query: resp.metadata.original_query,
                 translated_query: resp.metadata.translated_query,
-                locale: resp.metadata.locale,
+                locale: resp.metadata.locale.to_string(),
+                intent: resp.metadata.intent.to_string(),
                 retrieval_count: resp.metadata.retrieval_count,
                 latency_ms: resp.metadata.latency_ms,
             },

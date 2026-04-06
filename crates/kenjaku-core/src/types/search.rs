@@ -2,12 +2,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::component::Component;
+use super::intent::Intent;
+use super::locale::Locale;
 
 /// Incoming search request from the API layer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchRequest {
     pub query: String,
-    pub locale: String,
+    pub locale: Locale,
     pub session_id: String,
     pub request_id: String,
     #[serde(default)]
@@ -34,7 +36,8 @@ pub struct SearchResponse {
 pub struct SearchMetadata {
     pub original_query: String,
     pub translated_query: Option<String>,
-    pub locale: String,
+    pub locale: Locale,
+    pub intent: Intent,
     pub retrieval_count: usize,
     pub latency_ms: u64,
 }
