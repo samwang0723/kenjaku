@@ -1,0 +1,24 @@
+[package]
+name = "kenjaku-service"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kenjaku-core = { path = "../kenjaku-core" }
+kenjaku-infra = { path = "../kenjaku-infra" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+tokio-stream = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tokio-test = { workspace = true }
+mockall = { workspace = true }
+wiremock = { workspace = true }

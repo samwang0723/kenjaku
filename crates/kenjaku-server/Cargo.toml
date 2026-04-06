@@ -1,0 +1,19 @@
+[package]
+name = "kenjaku-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "kenjaku-server"
+path = "src/main.rs"
+
+[dependencies]
+kenjaku-core = { path = "../kenjaku-core" }
+kenjaku-infra = { path = "../kenjaku-infra" }
+kenjaku-service = { path = "../kenjaku-service" }
+kenjaku-api = { path = "../kenjaku-api" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+axum = { workspace = true }

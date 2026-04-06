@@ -1,0 +1,17 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+qdrant:
+  url: "http://qdrant:6334"
+
+postgres:
+  url: "postgres://kenjaku:kenjaku@postgres:5432/kenjaku"
+
+redis:
+  url: "redis://redis:6379"
+
+telemetry:
+  service_name: "kenjaku"
+  otlp_endpoint: "http://otel-collector:4317"
+  log_level: "info"
