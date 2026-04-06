@@ -29,8 +29,9 @@ use kenjaku_api::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load configuration
+    // Load configuration and validate secrets are present
     let config = load_config()?;
+    config.validate_secrets()?;
 
     // Initialize telemetry
     let _tracer_provider = init_telemetry(&config.telemetry)?;

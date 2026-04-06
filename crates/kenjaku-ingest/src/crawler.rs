@@ -1,14 +1,62 @@
 use std::collections::HashSet;
+use std::net::IpAddr;
 
 use reqwest::Client;
 use scraper::{Html, Selector};
 use tracing::{debug, warn};
 
+/// Private/reserved IP ranges that must not be crawled (SSRF protection).
+fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                // 169.254.0.0/16
+                || (v4.octets()[0] == 169 && v4.octets()[1] == 254)
+                // 100.64.0.0/10 (carrier-grade NAT)
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.is_unspecified()
+        }
+    }
+}
+
+/// Validate that a URL does not point to a private/internal IP.
+async fn validate_url_not_private(url_str: &str) -> anyhow::Result<()> {
+    let parsed = url::Url::parse(url_str)?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
+
+    // Resolve the hostname and check all IPs
+    let addrs = tokio::net::lookup_host(format!("{}:{}", host, parsed.port_or_known_default().unwrap_or(80))).await?;
+
+    for addr in addrs {
+        if is_private_ip(addr.ip()) {
+            anyhow::bail!(
+                "SSRF blocked: URL '{}' resolves to private IP {}",
+                url_str,
+                addr.ip()
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// Crawl a URL and discover linked pages up to a given depth.
 pub async fn crawl_urls(entry_url: &str, max_depth: usize) -> anyhow::Result<Vec<String>> {
+    // Validate entry URL is not private
+    validate_url_not_private(entry_url).await?;
+
     let client = Client::builder()
         .user_agent("Kenjaku-Ingester/0.1")
         .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
 
     let mut visited = HashSet::new();
@@ -23,6 +71,12 @@ pub async fn crawl_urls(entry_url: &str, max_depth: usize) -> anyhow::Result<Vec
             continue;
         }
         visited.insert(url.clone());
+
+        // Validate each discovered URL before fetching
+        if let Err(e) = validate_url_not_private(&url).await {
+            warn!(url = %url, error = %e, "Skipping URL (SSRF check)");
+            continue;
+        }
 
         debug!(url = %url, depth = depth, "Crawling");
 
@@ -55,7 +109,9 @@ pub async fn crawl_urls(entry_url: &str, max_depth: usize) -> anyhow::Result<Vec
 /// Extract links from HTML, filtering to same domain.
 fn extract_links(html: &str, base_url: &str, base_domain: &str) -> Vec<String> {
     let document = Html::parse_document(html);
-    let selector = Selector::parse("a[href]").unwrap();
+    let Ok(selector) = Selector::parse("a[href]") else {
+        return Vec::new();
+    };
 
     let base = url::Url::parse(base_url).ok();
 
@@ -88,20 +144,16 @@ fn extract_links(html: &str, base_url: &str, base_domain: &str) -> Vec<String> {
 pub fn extract_text_from_html(html: &str) -> String {
     let document = Html::parse_document(html);
 
-    // Remove script, style, nav, footer, header elements
-    let skip_selectors = ["script", "style", "nav", "footer", "header", "aside"];
+    let Ok(body_selector) = Selector::parse("body") else {
+        return document.root_element().text().collect::<Vec<_>>().join("\n");
+    };
 
-    let body_selector = Selector::parse("body").unwrap();
-    let body = document.select(&body_selector).next();
-
-    if let Some(body) = body {
-        let text: String = body
-            .text()
+    if let Some(body) = document.select(&body_selector).next() {
+        body.text()
             .map(|t| t.trim())
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
-            .join("\n");
-        text
+            .join("\n")
     } else {
         document.root_element().text().collect::<Vec<_>>().join("\n")
     }
@@ -142,5 +194,17 @@ mod tests {
         let text = extract_text_from_html(html);
         assert!(text.contains("Title"));
         assert!(text.contains("This is content"));
+    }
+
+    #[test]
+    fn test_is_private_ip() {
+        assert!(is_private_ip("127.0.0.1".parse().unwrap()));
+        assert!(is_private_ip("10.0.0.1".parse().unwrap()));
+        assert!(is_private_ip("192.168.1.1".parse().unwrap()));
+        assert!(is_private_ip("172.16.0.1".parse().unwrap()));
+        assert!(is_private_ip("169.254.1.1".parse().unwrap()));
+        assert!(is_private_ip("::1".parse().unwrap()));
+        assert!(!is_private_ip("8.8.8.8".parse().unwrap()));
+        assert!(!is_private_ip("1.1.1.1".parse().unwrap()));
     }
 }

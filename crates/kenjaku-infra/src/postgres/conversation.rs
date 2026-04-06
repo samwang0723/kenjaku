@@ -42,7 +42,7 @@ impl ConversationRepository {
 
     /// Batch insert conversation records (used by the flush worker).
     #[instrument(skip(self, records), fields(count = records.len()))]
-    pub async fn batch_create(&self, records: &[CreateConversation]) -> Result<usize> {
+    pub async fn batch_create(&self, records: &[CreateConversation]) -> Result<u64> {
         if records.is_empty() {
             return Ok(0);
         }
@@ -53,9 +53,9 @@ impl ConversationRepository {
             .await
             .map_err(|e| Error::Database(e.to_string()))?;
 
-        let mut inserted = 0;
+        let mut inserted: u64 = 0;
         for req in records {
-            sqlx::query(
+            let result = sqlx::query(
                 r#"
                 INSERT INTO conversations (session_id, request_id, query, response_text, locale, intent, meta)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -72,7 +72,7 @@ impl ConversationRepository {
             .execute(&mut *tx)
             .await
             .map_err(|e| Error::Database(e.to_string()))?;
-            inserted += 1;
+            inserted += result.rows_affected();
         }
 
         tx.commit()

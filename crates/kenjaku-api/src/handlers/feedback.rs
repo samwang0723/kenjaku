@@ -17,8 +17,11 @@ pub async fn create_feedback(
 ) -> Json<ApiResponse<FeedbackResponseDto>> {
     let action: FeedbackAction = match dto.action.parse() {
         Ok(a) => a,
-        Err(e) => {
-            return Json(ApiResponse::err(e.to_string()));
+        Err(_) => {
+            return Json(ApiResponse::err(format!(
+                "Invalid action '{}'. Supported: like, dislike, cancel",
+                dto.action
+            )));
         }
     };
 
@@ -40,7 +43,7 @@ pub async fn create_feedback(
         })),
         Err(e) => {
             error!(error = %e, "Create feedback failed");
-            Json(ApiResponse::err(e.to_string()))
+            Json(ApiResponse::err(e.user_message().to_string()))
         }
     }
 }

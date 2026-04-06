@@ -8,6 +8,9 @@ use tracing::error;
 use crate::dto::response::{ApiResponse, AutocompleteResponseDto};
 use crate::AppState;
 
+/// Maximum autocomplete limit.
+const MAX_LIMIT: usize = 50;
+
 #[derive(Deserialize)]
 pub struct AutocompleteQuery {
     pub q: String,
@@ -34,15 +37,17 @@ pub async fn autocomplete(
         return Json(ApiResponse::err("Query parameter 'q' is required".to_string()));
     }
 
+    let limit = params.limit.min(MAX_LIMIT);
+
     match state
         .autocomplete_service
-        .suggest(&params.q, &params.locale, params.limit)
+        .suggest(&params.q, &params.locale, limit)
         .await
     {
         Ok(suggestions) => Json(ApiResponse::ok(AutocompleteResponseDto { suggestions })),
         Err(e) => {
             error!(error = %e, "Autocomplete failed");
-            Json(ApiResponse::err(e.to_string()))
+            Json(ApiResponse::err(e.user_message().to_string()))
         }
     }
 }

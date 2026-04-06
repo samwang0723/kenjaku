@@ -8,30 +8,25 @@ qdrant:
   vector_size: 1536
 
 postgres:
-  url: "postgres://kenjaku:kenjaku@localhost:5432/kenjaku"
   max_connections: 10
 
-redis:
-  url: "redis://localhost:6379"
+redis: {}
 
 embedding:
   provider: "openai"
   model: "text-embedding-3-small"
-  api_key: ""
   dimensions: 1536
   batch_size: 100
 
 llm:
   provider: "gemini"
-  model: "gemini-2.0-flash-lite"
-  api_key: ""
-  max_tokens: 4096
-  temperature: 0.7
+  model: "gemini-3.1-flash-lite-preview"
+  max_tokens: 2048
+  temperature: 0.8
 
 contextualizer:
   provider: "anthropic"
   model: "claude-haiku-4-5"
-  api_key: ""
 
 trending:
   popularity_threshold: 5

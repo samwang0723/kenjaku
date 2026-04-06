@@ -15,6 +15,11 @@ use crate::AppState;
 
 use kenjaku_core::types::search::SearchRequest;
 
+/// Maximum query length in characters.
+const MAX_QUERY_LENGTH: usize = 2000;
+/// Maximum top_k value.
+const MAX_TOP_K: usize = 100;
+
 /// POST /api/v1/search
 pub async fn search(
     State(state): State<Arc<AppState>>,
@@ -24,9 +29,29 @@ pub async fn search(
     let locale = match dto.parse_locale() {
         Ok(l) => l,
         Err(e) => {
-            return Json(ApiResponse::<SearchResponseDto>::err(e.to_string())).into_response();
+            return Json(ApiResponse::<SearchResponseDto>::err(
+                e.user_message().to_string(),
+            ))
+            .into_response();
         }
     };
+
+    // Validate query length
+    if dto.query.is_empty() {
+        return Json(ApiResponse::<SearchResponseDto>::err(
+            "Query cannot be empty".to_string(),
+        ))
+        .into_response();
+    }
+    if dto.query.len() > MAX_QUERY_LENGTH {
+        return Json(ApiResponse::<SearchResponseDto>::err(format!(
+            "Query exceeds maximum length of {MAX_QUERY_LENGTH} characters"
+        )))
+        .into_response();
+    }
+
+    // Clamp top_k
+    let top_k = dto.top_k.unwrap_or(10).min(MAX_TOP_K);
 
     let req = SearchRequest {
         query: dto.query,
@@ -34,7 +59,7 @@ pub async fn search(
         session_id: dto.session_id,
         request_id: dto.request_id,
         streaming: dto.streaming,
-        top_k: dto.top_k.unwrap_or(10),
+        top_k,
     };
 
     if req.streaming {
@@ -48,7 +73,10 @@ pub async fn search(
         }
         Err(e) => {
             error!(error = %e, "Search failed");
-            Json(ApiResponse::<SearchResponseDto>::err(e.to_string())).into_response()
+            Json(ApiResponse::<SearchResponseDto>::err(
+                e.user_message().to_string(),
+            ))
+            .into_response()
         }
     }
 }
@@ -77,7 +105,7 @@ async fn search_streaming(
                         Err(e) => {
                             let event = Event::default()
                                 .event("error")
-                                .data(e.to_string());
+                                .data(e.user_message().to_string());
                             let _ = tx.send(Ok(event)).await;
                             break;
                         }
@@ -85,7 +113,9 @@ async fn search_streaming(
                 }
             }
             Err(e) => {
-                let event = Event::default().event("error").data(e.to_string());
+                let event = Event::default()
+                    .event("error")
+                    .data(e.user_message().to_string());
                 let _ = tx.send(Ok(event)).await;
             }
         }

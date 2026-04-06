@@ -156,7 +156,13 @@ impl SearchService {
         };
 
         // Step 8: Queue conversation for async persistence (fire-and-forget)
-        let meta = serde_json::to_value(&response).unwrap_or_default();
+        let meta = match serde_json::to_value(&response) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(error = %e, "Failed to serialize search response for conversation meta");
+                serde_json::json!({ "serialization_error": e.to_string() })
+            }
+        };
         self.conversation_service
             .record(CreateConversation {
                 session_id: req.session_id.clone(),

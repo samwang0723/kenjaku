@@ -10,6 +10,9 @@ use crate::AppState;
 
 use kenjaku_core::types::trending::TrendingPeriod;
 
+/// Maximum result limit for top searches.
+const MAX_LIMIT: usize = 100;
+
 #[derive(Deserialize)]
 pub struct TopSearchesQuery {
     #[serde(default = "default_locale")]
@@ -39,14 +42,19 @@ pub async fn top_searches(
 ) -> Json<ApiResponse<Vec<TopSearchDto>>> {
     let period: TrendingPeriod = match params.period.parse() {
         Ok(p) => p,
-        Err(e) => {
-            return Json(ApiResponse::err(e.to_string()));
+        Err(_) => {
+            return Json(ApiResponse::err(format!(
+                "Invalid period '{}'. Supported: daily, weekly",
+                params.period
+            )));
         }
     };
 
+    let limit = params.limit.min(MAX_LIMIT);
+
     match state
         .trending_service
-        .get_top_searches(&params.locale, &period, params.limit)
+        .get_top_searches(&params.locale, &period, limit)
         .await
     {
         Ok(queries) => {
@@ -61,7 +69,7 @@ pub async fn top_searches(
         }
         Err(e) => {
             error!(error = %e, "Top searches failed");
-            Json(ApiResponse::err(e.to_string()))
+            Json(ApiResponse::err(e.user_message().to_string()))
         }
     }
 }

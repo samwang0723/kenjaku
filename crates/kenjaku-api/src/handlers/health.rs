@@ -28,12 +28,12 @@ pub async fn ready(
             status: "ok".to_string(),
             error: None,
         }),
-        Err(e) => {
+        Err(_) => {
             all_ok = false;
             checks.push(ReadyCheckDto {
                 name: "qdrant".to_string(),
                 status: "error".to_string(),
-                error: Some(e.to_string()),
+                error: Some("unavailable".to_string()),
             });
         }
     }
@@ -45,12 +45,12 @@ pub async fn ready(
             status: "ok".to_string(),
             error: None,
         }),
-        Err(e) => {
+        Err(_) => {
             all_ok = false;
             checks.push(ReadyCheckDto {
                 name: "postgres".to_string(),
                 status: "error".to_string(),
-                error: Some(e.to_string()),
+                error: Some("unavailable".to_string()),
             });
         }
     }
@@ -62,12 +62,12 @@ pub async fn ready(
             status: "ok".to_string(),
             error: None,
         }),
-        Err(e) => {
+        Err(_) => {
             all_ok = false;
             checks.push(ReadyCheckDto {
                 name: "redis".to_string(),
                 status: "error".to_string(),
-                error: Some(e.to_string()),
+                error: Some("unavailable".to_string()),
             });
         }
     }

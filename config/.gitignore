@@ -1,0 +1,3 @@
+# Ignore actual secrets files — only .example files are committed
+secrets.*.yaml
+!secrets.*.yaml.example

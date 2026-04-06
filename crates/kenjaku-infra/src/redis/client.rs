@@ -73,7 +73,7 @@ impl RedisClient {
         let results: Vec<(String, f64)> = redis::cmd("ZREVRANGE")
             .arg(key)
             .arg(0)
-            .arg((limit - 1) as isize)
+            .arg((limit.saturating_sub(1)) as isize)
             .arg("WITHSCORES")
             .query_async(&mut conn)
             .await
@@ -85,15 +85,30 @@ impl RedisClient {
             .collect())
     }
 
-    /// Get all keys matching a pattern (for flush worker).
+    /// Get all keys matching a pattern using SCAN (non-blocking).
     pub async fn scan_keys(&self, pattern: &str) -> Result<Vec<String>> {
         let mut conn = self.conn.clone();
+        let mut keys = Vec::new();
+        let mut cursor: u64 = 0;
 
-        let keys: Vec<String> = redis::cmd("KEYS")
-            .arg(pattern)
-            .query_async(&mut conn)
-            .await
-            .map_err(|e| Error::Cache(format!("KEYS scan failed: {e}")))?;
+        loop {
+            let (next_cursor, batch): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(pattern)
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| Error::Cache(format!("SCAN failed: {e}")))?;
+
+            keys.extend(batch);
+            cursor = next_cursor;
+
+            if cursor == 0 {
+                break;
+            }
+        }
 
         Ok(keys)
     }

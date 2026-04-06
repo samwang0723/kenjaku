@@ -18,6 +18,39 @@ pub struct AppConfig {
     pub telemetry: TelemetryConfig,
 }
 
+impl AppConfig {
+    /// Validate that all required secrets are present.
+    /// Call this at startup after loading config to fail fast.
+    pub fn validate_secrets(&self) -> crate::error::Result<()> {
+        let mut missing = Vec::new();
+
+        if self.postgres.url.is_empty() {
+            missing.push("postgres.url");
+        }
+        if self.redis.url.is_empty() {
+            missing.push("redis.url");
+        }
+        if self.embedding.api_key.is_empty() {
+            missing.push("embedding.api_key");
+        }
+        if self.llm.api_key.is_empty() {
+            missing.push("llm.api_key");
+        }
+        if self.contextualizer.api_key.is_empty() {
+            missing.push("contextualizer.api_key");
+        }
+
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(crate::error::Error::Config(format!(
+                "Missing required secrets: {}. Set them in config/secrets.{{APP_ENV}}.yaml or via KENJAKU__ env vars.",
+                missing.join(", ")
+            )))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub host: String,
@@ -38,6 +71,8 @@ fn default_vector_size() -> u64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostgresConfig {
+    /// Connection URL including credentials. Must come from secrets.{env}.yaml.
+    #[serde(default)]
     pub url: String,
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
@@ -49,6 +84,8 @@ fn default_max_connections() -> u32 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedisConfig {
+    /// Connection URL. Must come from secrets.{env}.yaml.
+    #[serde(default)]
     pub url: String,
 }
 
@@ -56,6 +93,8 @@ pub struct RedisConfig {
 pub struct EmbeddingConfig {
     pub provider: String,
     pub model: String,
+    /// API key. Must come from secrets.{env}.yaml.
+    #[serde(default)]
     pub api_key: String,
     #[serde(default = "default_dimensions")]
     pub dimensions: usize,
@@ -75,6 +114,8 @@ fn default_batch_size() -> usize {
 pub struct LlmConfig {
     pub provider: String,
     pub model: String,
+    /// API key. Must come from secrets.{env}.yaml.
+    #[serde(default)]
     pub api_key: String,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
@@ -94,6 +135,8 @@ fn default_temperature() -> f32 {
 pub struct ContextualizerConfig {
     pub provider: String,
     pub model: String,
+    /// API key. Must come from secrets.{env}.yaml.
+    #[serde(default)]
     pub api_key: String,
 }
 
@@ -193,7 +236,7 @@ fn default_log_level() -> String {
 /// Order (later overrides earlier):
 /// 1. config/base.yaml
 /// 2. config/{APP_ENV}.yaml (e.g., local, docker, staging, production)
-/// 3. config/secrets.{APP_ENV}.yaml
+/// 3. config/secrets.{APP_ENV}.yaml — API keys, DB credentials, etc.
 /// 4. Environment variables (prefixed with KENJAKU__)
 pub fn load_config() -> crate::error::Result<AppConfig> {
     let app_env = std::env::var("APP_ENV").unwrap_or_else(|_| "local".to_string());
@@ -227,11 +270,12 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn test_load_config_from_base_yaml() {
+    fn test_load_config_from_base_and_secrets() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path().join("config");
         std::fs::create_dir_all(&config_dir).unwrap();
 
+        // base.yaml has no secrets
         let base_yaml = r#"
 server:
   host: "0.0.0.0"
@@ -239,22 +283,15 @@ server:
 qdrant:
   url: "http://localhost:6334"
   collection_name: "documents"
-postgres:
-  url: "postgres://user:pass@localhost:5432/kenjaku"
-redis:
-  url: "redis://localhost:6379"
 embedding:
   provider: "openai"
   model: "text-embedding-3-small"
-  api_key: "test-key"
 llm:
   provider: "gemini"
   model: "gemini-2.0-flash-lite"
-  api_key: "test-key"
 contextualizer:
   provider: "anthropic"
   model: "claude-haiku-4-5"
-  api_key: "test-key"
 trending:
   popularity_threshold: 5
   flush_interval_secs: 300
@@ -271,7 +308,22 @@ telemetry:
         let mut f = std::fs::File::create(config_dir.join("base.yaml")).unwrap();
         f.write_all(base_yaml.as_bytes()).unwrap();
 
-        // Change to temp dir so config loading finds config/base.yaml
+        // secrets.local.yaml has the actual secrets
+        let secrets_yaml = r#"
+postgres:
+  url: "postgres://user:pass@localhost:5432/kenjaku"
+redis:
+  url: "redis://localhost:6379"
+embedding:
+  api_key: "sk-test-key"
+llm:
+  api_key: "gemini-test-key"
+contextualizer:
+  api_key: "sk-ant-test-key"
+"#;
+        let mut f = std::fs::File::create(config_dir.join("secrets.local.yaml")).unwrap();
+        f.write_all(secrets_yaml.as_bytes()).unwrap();
+
         let original_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
         // SAFETY: This is a single-threaded test; no other threads read APP_ENV.
@@ -281,10 +333,61 @@ telemetry:
         assert_eq!(cfg.server.port, 8080);
         assert_eq!(cfg.qdrant.collection_name, "documents");
         assert_eq!(cfg.embedding.provider, "openai");
-        assert_eq!(cfg.search.semantic_weight, 0.8);
-        assert_eq!(cfg.trending.popularity_threshold, 5);
+        assert_eq!(cfg.embedding.api_key, "sk-test-key");
+        assert_eq!(cfg.llm.api_key, "gemini-test-key");
+        assert_eq!(cfg.postgres.url, "postgres://user:pass@localhost:5432/kenjaku");
+
+        // Validate secrets pass
+        assert!(cfg.validate_secrets().is_ok());
 
         std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_validate_secrets_missing() {
+        // Test validate_secrets directly to avoid test isolation issues
+        // with shared global state (current_dir, env vars).
+        let cfg = AppConfig {
+            server: ServerConfig { host: "0.0.0.0".into(), port: 8080 },
+            qdrant: QdrantConfig { url: "http://localhost:6334".into(), collection_name: "docs".into(), vector_size: 1536 },
+            postgres: PostgresConfig { url: String::new(), max_connections: 10 },
+            redis: RedisConfig { url: String::new() },
+            embedding: EmbeddingConfig { provider: "openai".into(), model: "m".into(), api_key: String::new(), dimensions: 1536, batch_size: 100 },
+            llm: LlmConfig { provider: "gemini".into(), model: "m".into(), api_key: String::new(), max_tokens: 2048, temperature: 0.7 },
+            contextualizer: ContextualizerConfig { provider: "anthropic".into(), model: "m".into(), api_key: String::new() },
+            trending: TrendingConfig { popularity_threshold: 5, flush_interval_secs: 300, daily_ttl_secs: 172800, weekly_ttl_secs: 1209600 },
+            chunking: ChunkingConfig { chunk_size: 512, chunk_overlap: 50 },
+            search: SearchConfig { semantic_weight: 0.8, bm25_weight: 0.2, over_retrieve_factor: 10, component_layout: ComponentLayout::default(), suggestion_count: 3 },
+            telemetry: TelemetryConfig { service_name: "kenjaku".into(), otlp_endpoint: None, log_level: "info".into() },
+        };
+
+        let result = cfg.validate_secrets();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("postgres.url"));
+        assert!(err_msg.contains("redis.url"));
+        assert!(err_msg.contains("embedding.api_key"));
+        assert!(err_msg.contains("llm.api_key"));
+        assert!(err_msg.contains("contextualizer.api_key"));
+    }
+
+    #[test]
+    fn test_validate_secrets_passes_when_set() {
+        let cfg = AppConfig {
+            server: ServerConfig { host: "0.0.0.0".into(), port: 8080 },
+            qdrant: QdrantConfig { url: "http://localhost:6334".into(), collection_name: "docs".into(), vector_size: 1536 },
+            postgres: PostgresConfig { url: "postgres://u:p@localhost/db".into(), max_connections: 10 },
+            redis: RedisConfig { url: "redis://localhost:6379".into() },
+            embedding: EmbeddingConfig { provider: "openai".into(), model: "m".into(), api_key: "sk-key".into(), dimensions: 1536, batch_size: 100 },
+            llm: LlmConfig { provider: "gemini".into(), model: "m".into(), api_key: "gm-key".into(), max_tokens: 2048, temperature: 0.7 },
+            contextualizer: ContextualizerConfig { provider: "anthropic".into(), model: "m".into(), api_key: "sk-ant-key".into() },
+            trending: TrendingConfig { popularity_threshold: 5, flush_interval_secs: 300, daily_ttl_secs: 172800, weekly_ttl_secs: 1209600 },
+            chunking: ChunkingConfig { chunk_size: 512, chunk_overlap: 50 },
+            search: SearchConfig { semantic_weight: 0.8, bm25_weight: 0.2, over_retrieve_factor: 10, component_layout: ComponentLayout::default(), suggestion_count: 3 },
+            telemetry: TelemetryConfig { service_name: "kenjaku".into(), otlp_endpoint: None, log_level: "info".into() },
+        };
+
+        assert!(cfg.validate_secrets().is_ok());
     }
 
     #[test]
@@ -303,7 +406,6 @@ telemetry:
 
     #[test]
     fn test_config_env_override() {
-        // Verify env var parsing concept
         let app_env = "staging";
         let expected_file = format!("config/{app_env}");
         assert_eq!(expected_file, "config/staging");

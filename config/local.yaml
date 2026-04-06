@@ -2,5 +2,8 @@ server:
   host: "127.0.0.1"
   port: 8080
 
+redis:
+  url: "redis://localhost:6379"
+
 telemetry:
   log_level: "debug"

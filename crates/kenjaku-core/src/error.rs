@@ -44,5 +44,26 @@ pub enum Error {
     Internal(String),
 }
 
+impl Error {
+    /// Returns a safe, user-facing error message that does not leak internals.
+    /// Use this in API handlers instead of `e.to_string()`.
+    pub fn user_message(&self) -> &str {
+        match self {
+            Error::Validation(msg) => msg,
+            Error::NotFound(msg) => msg,
+            Error::Config(_) => "Service configuration error",
+            Error::Embedding(_) => "Embedding service unavailable",
+            Error::Llm(_) => "LLM service unavailable",
+            Error::VectorStore(_) => "Search service unavailable",
+            Error::Database(_) => "Database service unavailable",
+            Error::Cache(_) => "Cache service unavailable",
+            Error::Ingestion(_) => "Ingestion error",
+            Error::Translation(_) => "Translation service unavailable",
+            Error::ExternalService { .. } => "External service unavailable",
+            Error::Internal(_) => "Internal server error",
+        }
+    }
+}
+
 /// Result type alias for Kenjaku operations.
 pub type Result<T> = std::result::Result<T, Error>;
