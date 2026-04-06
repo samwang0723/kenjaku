@@ -1,0 +1,59 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+qdrant:
+  url: "http://localhost:6334"
+  collection_name: "documents"
+  vector_size: 1536
+
+postgres:
+  url: "postgres://kenjaku:kenjaku@localhost:5432/kenjaku"
+  max_connections: 10
+
+redis:
+  url: "redis://localhost:6379"
+
+embedding:
+  provider: "openai"
+  model: "text-embedding-3-small"
+  api_key: ""
+  dimensions: 1536
+  batch_size: 100
+
+llm:
+  provider: "gemini"
+  model: "gemini-2.0-flash-lite"
+  api_key: ""
+  max_tokens: 4096
+  temperature: 0.7
+
+contextualizer:
+  provider: "anthropic"
+  model: "claude-haiku-4-5"
+  api_key: ""
+
+trending:
+  popularity_threshold: 5
+  flush_interval_secs: 300
+  daily_ttl_secs: 172800
+  weekly_ttl_secs: 1209600
+
+chunking:
+  chunk_size: 512
+  chunk_overlap: 50
+
+search:
+  semantic_weight: 0.8
+  bm25_weight: 0.2
+  over_retrieve_factor: 10
+  suggestion_count: 3
+  component_layout:
+    order:
+      - llm_answer
+      - sources
+      - suggestions
+
+telemetry:
+  service_name: "kenjaku"
+  log_level: "info"
