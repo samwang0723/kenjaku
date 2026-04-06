@@ -1,0 +1,13 @@
+target/
+.git/
+.github/
+.claude/
+.worktrees/
+docs/
+*.md
+!config/base.yaml
+!config/docker.yaml
+config/secrets.*.yaml
+config/*.example.yaml
+.DS_Store
+*.log

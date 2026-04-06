@@ -1,4 +1,30 @@
 services:
+  kenjaku:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      APP_ENV: docker
+    volumes:
+      # Mount secrets at runtime — never baked into the image
+      - ./config/secrets.docker.yaml:/app/config/secrets.docker.yaml:ro
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
   qdrant:
     image: qdrant/qdrant:v1.13.2
     ports:
@@ -9,6 +35,12 @@ services:
     environment:
       QDRANT__SERVICE__HTTP_PORT: 6333
       QDRANT__SERVICE__GRPC_PORT: 6334
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
 
   postgres:
     image: postgres:17-alpine
@@ -20,6 +52,12 @@ services:
       POSTGRES_DB: kenjaku
     volumes:
       - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kenjaku"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
 
   redis:
     image: redis:7-alpine
@@ -28,6 +66,12 @@ services:
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.120.0
