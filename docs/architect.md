@@ -38,7 +38,7 @@ C4Container
         Container(geto, "geto-web", "nginx + vanilla JS", "Mobile phone-frame SPA. Same-origin reverse proxy to /api/, renders SSE start/delta/done events into a debug panel + streaming markdown answer")
         Container(server, "kenjaku-server", "Rust/Axum", "HTTP server, graceful shutdown, worker orchestration")
         Container(api, "kenjaku-api", "Rust/Axum", "REST endpoints, DTOs, middleware, SSE streaming")
-        Container(service, "kenjaku-service", "Rust", "Search orchestration, hybrid retrieval, reranking, trending, feedback")
+        Container(service, "kenjaku-service", "Rust", "Search orchestration, hybrid retrieval, reranking, trending, feedback, query quality guard, grounding source merge")
         Container(core, "kenjaku-core", "Rust", "Domain types, traits, config, errors")
         Container(infra, "kenjaku-infra", "Rust", "Provider implementations, DB clients, telemetry")
         Container(ingest, "kenjaku-ingest", "Rust/Clap", "CLI for document crawling, parsing, chunking")
@@ -46,7 +46,7 @@ C4Container
 
     ContainerDb(qdrant, "Qdrant", "Vector DB", "Embeddings + full-text index")
     ContainerDb(postgres, "PostgreSQL", "RDBMS", "Conversations, feedback, trending")
-    ContainerDb(redis, "Redis", "Cache", "Real-time trending sorted sets")
+    ContainerDb(redis, "Redis", "Cache", "Real-time trending sorted sets + resolved Gemini grounding title cache")
 
     Rel(user, geto, "HTTPS (browser)")
     Rel(geto, api, "Reverse-proxy /api/, /health, /ready")
@@ -392,7 +392,9 @@ CREATE TABLE reason_categories (
     is_active BOOLEAN NOT NULL DEFAULT TRUE
 );
 
--- User feedback on search responses
+-- User feedback on search responses. The unique index on
+-- (session_id, request_id) makes repeated like/dislike clicks upsert
+-- the existing row in place (added in migration 20260407000001).
 CREATE TABLE feedback (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id VARCHAR(255) NOT NULL,
@@ -402,6 +404,8 @@ CREATE TABLE feedback (
     description TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE UNIQUE INDEX idx_feedback_session_request_unique
+    ON feedback(session_id, request_id);
 
 -- Popular/trending search queries (flushed from Redis)
 CREATE TABLE popular_queries (
@@ -446,7 +450,20 @@ CREATE TABLE conversations (
 ```
 trending:daily:{locale}:{YYYY-MM-DD}   -> ZSET (query -> score)  TTL: 2 days
 trending:weekly:{locale}:{YYYY-W##}    -> ZSET (query -> score)  TTL: 14 days
+title:{redirect_url}                    -> JSON {u, t}            TTL: 24h ok / 10min fail
 ```
+
+Member values in `trending:*` are the *normalized + capitalized* form
+(English: translator output, others: raw with first char capitalized).
+The record-time gibberish guard rejects junk before it reaches Redis;
+the read paths (autocomplete + top-searches) additionally enforce
+`crowd_sourcing_min_count` (default 2) so anything that slips past
+still needs repeated independent searches before surfacing.
+
+The `title:` cache stores `TitleResolver` results — Gemini's
+`vertexaisearch.cloud.google.com/grounding-api-redirect/...` URLs
+follow redirects and parse `<head>` for a real page title once, then
+serve cached values for 24h.
 
 ## 9. Security Boundaries
 
@@ -498,6 +515,8 @@ The first review round identified these production gaps. All have been addressed
 - **Redis SCAN** replaces the original `KEYS` call in the trending flush worker
 - **Secrets validation** at startup via `AppConfig::validate_secrets()`
 - **Migrations** — sqlx flat-file format with conversations table
+- **Query quality guard** — `kenjaku_service::quality::is_gibberish` (length caps Latin 120 / CJK 60 runes, no-space-Latin >=25 chars, single-character dominance >40% in 10+ char queries) drops junk before Redis; `crowd_sourcing_min_count` provides a second filter at the read paths so any junk that slips through still needs independent repeated searches before surfacing
+- **Feedback dedup** — unique index on `feedback(session_id, request_id)` makes repeated like/dislike clicks upsert in place
 
 Still deferred (accepted by operator):
 - API authentication (next phase)
@@ -579,7 +598,7 @@ The `/api/v1/search` handler emits **named** SSE events so the geto-web client c
 | Field | Type | Purpose |
 |-------|------|---------|
 | `start_metadata` | `StreamStartMetadata` | Everything known before the LLM begins (intent, translated_query, locale, retrieval_count, preamble_latency_ms, request_id, session_id) |
-| `stream` | `Pin<Box<dyn Stream<Item = Result<StreamChunk>>>>` | Token deltas from the LLM |
+| `stream` | `Pin<Box<dyn Stream<Item = Result<StreamChunk>>>>` | Token deltas from the LLM. Each `StreamChunk` may carry an optional `grounding: Vec<LlmSource>` extracted from Gemini's `groundingMetadata.groundingChunks[].web` (typically only on the final event with `finishReason`). |
 | `context` | `StreamContext` | Bookkeeping (sources, instants, ids) consumed by `complete_stream()` after the stream finishes |
 
 The handler then emits these events into a `mpsc::channel(100)` which is wrapped in `Sse::new(ReceiverStream::new(rx))`:
@@ -588,7 +607,7 @@ The handler then emits these events into a `mpsc::channel(100)` which is wrapped
 |-------|---------|-----------|
 | `event: start` | `StreamStartMetadata` JSON | Once, before the first token |
 | `event: delta` | `{"text": "..."}` | Per LLM token chunk |
-| `event: done` | `StreamDoneMetadata` (`latency_ms`, `sources`, `suggestions`, `llm_model`) | After the last delta — built by `SearchService::complete_stream(context, accumulated_answer)` which also runs `LlmProvider::suggest()` and queues the conversation record |
+| `event: done` | `StreamDoneMetadata` (`latency_ms`, `sources`, `suggestions`, `llm_model`) | After the last delta — built by `SearchService::complete_stream(context, accumulated_answer, grounding_sources)`. The handler accumulates `grounding_sources` from each `StreamChunk.grounding` while draining the stream. `complete_stream` resolves each grounding URL in parallel via `TitleResolver` (Redis-cached, 24h ok / 10min fail), then merges grounding sources first followed by internal chunk sources, deduped by URL — grounding wins on conflict because it carries the resolved page title. Also runs `LlmProvider::suggest()` and queues the conversation record. |
 | `event: error` | `{"error": "..."}` | On any failure (logged AND sent so the client sees it) |
 
 The server-side parser uses the `eventsource-stream` crate to consume Gemini's `streamGenerateContent?alt=sse` response — do NOT hand-roll a parser, Gemini's separators vary across responses and the manual parser was buggy.
