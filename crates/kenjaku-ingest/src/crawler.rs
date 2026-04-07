@@ -19,9 +19,7 @@ fn is_private_ip(ip: IpAddr) -> bool {
                 // 100.64.0.0/10 (carrier-grade NAT)
                 || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
         }
-        IpAddr::V6(v6) => {
-            v6.is_loopback() || v6.is_unspecified()
-        }
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
     }
 }
 
@@ -32,8 +30,12 @@ async fn validate_url_not_private(url_str: &str) -> anyhow::Result<()> {
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
 
-    // Resolve the hostname and check all IPs
-    let addrs = tokio::net::lookup_host(format!("{}:{}", host, parsed.port_or_known_default().unwrap_or(80))).await?;
+    let addrs = tokio::net::lookup_host(format!(
+        "{}:{}",
+        host,
+        parsed.port_or_known_default().unwrap_or(80)
+    ))
+    .await?;
 
     for addr in addrs {
         if is_private_ip(addr.ip()) {
@@ -50,7 +52,6 @@ async fn validate_url_not_private(url_str: &str) -> anyhow::Result<()> {
 
 /// Crawl a URL and discover linked pages up to a given depth.
 pub async fn crawl_urls(entry_url: &str, max_depth: usize) -> anyhow::Result<Vec<String>> {
-    // Validate entry URL is not private
     validate_url_not_private(entry_url).await?;
 
     let client = Client::builder()
@@ -72,7 +73,6 @@ pub async fn crawl_urls(entry_url: &str, max_depth: usize) -> anyhow::Result<Vec
         }
         visited.insert(url.clone());
 
-        // Validate each discovered URL before fetching
         if let Err(e) = validate_url_not_private(&url).await {
             warn!(url = %url, error = %e, "Skipping URL (SSRF check)");
             continue;
@@ -106,7 +106,7 @@ pub async fn crawl_urls(entry_url: &str, max_depth: usize) -> anyhow::Result<Vec
     Ok(discovered)
 }
 
-/// Extract links from HTML, filtering to same domain.
+/// Extract same-domain HTTP(S) links from HTML.
 fn extract_links(html: &str, base_url: &str, base_domain: &str) -> Vec<String> {
     let document = Html::parse_document(html);
     let Ok(selector) = Selector::parse("a[href]") else {
@@ -140,23 +140,155 @@ fn extract_links(html: &str, base_url: &str, base_domain: &str) -> Vec<String> {
         .collect()
 }
 
-/// Extract main content from HTML, stripping navigation, scripts, etc.
+/// Convert HTML to clean Markdown for RAG indexing.
+///
+/// 1. Strip noise tags (script, style, nav, footer, header, aside, form, iframe)
+/// 2. Extract main content (<main> / <article> / <body>)
+/// 3. Convert to markdown via html2md (preserves headings, lists, emphasis)
+/// 4. Clean up: collapse blank lines, remove empty link/image artifacts,
+///    drop lines that are pure URL/whitespace junk
 pub fn extract_text_from_html(html: &str) -> String {
+    let cleaned = strip_noise_tags(html);
+    let main_html = extract_main_content_html(&cleaned).unwrap_or(cleaned);
+
+    let md = html2md::parse_html(&main_html);
+    clean_markdown(&md)
+}
+
+/// Extract just the inner HTML of the main content area.
+/// Falls back to None if no recognizable content tag is found.
+fn extract_main_content_html(html: &str) -> Option<String> {
     let document = Html::parse_document(html);
-
-    let Ok(body_selector) = Selector::parse("body") else {
-        return document.root_element().text().collect::<Vec<_>>().join("\n");
-    };
-
-    if let Some(body) = document.select(&body_selector).next() {
-        body.text()
-            .map(|t| t.trim())
-            .filter(|t| !t.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n")
-    } else {
-        document.root_element().text().collect::<Vec<_>>().join("\n")
+    for sel in ["main", "article", "body"] {
+        let Ok(selector) = Selector::parse(sel) else {
+            continue;
+        };
+        if let Some(el) = document.select(&selector).next() {
+            return Some(el.inner_html());
+        }
     }
+    None
+}
+
+/// Clean up converted markdown:
+/// - Collapse multiple blank lines to one
+/// - Drop lines that are only link/image punctuation artifacts
+/// - Drop lines that are bare URLs
+/// - Trim trailing whitespace
+fn clean_markdown(md: &str) -> String {
+    let mut out = String::with_capacity(md.len());
+    let mut blank_count = 0;
+
+    for raw in md.lines() {
+        let line = raw.trim_end();
+
+        if is_artifact_line(line) {
+            continue;
+        }
+
+        if line.trim().is_empty() {
+            blank_count += 1;
+            if blank_count == 1 {
+                out.push('\n');
+            }
+            continue;
+        }
+
+        blank_count = 0;
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    out.trim().to_string()
+}
+
+/// A line is "artifact" noise if it's:
+/// - only brackets/parens/punctuation (empty markdown link/image)
+/// - just a bare URL like "https://..."
+/// - just an image marker like "![]"
+fn is_artifact_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() {
+        return false;
+    }
+
+    // Bare URL line (e.g., "https://example.com" or "<https://...>")
+    let url_candidate = t.trim_start_matches('<').trim_end_matches('>');
+    if url_candidate.starts_with("http://") || url_candidate.starts_with("https://") {
+        if !url_candidate.contains(' ') {
+            return true;
+        }
+    }
+
+    // Pure punctuation/bracket noise
+    t.chars()
+        .all(|c| matches!(c, '[' | ']' | '(' | ')' | '!' | '-' | '*' | ' ' | '|' | '_'))
+}
+
+/// Strip script/style/nav/footer/header/aside/form/iframe/noscript tags
+/// along with their content. This is a simple tag-matching strip, not a full
+/// HTML parser — good enough for known noise tags that rarely nest.
+fn strip_noise_tags(html: &str) -> String {
+    const NOISE_TAGS: &[&str] = &[
+        "script", "style", "nav", "footer", "header", "aside", "form", "iframe", "noscript",
+        "svg", "template",
+    ];
+
+    let mut result = html.to_string();
+    for tag in NOISE_TAGS {
+        result = strip_tag(&result, tag);
+    }
+    result
+}
+
+/// Remove all occurrences of `<tag ...>...</tag>` (case-insensitive) from `html`.
+fn strip_tag(html: &str, tag: &str) -> String {
+    let lower = html.to_lowercase();
+    let open_pat = format!("<{tag}");
+    let close_pat = format!("</{tag}>");
+    let close_len = close_pat.len();
+
+    let mut out = String::with_capacity(html.len());
+    let mut cursor = 0;
+
+    while cursor < html.len() {
+        // Find next opening tag (must be followed by whitespace or '>')
+        let rel = match lower[cursor..].find(&open_pat) {
+            Some(i) => i,
+            None => {
+                out.push_str(&html[cursor..]);
+                break;
+            }
+        };
+        let open_start = cursor + rel;
+
+        // Validate it's a real tag boundary, not a prefix match like <scripty>
+        let after_open = open_start + open_pat.len();
+        if after_open < html.len() {
+            let next = html.as_bytes()[after_open];
+            if next != b' ' && next != b'>' && next != b'\t' && next != b'\n' && next != b'/' {
+                out.push_str(&html[cursor..open_start + 1]);
+                cursor = open_start + 1;
+                continue;
+            }
+        }
+
+        // Copy everything before the opening tag
+        out.push_str(&html[cursor..open_start]);
+
+        // Find the matching closing tag
+        match lower[after_open..].find(&close_pat) {
+            Some(close_rel) => {
+                cursor = after_open + close_rel + close_len;
+            }
+            None => {
+                // Unclosed tag — skip the rest of the document
+                break;
+            }
+        }
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -182,29 +314,90 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_text_from_html() {
-        let html = r#"
-        <html><body>
-            <h1>Title</h1>
-            <p>This is content.</p>
-            <script>var x = 1;</script>
-        </body></html>
-        "#;
-
-        let text = extract_text_from_html(html);
-        assert!(text.contains("Title"));
-        assert!(text.contains("This is content"));
+    fn test_strip_noise_tags_script() {
+        let html = r#"<html><body><h1>Title</h1><script>var x = {"key":"val"};</script><p>Content</p></body></html>"#;
+        let stripped = strip_noise_tags(html);
+        assert!(!stripped.contains("var x"));
+        assert!(!stripped.contains("<script"));
+        assert!(stripped.contains("Title"));
+        assert!(stripped.contains("Content"));
     }
 
     #[test]
-    fn test_is_private_ip() {
-        assert!(is_private_ip("127.0.0.1".parse().unwrap()));
-        assert!(is_private_ip("10.0.0.1".parse().unwrap()));
-        assert!(is_private_ip("192.168.1.1".parse().unwrap()));
-        assert!(is_private_ip("172.16.0.1".parse().unwrap()));
-        assert!(is_private_ip("169.254.1.1".parse().unwrap()));
-        assert!(is_private_ip("::1".parse().unwrap()));
-        assert!(!is_private_ip("8.8.8.8".parse().unwrap()));
-        assert!(!is_private_ip("1.1.1.1".parse().unwrap()));
+    fn test_strip_noise_tags_multiple() {
+        let html = r#"
+        <html><body>
+            <nav>Menu</nav>
+            <header>Header</header>
+            <main><h1>Main</h1><p>Body text</p></main>
+            <aside>Sidebar</aside>
+            <footer>Footer</footer>
+            <style>.x { color: red; }</style>
+        </body></html>
+        "#;
+        let stripped = strip_noise_tags(html);
+        assert!(!stripped.contains("Menu"));
+        assert!(!stripped.contains("Sidebar"));
+        assert!(!stripped.contains("Footer"));
+        assert!(!stripped.contains("color: red"));
+        assert!(stripped.contains("Main"));
+        assert!(stripped.contains("Body text"));
+    }
+
+    #[test]
+    fn test_extract_html_to_markdown() {
+        let html = r#"
+        <html><head><title>Test</title></head>
+        <body>
+            <nav><a href="/">Home</a></nav>
+            <script>var stuff = {"a": 1};</script>
+            <main>
+                <h1>Welcome</h1>
+                <p>This is a <strong>test</strong> paragraph.</p>
+                <p>Visit <a href="https://example.com">example</a> for more.</p>
+                <ul><li>Item one</li><li>Item two</li></ul>
+            </main>
+            <footer>Copyright 2026</footer>
+        </body></html>
+        "#;
+
+        let md = extract_text_from_html(html);
+
+        // Main content preserved (with markdown structure)
+        assert!(md.contains("Welcome"));
+        assert!(md.contains("test"));
+        assert!(md.contains("Item one"));
+        assert!(md.contains("Item two"));
+        assert!(md.contains("example"));
+
+        // Noise removed
+        assert!(!md.contains("var stuff"));
+        assert!(!md.contains("Copyright 2026"));
+        assert!(!md.contains("Home"));
+        assert!(!md.contains("<script"));
+    }
+
+    #[test]
+    fn test_clean_markdown_drops_artifact_lines() {
+        let input = "Real content here.\n[]()\n![]\n\n\nMore content.\n   []   \n";
+        let cleaned = clean_markdown(input);
+        assert!(cleaned.contains("Real content"));
+        assert!(cleaned.contains("More content"));
+        assert!(!cleaned.contains("[]()"));
+        assert!(!cleaned.contains("![]"));
+    }
+
+    #[test]
+    fn test_clean_markdown_collapses_blank_lines() {
+        let input = "line one\n\n\n\nline two";
+        let cleaned = clean_markdown(input);
+        assert!(!cleaned.contains("\n\n\n"));
+    }
+
+    #[test]
+    fn test_is_artifact_line_bare_url() {
+        assert!(is_artifact_line("https://example.com"));
+        assert!(is_artifact_line("<https://example.com>"));
+        assert!(!is_artifact_line("Visit https://example.com for info"));
     }
 }

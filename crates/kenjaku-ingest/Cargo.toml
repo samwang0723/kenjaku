@@ -21,6 +21,9 @@ tracing-subscriber = { workspace = true }
 reqwest = { workspace = true }
 scraper = { workspace = true }
 pulldown-cmark = { workspace = true }
+tiktoken-rs = { workspace = true }
+chrono = { workspace = true }
+html2md = { workspace = true }
 indicatif = { workspace = true }
 futures = { workspace = true }
 anyhow = { workspace = true }

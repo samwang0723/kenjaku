@@ -70,14 +70,24 @@ migrate:
 migrate-revert:
 	sqlx migrate revert --source migrations
 
-# ── Ingestion ───────────────────────────────────────────────────
+# ── Ingestion (local) ───────────────────────────────────────────
 ingest-url:
 	@if [ -z "$(URL)" ]; then echo "Usage: make ingest-url URL=https://..."; exit 1; fi
-	cargo run --bin kenjaku-ingest -- url --entry "$(URL)" --depth $(or $(DEPTH),2)
+	APP_ENV=local cargo run --bin kenjaku-ingest -- url --entry "$(URL)" --depth $(or $(DEPTH),2)
 
 ingest-folder:
 	@if [ -z "$(FOLDER)" ]; then echo "Usage: make ingest-folder FOLDER=./docs"; exit 1; fi
-	cargo run --bin kenjaku-ingest -- folder --path "$(FOLDER)"
+	APP_ENV=local cargo run --bin kenjaku-ingest -- folder --path "$(FOLDER)"
+
+# ── Ingestion (docker) ──────────────────────────────────────────
+# Runs inside the kenjaku container so it uses the docker network and secrets.
+docker-ingest-url:
+	@if [ -z "$(URL)" ]; then echo "Usage: make docker-ingest-url URL=https://..."; exit 1; fi
+	docker compose exec -e APP_ENV=docker kenjaku /app/kenjaku-ingest url --entry "$(URL)" --depth $(or $(DEPTH),2)
+
+docker-ingest-folder:
+	@if [ -z "$(FOLDER)" ]; then echo "Usage: make docker-ingest-folder FOLDER=./docs"; exit 1; fi
+	docker compose exec -e APP_ENV=docker kenjaku /app/kenjaku-ingest folder --path "$(FOLDER)"
 
 # ── OpenAPI ─────────────────────────────────────────────────────
 openapi:

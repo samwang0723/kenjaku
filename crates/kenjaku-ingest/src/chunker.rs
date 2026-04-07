@@ -1,66 +1,116 @@
-/// Chunking strategies for document processing.
+//! Token-aware chunking using tiktoken (cl100k_base — shared by text-embedding-3-*).
+//!
+//! Best practice for RAG with OpenAI `text-embedding-3-small`:
+//! - 500-800 tokens per chunk (balanced precision/context)
+//! - 10-20% overlap (preserves continuity across chunks)
+//! - Respect sentence boundaries when possible
+//!
+//! See Anthropic's Contextual Retrieval guide and OpenAI's cookbook.
 
-/// Chunk a text into fixed-size chunks with overlap, respecting sentence boundaries.
+use tiktoken_rs::{cl100k_base, CoreBPE};
+
+/// Chunk text into token-bounded segments with overlap, respecting sentence boundaries.
+///
+/// - `chunk_size` and `overlap` are in **tokens**, not characters.
+/// - Uses the `cl100k_base` tokenizer (same as text-embedding-3-small/large).
 pub fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
-    if text.is_empty() {
+    if text.trim().is_empty() {
         return vec![];
     }
 
-    if text.len() <= chunk_size {
+    let bpe = match cl100k_base() {
+        Ok(bpe) => bpe,
+        Err(_) => {
+            // Fallback to character-based chunking if tokenizer init fails.
+            return chunk_by_chars(text, chunk_size * 4, overlap * 4);
+        }
+    };
+
+    let tokens = bpe.encode_with_special_tokens(text);
+    if tokens.len() <= chunk_size {
         return vec![text.to_string()];
     }
 
+    let step = chunk_size.saturating_sub(overlap).max(1);
     let mut chunks = Vec::new();
-    let chars: Vec<char> = text.chars().collect();
     let mut start = 0;
 
-    while start < chars.len() {
-        let end = (start + chunk_size).min(chars.len());
+    while start < tokens.len() {
+        let end = (start + chunk_size).min(tokens.len());
+        let slice = &tokens[start..end];
 
-        // Try to break at a sentence boundary
-        let actual_end = if end < chars.len() {
-            find_sentence_boundary(&chars, start, end).unwrap_or(end)
-        } else {
-            end
+        let decoded = match bpe.decode(slice.to_vec()) {
+            Ok(s) => s,
+            Err(_) => {
+                start += step;
+                continue;
+            }
         };
 
-        let chunk: String = chars[start..actual_end].iter().collect();
-        let trimmed = chunk.trim().to_string();
-        if !trimmed.is_empty() {
-            chunks.push(trimmed);
+        // Prefer to end at a sentence boundary within the last ~15% of the chunk.
+        let trimmed = adjust_to_sentence_boundary(&decoded, end < tokens.len(), &bpe);
+        let text_out = trimmed.trim().to_string();
+
+        if !text_out.is_empty() {
+            chunks.push(text_out);
         }
 
-        // Move forward by chunk_size - overlap
-        let step = if actual_end > start + overlap {
-            actual_end - start - overlap
-        } else {
-            actual_end - start
-        };
-        start += step.max(1);
+        if end >= tokens.len() {
+            break;
+        }
+        start += step;
     }
 
     chunks
 }
 
-/// Find the nearest sentence boundary (period, newline) before `end`.
-fn find_sentence_boundary(chars: &[char], start: usize, end: usize) -> Option<usize> {
-    // Look backwards from end for sentence-ending punctuation
-    let search_start = if end > start + 50 { end - 50 } else { start };
+/// Try to trim the decoded chunk at the last sentence boundary, if it's within
+/// the last 15% of the text. This avoids cutting mid-sentence.
+fn adjust_to_sentence_boundary(text: &str, has_more: bool, _bpe: &CoreBPE) -> String {
+    if !has_more {
+        return text.to_string();
+    }
 
-    for i in (search_start..end).rev() {
-        if chars[i] == '.' || chars[i] == '\n' || chars[i] == '!' || chars[i] == '?' {
-            return Some(i + 1);
+    let min_keep = (text.len() as f32 * 0.85) as usize;
+    let chars: Vec<char> = text.chars().collect();
+
+    for i in (min_keep..chars.len()).rev() {
+        let c = chars[i];
+        if c == '.' || c == '\n' || c == '!' || c == '?' {
+            let end = i + 1;
+            let slice: String = chars[..end].iter().collect();
+            return slice;
         }
     }
 
-    // Fallback: look for space
-    for i in (search_start..end).rev() {
-        if chars[i] == ' ' {
-            return Some(i + 1);
-        }
+    text.to_string()
+}
+
+/// Character-based fallback chunker (used if tokenizer init fails).
+fn chunk_by_chars(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= chunk_size {
+        return vec![text.to_string()];
     }
 
-    None
+    let step = chunk_size.saturating_sub(overlap).max(1);
+    let mut chunks = Vec::new();
+    let mut start = 0;
+
+    while start < chars.len() {
+        let end = (start + chunk_size).min(chars.len());
+        let slice: String = chars[start..end].iter().collect();
+        let trimmed = slice.trim().to_string();
+        if !trimmed.is_empty() {
+            chunks.push(trimmed);
+        }
+        if end >= chars.len() {
+            break;
+        }
+        start += step;
+    }
+
+    chunks
 }
 
 #[cfg(test)]
@@ -69,8 +119,8 @@ mod tests {
 
     #[test]
     fn test_chunk_empty_text() {
-        let chunks = chunk_text("", 100, 10);
-        assert!(chunks.is_empty());
+        assert!(chunk_text("", 100, 10).is_empty());
+        assert!(chunk_text("   \n  ", 100, 10).is_empty());
     }
 
     #[test]
@@ -81,30 +131,38 @@ mod tests {
     }
 
     #[test]
-    fn test_chunk_respects_size() {
-        let text = "A".repeat(1000);
-        let chunks = chunk_text(&text, 200, 20);
+    fn test_chunk_respects_token_budget() {
+        // Build a long text that should definitely exceed 50 tokens.
+        let text = "The quick brown fox jumps over the lazy dog. ".repeat(100);
+        let chunks = chunk_text(&text, 50, 5);
+        assert!(chunks.len() > 1, "expected multiple chunks, got {}", chunks.len());
+
+        // Verify each chunk is within the budget (give small slack for decoding).
+        let bpe = cl100k_base().unwrap();
         for chunk in &chunks {
-            assert!(chunk.len() <= 200, "Chunk too long: {}", chunk.len());
+            let tokens = bpe.encode_with_special_tokens(chunk);
+            assert!(
+                tokens.len() <= 55,
+                "chunk has {} tokens, expected <= 55",
+                tokens.len()
+            );
         }
-        assert!(chunks.len() > 1);
     }
 
     #[test]
-    fn test_chunk_with_overlap() {
-        let text = "First sentence. Second sentence. Third sentence. Fourth sentence.";
-        let chunks = chunk_text(text, 30, 5);
+    fn test_chunk_prefers_sentence_boundaries() {
+        let text = "First sentence here. Second sentence there. Third sentence everywhere. Fourth sentence nowhere.".repeat(20);
+        let chunks = chunk_text(&text, 30, 3);
         assert!(chunks.len() > 1);
-        // With overlap, subsequent chunks should share some content with previous
-    }
-
-    #[test]
-    fn test_chunk_sentence_boundary() {
-        let text = "This is the first sentence. This is the second sentence. This is the third one.";
-        let chunks = chunk_text(text, 40, 5);
-        // Chunks should prefer breaking at sentence boundaries
-        for chunk in &chunks {
-            assert!(!chunk.is_empty());
-        }
+        // Most chunks (except maybe last) should end with sentence punctuation
+        // when there's room.
+        let ending_with_period = chunks
+            .iter()
+            .filter(|c| c.ends_with('.') || c.ends_with('!') || c.ends_with('?'))
+            .count();
+        assert!(
+            ending_with_period >= chunks.len() / 2,
+            "Expected most chunks to end at sentence boundaries"
+        );
     }
 }

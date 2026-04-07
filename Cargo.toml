@@ -72,6 +72,8 @@ clap = { version = "4", features = ["derive"] }
 # Document parsing
 scraper = "0.22"
 pulldown-cmark = "0.12"
+tiktoken-rs = "0.6"
+html2md = "0.2"
 
 # Progress
 indicatif = "0.17"

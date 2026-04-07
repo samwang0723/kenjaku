@@ -35,8 +35,8 @@ trending:
   weekly_ttl_secs: 1209600
 
 chunking:
-  chunk_size: 512
-  chunk_overlap: 50
+  chunk_size: 800      # tokens (cl100k_base), ~10% of embedding context
+  chunk_overlap: 100   # tokens (~12.5% overlap)
 
 search:
   semantic_weight: 0.8

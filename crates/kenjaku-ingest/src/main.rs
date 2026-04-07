@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 use tracing::info;
 
+use kenjaku_core::config::load_config;
+
 pub mod chunker;
 pub mod crawler;
 pub mod parser;
@@ -11,10 +13,6 @@ pub mod pipeline;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
-
-    /// Path to config directory
-    #[arg(long, default_value = "config")]
-    config: String,
 }
 
 #[derive(Subcommand)]
@@ -33,16 +31,16 @@ enum Commands {
         #[arg(long, default_value = "documents")]
         collection: String,
 
-        /// Chunk size in characters
-        #[arg(long, default_value = "512")]
+        /// Chunk size in TOKENS (not characters). 500-800 is a good default.
+        #[arg(long, default_value = "800")]
         chunk_size: usize,
 
-        /// Chunk overlap in characters
-        #[arg(long, default_value = "50")]
+        /// Chunk overlap in TOKENS. ~10-15% of chunk_size is standard.
+        #[arg(long, default_value = "100")]
         chunk_overlap: usize,
 
-        /// Embedding batch size
-        #[arg(long, default_value = "100")]
+        /// Embedding batch size (OpenAI allows up to 2048 inputs per request)
+        #[arg(long, default_value = "64")]
         batch_size: usize,
 
         /// Concurrent document processing
@@ -59,16 +57,16 @@ enum Commands {
         #[arg(long, default_value = "documents")]
         collection: String,
 
-        /// Chunk size in characters
-        #[arg(long, default_value = "512")]
+        /// Chunk size in TOKENS
+        #[arg(long, default_value = "800")]
         chunk_size: usize,
 
-        /// Chunk overlap in characters
-        #[arg(long, default_value = "50")]
+        /// Chunk overlap in TOKENS
+        #[arg(long, default_value = "100")]
         chunk_overlap: usize,
 
         /// Embedding batch size
-        #[arg(long, default_value = "100")]
+        #[arg(long, default_value = "64")]
         batch_size: usize,
 
         /// Concurrent document processing
@@ -84,6 +82,10 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     info!("Kenjaku ingestion CLI starting");
 
+    // Load config (reads base.yaml + {APP_ENV}.yaml + secrets.{APP_ENV}.yaml)
+    let config = load_config()?;
+    config.validate_secrets()?;
+
     match cli.command {
         Commands::Url {
             entry,
@@ -94,8 +96,9 @@ async fn main() -> anyhow::Result<()> {
             batch_size,
             concurrency,
         } => {
-            info!(url = %entry, depth = depth, "Starting URL ingestion");
+            info!(url = %entry, depth = depth, chunk_size = chunk_size, "Starting URL ingestion");
             pipeline::ingest_url(
+                &config,
                 &entry,
                 depth,
                 &collection,
@@ -114,8 +117,9 @@ async fn main() -> anyhow::Result<()> {
             batch_size,
             concurrency,
         } => {
-            info!(path = %path, "Starting folder ingestion");
+            info!(path = %path, chunk_size = chunk_size, "Starting folder ingestion");
             pipeline::ingest_folder(
+                &config,
                 &path,
                 &collection,
                 chunk_size,
