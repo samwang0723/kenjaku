@@ -281,20 +281,26 @@ body {
   padding: 8px 16px;
   text-align: left;
   background: transparent;
-  border: 1px solid var(--border);
+  border: 1px solid rgba(255, 117, 145, 0.35);
   border-radius: 20px;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   font-size: 14px;
   font-weight: 400;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.2s ease;
   white-space: nowrap;
   flex-shrink: 0;
+  box-shadow:
+    0 0 0 1px rgba(255, 117, 145, 0.08),
+    0 0 12px rgba(255, 117, 145, 0.12);
 }
 .pills button:hover {
-  background: var(--bg-input);
-  color: var(--text-primary);
-  border-color: var(--accent-blue);
+  background: rgba(255, 117, 145, 0.05);
+  border-color: rgba(255, 117, 145, 0.7);
+  box-shadow:
+    0 0 0 1px rgba(255, 117, 145, 0.25),
+    0 0 18px rgba(255, 117, 145, 0.3),
+    0 0 36px rgba(255, 117, 145, 0.15);
 }
 
 /* ====== Debug Context Panel (outside frame) ====== */
@@ -1324,21 +1330,20 @@ body {
   align-items: center;
   gap: 8px;
   background: var(--bg-input);
-  border: 1px solid rgba(255, 117, 145, 0.55);
+  border: 1px solid rgba(255, 117, 145, 0.35);
   border-radius: 9999px;
   padding: 4px 6px 4px 16px;
   box-shadow:
-    0 0 0 1px rgba(255, 117, 145, 0.2),
-    0 0 18px rgba(255, 117, 145, 0.35),
-    0 0 40px rgba(255, 117, 145, 0.18);
+    0 0 0 1px rgba(255, 117, 145, 0.08),
+    0 0 12px rgba(255, 117, 145, 0.12);
   transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
 .search-input-wrap:focus-within {
-  border-color: var(--accent-pink);
+  border-color: rgba(255, 117, 145, 0.85);
   box-shadow:
-    0 0 0 1px rgba(255, 117, 145, 0.35),
-    0 0 22px rgba(255, 117, 145, 0.5),
-    0 0 50px rgba(255, 117, 145, 0.25);
+    0 0 0 1px rgba(255, 117, 145, 0.3),
+    0 0 18px rgba(255, 117, 145, 0.4),
+    0 0 40px rgba(255, 117, 145, 0.2);
 }
 
 .search-input-wrap input {
