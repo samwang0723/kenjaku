@@ -39,29 +39,30 @@
   font-family: inherit;
 }
 
-/* Theme: Suguru Geto (Jujutsu Kaisen) — deep indigo robes, forest-green
-   tabard, gold trim, parchment cream highlights. */
+/* Theme: midnight indigo with pink-coral glow + cream text. */
 :root {
-  /* Indigo robe (primary background, depths) */
-  --bg-primary: #161A36;       /* deepest navy */
-  --bg-card:    #1F2549;       /* indigo robe */
-  --bg-input:   #272E5A;       /* slightly lifted indigo */
-  --border:     #2E366A;       /* indigo seam */
+  /* Deep indigo background palette */
+  --bg-primary: #0F1430;       /* deepest navy */
+  --bg-card:    #1A1F40;       /* lifted card */
+  --bg-input:   #1F2548;       /* input fields */
+  --border:     #2A3055;       /* subtle border */
 
-  /* Parchment / pale skin tones for text */
-  --text-primary:   #F1ECDB;   /* warm cream */
-  --text-secondary: #B0A88A;   /* faded gold */
-  --text-muted:     #6E6A55;   /* dull olive */
+  /* Warm cream text */
+  --text-primary:   #F2E8D2;   /* heading cream */
+  --text-secondary: #B0A795;   /* warm beige */
+  --text-muted:     #6E6857;   /* dull olive */
 
-  /* Forest-green tabard + gold trim accents */
-  --accent-blue:   #4F7A55;    /* tabard green (used as primary accent) */
-  --accent-green:  #6FA265;    /* highlight green */
-  --accent-red:    #C04A4A;    /* sash red */
-  --accent-purple: #7A6BAA;    /* night-sky violet (compat) */
-  --accent-orange: #C7A04A;    /* gold trim */
+  /* Accents */
+  --accent-pink:   #FF7591;    /* pink/coral — primary glow */
+  --accent-violet: #B4A8F0;    /* lavender — chips, badges */
+  --accent-blue:   #4F7A55;    /* (compat) */
+  --accent-green:  #6FA265;
+  --accent-red:    #C04A4A;
+  --accent-purple: #B4A8F0;    /* lavender alias */
+  --accent-orange: #C7A04A;    /* gold (still used for query echo) */
 
   /* Query echo gradient (cream → gold) */
-  --query-gradient-start: #F1ECDB;
+  --query-gradient-start: #F2E8D2;
   --query-gradient-end:   #C7A04A;
 }
 
@@ -184,7 +185,7 @@ body {
 }
 
 #envLabel {
-  color: var(--accent-blue);
+  color: var(--accent-violet);
   font-size: 11px;
   font-weight: 400;
   text-transform: uppercase;
@@ -192,7 +193,7 @@ body {
   display: inline-flex;
   align-items: center;
   padding: 2px 6px;
-  background: rgba(74,140,255,0.1);
+  background: rgba(180, 168, 240, 0.18);
   border-radius: 4px;
   line-height: 1;
 }
@@ -1323,9 +1324,21 @@ body {
   align-items: center;
   gap: 8px;
   background: var(--bg-input);
-  border: 1px solid var(--border);
+  border: 1px solid rgba(255, 117, 145, 0.55);
   border-radius: 9999px;
   padding: 4px 6px 4px 16px;
+  box-shadow:
+    0 0 0 1px rgba(255, 117, 145, 0.2),
+    0 0 18px rgba(255, 117, 145, 0.35),
+    0 0 40px rgba(255, 117, 145, 0.18);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.search-input-wrap:focus-within {
+  border-color: var(--accent-pink);
+  box-shadow:
+    0 0 0 1px rgba(255, 117, 145, 0.35),
+    0 0 22px rgba(255, 117, 145, 0.5),
+    0 0 50px rgba(255, 117, 145, 0.25);
 }
 
 .search-input-wrap input {
