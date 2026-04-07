@@ -32,6 +32,7 @@ pub struct SearchService {
     translation_service: TranslationService,
     trending_service: TrendingService,
     conversation_service: ConversationService,
+    title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
     collection_name: String,
     suggestion_count: usize,
 }
@@ -46,6 +47,7 @@ impl SearchService {
         translation_service: TranslationService,
         trending_service: TrendingService,
         conversation_service: ConversationService,
+        title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
         collection_name: String,
         suggestion_count: usize,
     ) -> Self {
@@ -57,6 +59,7 @@ impl SearchService {
             translation_service,
             trending_service,
             conversation_service,
+            title_resolver,
             collection_name,
             suggestion_count,
         }
@@ -299,18 +302,50 @@ impl SearchService {
     /// Called by the handler after the token stream finishes. Produces the final
     /// `done` metadata and queues the conversation for async persistence.
     ///
-    /// Takes ownership of the `ctx` because the stream field isn't needed after
-    /// this point, and the caller has already drained it.
+    /// `grounding_sources` is whatever the handler accumulated from
+    /// `StreamChunk.grounding` while draining the stream — i.e. the
+    /// google_search sources Gemini cited. They are resolved (in parallel,
+    /// with caching) into real page titles via the optional `TitleResolver`,
+    /// then deduped against the internal `ctx.sources` and appended.
     pub async fn complete_stream(
         &self,
         ctx: StreamContext,
         accumulated_answer: &str,
+        grounding_sources: Vec<LlmSource>,
     ) -> StreamDoneMetadata {
         let suggestions = match self.llm.suggest(&ctx.query, accumulated_answer).await {
             Ok(s) if s.len() >= self.suggestion_count => s[..self.suggestion_count].to_vec(),
             Ok(s) => s,
             Err(_) => Vec::new(),
         };
+
+        // Resolve grounding URLs in parallel (cache-backed) into real titles,
+        // then merge with the internal-chunk sources, dedupe by URL.
+        let resolved_grounding = if grounding_sources.is_empty() {
+            Vec::new()
+        } else if let Some(resolver) = self.title_resolver.as_ref() {
+            resolver.resolve_batch(grounding_sources).await
+        } else {
+            grounding_sources
+        };
+
+        // Order: google_search grounding sources first (real-time, web-grounded
+        // facts) followed by internal chunk sources (product knowledge base).
+        // Deduped by URL — if a URL appears in both, the grounding entry wins
+        // because it carries the resolved page title.
+        let mut merged_sources: Vec<LlmSource> =
+            Vec::with_capacity(resolved_grounding.len() + ctx.sources.len());
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for src in resolved_grounding {
+            if seen.insert(src.url.clone()) {
+                merged_sources.push(src);
+            }
+        }
+        for src in &ctx.sources {
+            if seen.insert(src.url.clone()) {
+                merged_sources.push(src.clone());
+            }
+        }
 
         let latency_ms = ctx.start_instant.elapsed().as_millis() as u64;
 
@@ -324,7 +359,7 @@ impl SearchService {
                 intent: ctx.intent,
                 meta: serde_json::json!({
                     "latency_ms": latency_ms,
-                    "sources": ctx.sources,
+                    "sources": merged_sources,
                     "suggestions": suggestions,
                     "streaming": true,
                 }),
@@ -333,7 +368,7 @@ impl SearchService {
 
         StreamDoneMetadata {
             latency_ms,
-            sources: ctx.sources,
+            sources: merged_sources,
             suggestions,
             llm_model: ctx.llm_model,
         }

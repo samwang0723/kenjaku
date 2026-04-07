@@ -89,11 +89,18 @@ pub struct LlmUsage {
 }
 
 /// A single SSE stream chunk (text delta).
+///
+/// `grounding` carries Gemini google_search grounding sources that the
+/// streaming pipeline observed on this event (typically populated only on
+/// the final event with `finished = true`). Old consumers that ignore this
+/// field continue to work; the API handler accumulates and forwards it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamChunk {
     pub delta: String,
     pub chunk_type: StreamChunkType,
     pub finished: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grounding: Option<Vec<LlmSource>>,
 }
 
 /// Metadata sent at the START of a streaming search — everything we know
