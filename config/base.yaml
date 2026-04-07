@@ -33,6 +33,11 @@ trending:
   flush_interval_secs: 300
   daily_ttl_secs: 172800
   weekly_ttl_secs: 1209600
+  # Minimum search_count required for a query to surface in autocomplete
+  # or top-searches. Defends against gibberish that slipped past the
+  # record-time guard — anything junk still needs independent repeated
+  # searches before reaching users.
+  crowd_sourcing_min_count: 2
 
 chunking:
   chunk_size: 800      # tokens (cl100k_base), ~10% of embedding context

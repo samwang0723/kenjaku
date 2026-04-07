@@ -154,6 +154,12 @@ pub struct TrendingConfig {
     /// TTL in seconds for weekly trending keys in Redis.
     #[serde(default = "default_weekly_ttl_secs")]
     pub weekly_ttl_secs: u64,
+    /// Minimum search_count required for a query to appear in autocomplete
+    /// or top-searches results. A second defensive layer after the record
+    /// time gibberish guard — anything that slips through still needs
+    /// multiple independent searches before it surfaces to users.
+    #[serde(default = "default_crowd_sourcing_min_count")]
+    pub crowd_sourcing_min_count: i64,
 }
 
 fn default_popularity_threshold() -> i64 {
@@ -170,6 +176,10 @@ fn default_daily_ttl_secs() -> u64 {
 
 fn default_weekly_ttl_secs() -> u64 {
     1_209_600 // 14 days
+}
+
+fn default_crowd_sourcing_min_count() -> i64 {
+    2
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -385,6 +395,7 @@ contextualizer:
                 flush_interval_secs: 300,
                 daily_ttl_secs: 172800,
                 weekly_ttl_secs: 1209600,
+                crowd_sourcing_min_count: 2,
             },
             chunking: ChunkingConfig {
                 chunk_size: 512,
@@ -457,6 +468,7 @@ contextualizer:
                 flush_interval_secs: 300,
                 daily_ttl_secs: 172800,
                 weekly_ttl_secs: 1209600,
+                crowd_sourcing_min_count: 2,
             },
             chunking: ChunkingConfig {
                 chunk_size: 512,

@@ -78,7 +78,11 @@ async fn main() -> anyhow::Result<()> {
         trending_repo.clone(),
         config.trending.clone(),
     );
-    let autocomplete_service = AutocompleteService::new(trending_repo.clone(), qdrant.clone());
+    let autocomplete_service = AutocompleteService::new(
+        trending_repo.clone(),
+        qdrant.clone(),
+        config.trending.crowd_sourcing_min_count,
+    );
     let feedback_service = FeedbackService::new(feedback_repo);
 
     // Conversation service with async flush worker (buffer 1024 records)

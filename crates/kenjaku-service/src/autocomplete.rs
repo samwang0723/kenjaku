@@ -11,13 +11,17 @@ use kenjaku_infra::qdrant::QdrantClient;
 pub struct AutocompleteService {
     trending_repo: TrendingRepository,
     qdrant: QdrantClient,
+    /// Crowdsourcing quality floor — popular queries with `search_count`
+    /// below this are filtered out at the SQL level.
+    min_count: i64,
 }
 
 impl AutocompleteService {
-    pub fn new(trending_repo: TrendingRepository, qdrant: QdrantClient) -> Self {
+    pub fn new(trending_repo: TrendingRepository, qdrant: QdrantClient, min_count: i64) -> Self {
         Self {
             trending_repo,
             qdrant,
+            min_count,
         }
     }
 
@@ -26,10 +30,10 @@ impl AutocompleteService {
     pub async fn suggest(&self, query: &str, locale: &str, limit: usize) -> Result<Vec<String>> {
         let mut suggestions = HashSet::new();
 
-        // Source 1: Popular past searches matching prefix
+        // Source 1: Popular past searches matching prefix (with quality floor)
         let popular = self
             .trending_repo
-            .search_popular(locale, query, limit)
+            .search_popular(locale, query, limit, self.min_count)
             .await?;
 
         for pq in popular {
