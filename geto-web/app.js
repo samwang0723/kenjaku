@@ -256,10 +256,60 @@ function renderMarkdownBlocks(blocks) {
       continue;
     }
 
+    // Pipe-style markdown table: starts with `|` and contains another `|`.
+    if (trimmed.charAt(0) === '|' && trimmed.indexOf('|', 1) > 0) {
+      var tbl = collectTable(allLines, idx);
+      if (tbl.html) {
+        html += tbl.html;
+        idx = tbl.nextIdx;
+        continue;
+      }
+    }
+
     html += '<p>' + inlineMarkdown(trimmed) + '</p>';
     idx++;
   }
   return html;
+}
+
+// Parse a contiguous block of pipe-style markdown table rows starting at
+// `startIdx`. Returns the rendered HTML and the index of the first line
+// after the table. If the block isn't a valid table, returns html: ''.
+function collectTable(lines, startIdx) {
+  var rows = [];
+  var idx = startIdx;
+  while (idx < lines.length) {
+    var t = (lines[idx] || '').trim();
+    if (!t.startsWith('|')) break;
+    // Skip separator row like `| :--- | :--- |` or `|---|---|`
+    if (/^\|[\s\-:|]+\|$/.test(t)) { idx++; continue; }
+    var cells = t.split('|').map(function(c) { return c.trim(); });
+    if (cells[0] === '') cells.shift();
+    if (cells.length && cells[cells.length - 1] === '') cells.pop();
+    rows.push(cells);
+    idx++;
+  }
+
+  if (rows.length === 0) return { html: '', nextIdx: startIdx };
+
+  var html = '<div class="md-table-wrap"><table class="md-table"><thead><tr>';
+  for (var h = 0; h < rows[0].length; h++) {
+    html += '<th>' + inlineMarkdown(rows[0][h]) + '</th>';
+  }
+  html += '</tr></thead>';
+  if (rows.length > 1) {
+    html += '<tbody>';
+    for (var r = 1; r < rows.length; r++) {
+      html += '<tr>';
+      for (var c = 0; c < rows[r].length; c++) {
+        html += '<td>' + inlineMarkdown(rows[r][c]) + '</td>';
+      }
+      html += '</tr>';
+    }
+    html += '</tbody>';
+  }
+  html += '</table></div>';
+  return { html: html, nextIdx: idx };
 }
 
 function collectList(lines, startIdx, type) {
