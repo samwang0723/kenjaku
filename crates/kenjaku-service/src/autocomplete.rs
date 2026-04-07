@@ -6,6 +6,8 @@ use kenjaku_core::error::Result;
 use kenjaku_infra::postgres::TrendingRepository;
 use kenjaku_infra::qdrant::QdrantClient;
 
+use crate::quality::prettify_title;
+
 /// Service for autocomplete suggestions combining popular queries and document titles.
 #[derive(Clone)]
 pub struct AutocompleteService {
@@ -43,9 +45,14 @@ impl AutocompleteService {
         // Source 2: Qdrant document title similarities
         if suggestions.len() < limit {
             let remaining = limit - suggestions.len();
-            let titles = self.qdrant.search_titles(query, remaining).await?;
+            // Over-fetch from Qdrant since prettify + dedupe may collapse
+            // multiple slug variants onto the same display title.
+            let titles = self.qdrant.search_titles(query, remaining * 2).await?;
             for title in titles {
-                suggestions.insert(title);
+                let pretty = prettify_title(&title);
+                if !pretty.is_empty() {
+                    suggestions.insert(pretty);
+                }
             }
         }
 

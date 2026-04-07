@@ -19,6 +19,7 @@ use kenjaku_core::types::search::{
 
 use crate::component::ComponentService;
 use crate::conversation::ConversationService;
+use crate::quality::prettify_title;
 use crate::translation::TranslationService;
 use crate::trending::TrendingService;
 
@@ -237,12 +238,19 @@ impl SearchService {
             .retrieve(&search_query, &self.collection_name, req.top_k)
             .await?;
 
-        // Sources are known at this point (from retrieved chunks).
+        // Sources are known at this point (from retrieved chunks). Dedupe by
+        // URL so multiple chunks from the same document produce a single
+        // source entry, and prettify slug-shaped titles for display.
+        let mut seen_urls = std::collections::HashSet::new();
         let sources: Vec<LlmSource> = chunks
             .iter()
             .filter_map(|c| {
-                c.source_url.as_ref().map(|url| LlmSource {
-                    title: c.title.clone(),
+                let url = c.source_url.as_ref()?;
+                if !seen_urls.insert(url.clone()) {
+                    return None;
+                }
+                Some(LlmSource {
+                    title: prettify_title(&c.title),
                     url: url.clone(),
                     snippet: None,
                 })
