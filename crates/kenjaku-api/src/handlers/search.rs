@@ -26,17 +26,6 @@ pub async fn search(
     State(state): State<Arc<AppState>>,
     Json(dto): Json<SearchRequestDto>,
 ) -> impl IntoResponse {
-    // Validate locale
-    let locale = match dto.parse_locale() {
-        Ok(l) => l,
-        Err(e) => {
-            return Json(ApiResponse::<SearchResponseDto>::err(
-                e.user_message().to_string(),
-            ))
-            .into_response();
-        }
-    };
-
     // Validate query length
     if dto.query.is_empty() {
         return Json(ApiResponse::<SearchResponseDto>::err(
@@ -54,9 +43,10 @@ pub async fn search(
     // Clamp top_k
     let top_k = dto.top_k.unwrap_or(10).min(MAX_TOP_K);
 
+    // Locale is no longer carried on the request — the translator detects
+    // it from the query text and surfaces it in the response metadata.
     let req = SearchRequest {
         query: dto.query,
-        locale,
         session_id: dto.session_id,
         request_id: dto.request_id,
         streaming: dto.streaming,

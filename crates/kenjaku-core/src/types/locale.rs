@@ -57,6 +57,63 @@ impl Locale {
             Locale::Es => "es",
         }
     }
+
+    /// Native-script display name suitable for embedding in an LLM
+    /// prompt that asks the model to respond in this language.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Locale::En => "English",
+            Locale::Zh => "简体中文",
+            Locale::ZhTw => "繁體中文",
+            Locale::Ja => "日本語",
+            Locale::Ko => "한국어",
+            Locale::De => "Deutsch",
+            Locale::Fr => "Français",
+            Locale::Es => "Español",
+        }
+    }
+}
+
+/// Outcome of LLM-driven locale detection. The translator returns one of
+/// these for every query — either a `Locale` we already support, or an
+/// arbitrary BCP-47 tag we should fall back from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DetectedLocale {
+    /// One of the 8 supported `Locale` enum variants.
+    Supported(Locale),
+    /// A valid BCP-47 tag we don't support yet (e.g. `pt`, `it`, `ru`).
+    /// SearchService falls back to English and emits a metric so we can
+    /// prioritize which tag to add to the enum next.
+    Unsupported { tag: String },
+}
+
+impl DetectedLocale {
+    /// Lenient BCP-47 parser. Maps common tag variants to the `Locale`
+    /// enum (`zh-tw`, `zh_TW`, `zh-Hant` → `ZhTw`); returns
+    /// `Unsupported { tag }` for any tag outside the 8 supported locales.
+    pub fn from_bcp47(tag: &str) -> Self {
+        let trimmed = tag.trim();
+        let normalized = trimmed.to_ascii_lowercase();
+        let mapped: Option<Locale> = match normalized.as_str() {
+            "en" | "en-us" | "en-gb" => Some(Locale::En),
+            // Traditional Chinese variants — match before generic `zh`
+            // so `zh-Hant` and `zh-TW` route to ZhTw.
+            "zh-tw" | "zh_tw" | "zh-hant" | "zh-hant-tw" => Some(Locale::ZhTw),
+            "zh" | "zh-cn" | "zh-hans" => Some(Locale::Zh),
+            "ja" | "ja-jp" => Some(Locale::Ja),
+            "ko" | "ko-kr" => Some(Locale::Ko),
+            "de" | "de-de" => Some(Locale::De),
+            "fr" | "fr-fr" => Some(Locale::Fr),
+            "es" | "es-es" | "es-mx" => Some(Locale::Es),
+            _ => None,
+        };
+        match mapped {
+            Some(l) => DetectedLocale::Supported(l),
+            None => DetectedLocale::Unsupported {
+                tag: trimmed.to_string(),
+            },
+        }
+    }
 }
 
 impl fmt::Display for Locale {
@@ -140,5 +197,52 @@ mod tests {
     #[test]
     fn test_all_locales_count() {
         assert_eq!(Locale::ALL.len(), 8);
+    }
+
+    #[test]
+    fn test_display_name() {
+        assert_eq!(Locale::En.display_name(), "English");
+        assert_eq!(Locale::ZhTw.display_name(), "繁體中文");
+        assert_eq!(Locale::Ja.display_name(), "日本語");
+    }
+
+    #[test]
+    fn test_detected_locale_supported() {
+        assert_eq!(
+            DetectedLocale::from_bcp47("en"),
+            DetectedLocale::Supported(Locale::En)
+        );
+        assert_eq!(
+            DetectedLocale::from_bcp47("zh-TW"),
+            DetectedLocale::Supported(Locale::ZhTw)
+        );
+        assert_eq!(
+            DetectedLocale::from_bcp47("zh_tw"),
+            DetectedLocale::Supported(Locale::ZhTw)
+        );
+        assert_eq!(
+            DetectedLocale::from_bcp47("zh-Hant"),
+            DetectedLocale::Supported(Locale::ZhTw)
+        );
+        assert_eq!(
+            DetectedLocale::from_bcp47("zh-Hans"),
+            DetectedLocale::Supported(Locale::Zh)
+        );
+        assert_eq!(
+            DetectedLocale::from_bcp47("ja-JP"),
+            DetectedLocale::Supported(Locale::Ja)
+        );
+    }
+
+    #[test]
+    fn test_detected_locale_unsupported() {
+        match DetectedLocale::from_bcp47("pt") {
+            DetectedLocale::Unsupported { tag } => assert_eq!(tag, "pt"),
+            _ => panic!("expected Unsupported"),
+        }
+        match DetectedLocale::from_bcp47("it") {
+            DetectedLocale::Unsupported { tag } => assert_eq!(tag, "it"),
+            _ => panic!("expected Unsupported"),
+        }
     }
 }

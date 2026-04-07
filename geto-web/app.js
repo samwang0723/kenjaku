@@ -83,7 +83,10 @@ var progressBar = document.getElementById('progressBar');
 var debugInfo = document.getElementById('debugInfo');
 var scrollArea = document.getElementById('scrollArea');
 
-// ====== User Context (only preferred_locale) ======
+// ====== User Context ======
+// `locale` is only used for the autocomplete + top-searches endpoints,
+// which take an explicit locale. The /search endpoint auto-detects the
+// source locale from the query text via the LLM translator.
 var ctx = {
   locale: document.getElementById('ctxLocale'),
 };
@@ -513,7 +516,11 @@ function renderDebug(data) {
   var tags = [];
 
   if (m.intent)                        tags.push('<span class="tag tag-intent">' + escapeHtml(m.intent) + '</span>');
-  if (m.locale)                        tags.push('<span class="tag tag-lang">' + escapeHtml(String(m.locale).toUpperCase()) + '</span>');
+  if (m.locale) {
+    // detected_locale_source = 'llm_detected' (happy path) | 'fallback_en'
+    var localeSuffix = m.detected_locale_source === 'fallback_en' ? ' (fb)' : '';
+    tags.push('<span class="tag tag-lang">' + escapeHtml(String(m.locale).toUpperCase() + localeSuffix) + '</span>');
+  }
   if (m.retrieval_count !== undefined) tags.push('<span class="tag tag-tier">retrieved ' + m.retrieval_count + '</span>');
   if (m.latency_ms !== undefined)      tags.push('<span class="tag tag-time">' + m.latency_ms + 'ms</span>');
   if (m.preamble_latency_ms !== undefined) tags.push('<span class="tag tag-ttft">preamble ' + m.preamble_latency_ms + 'ms</span>');
@@ -547,9 +554,10 @@ async function doSearch(query, isFollowUp) {
   var requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
 
   try {
+    // No `locale` field — the backend translator auto-detects the source
+    // language from the query text and surfaces it in the SSE start event.
     var reqBody = {
       query: query,
-      locale: getLocale(),
       session_id: sessionId,
       request_id: requestId,
       streaming: true,
@@ -673,6 +681,7 @@ async function handleStreamResponse(resp, requestId) {
             original_query:   m.original_query || '',
             translated_query: m.translated_query || null,
             locale:           m.locale || '',
+            detected_locale_source: m.detected_locale_source || '',
             intent:           m.intent || 'unknown',
             retrieval_count:  m.retrieval_count || 0,
             latency_ms:       done.latency_ms || (Date.now() - streamStartTs),

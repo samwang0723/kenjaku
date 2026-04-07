@@ -4,9 +4,11 @@ use tracing::instrument;
 
 use kenjaku_core::error::Result;
 use kenjaku_core::traits::llm::LlmProvider;
+use kenjaku_core::types::search::TranslationResult;
 
-/// Service for translating non-English queries to English.
-/// Source language is auto-detected by the LLM.
+/// Service for normalizing user queries and detecting their source locale
+/// in a single LLM call. Returns canonical English (used for retrieval)
+/// AND the detected BCP-47 locale (used to pin the answer language).
 #[derive(Clone)]
 pub struct TranslationService {
     llm: Arc<dyn LlmProvider>,
@@ -17,9 +19,9 @@ impl TranslationService {
         Self { llm }
     }
 
-    /// Translate a query to English. The source language is auto-detected.
+    /// Run the LLM translator/normalizer/locale-detector on `query`.
     #[instrument(skip(self))]
-    pub async fn translate(&self, query: &str) -> Result<String> {
-        self.llm.translate(query, "en").await
+    pub async fn translate(&self, query: &str) -> Result<TranslationResult> {
+        self.llm.translate(query).await
     }
 }
