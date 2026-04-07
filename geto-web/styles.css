@@ -254,7 +254,7 @@ body {
 .pills-label {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: #C7A04A;
   margin-bottom: 10px;
   display: flex;
   align-items: center;
@@ -283,7 +283,7 @@ body {
   background: transparent;
   border: 1px solid rgba(255, 117, 145, 0.4);
   border-radius: 20px;
-  color: #C7A04A;
+  color: var(--text-primary);
   font-size: 14px;
   font-weight: 400;
   cursor: pointer;
