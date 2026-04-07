@@ -287,20 +287,30 @@ function inlineMarkdown(text) {
   safe = safe.replace(/__(.+?)__/g, '<strong>$1</strong>');
   safe = safe.replace(/\*(.+?)\*/g, '<em>$1</em>');
   safe = safe.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  // Replace `[Source 1]`, `[Source 1, 2]`, `[Source 1,2,3]` (etc.) with a small
-  // circular button that opens the existing sources bottom sheet. The captured
-  // group is restricted to digits/commas/spaces by the regex, so it is safe to
-  // interpolate without further escaping.
-  safe = safe.replace(/\[Source\s+(\d+(?:\s*,\s*\d+)*)\]/g, function(_, nums) {
-    var clean = nums.replace(/\s+/g, '');
-    var label = 'Source ' + clean;
-    return '<button type="button" class="source-ref" data-sources="' + clean +
-      '" onclick="openSourcesSheet()" title="' + label + '" aria-label="' + label + '">' +
-      '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">' +
-      '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>' +
-      '<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>' +
-      '</svg></button>';
-  });
+  // Replace source citation markers with a clickable chip. Handles every
+  // variant the LLM emits:
+  //   [Source 1]
+  //   [Source 1, 2, 3]
+  //   [Source 1,2,3]
+  //   [Source 1, Source 2]
+  //   [Source 1, Source 2, Source 3]
+  // The whole-match regex is restricted to digits/commas/whitespace plus the
+  // literal "Source" prefix, so the digits we extract from it are safe to
+  // interpolate without re-escaping.
+  safe = safe.replace(
+    /\[Source\s+\d+(?:\s*,\s*(?:Source\s+)?\d+)*\]/g,
+    function(match) {
+      var nums = match.match(/\d+/g) || [];
+      var clean = nums.join(',');
+      var label = 'Source ' + clean;
+      return '<button type="button" class="source-ref" data-sources="' + clean +
+        '" onclick="openSourcesSheet()" title="' + label + '" aria-label="' + label + '">' +
+        '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">' +
+        '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>' +
+        '<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>' +
+        '</svg></button>';
+    }
+  );
   return safe;
 }
 
