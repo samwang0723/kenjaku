@@ -214,10 +214,10 @@ fn is_artifact_line(line: &str) -> bool {
 
     // Bare URL line (e.g., "https://example.com" or "<https://...>")
     let url_candidate = t.trim_start_matches('<').trim_end_matches('>');
-    if url_candidate.starts_with("http://") || url_candidate.starts_with("https://") {
-        if !url_candidate.contains(' ') {
-            return true;
-        }
+    if (url_candidate.starts_with("http://") || url_candidate.starts_with("https://"))
+        && !url_candidate.contains(' ')
+    {
+        return true;
     }
 
     // Pure punctuation/bracket noise

@@ -140,10 +140,10 @@ fn discover_files_inner(dir: &Path, root: &Path) -> Vec<PathBuf> {
 
                 if canonical.is_dir() {
                     files.extend(discover_files_inner(&canonical, root));
-                } else if let Some(ext) = canonical.extension().and_then(|e| e.to_str()) {
-                    if supported_extensions.contains(&ext.to_lowercase().as_str()) {
-                        files.push(canonical);
-                    }
+                } else if let Some(ext) = canonical.extension().and_then(|e| e.to_str())
+                    && supported_extensions.contains(&ext.to_lowercase().as_str())
+                {
+                    files.push(canonical);
                 }
             }
         }

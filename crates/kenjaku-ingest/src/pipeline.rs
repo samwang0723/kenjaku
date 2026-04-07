@@ -48,7 +48,7 @@ fn title_from_url(url: &str) -> String {
         .ok()
         .and_then(|u| {
             u.path_segments()
-                .and_then(|segments| segments.last().map(String::from))
+                .and_then(|mut segments| segments.next_back().map(String::from))
                 .filter(|s| !s.is_empty())
                 .or_else(|| u.host_str().map(String::from))
         })
@@ -56,6 +56,7 @@ fn title_from_url(url: &str) -> String {
 }
 
 /// Process a single document: chunk -> contextualize -> embed -> store.
+#[allow(clippy::too_many_arguments)]
 async fn process_document(
     clients: &IngestClients,
     doc_id: &str,
@@ -134,6 +135,7 @@ async fn process_document(
 }
 
 /// Ingest documents from a URL by crawling.
+#[allow(clippy::too_many_arguments)]
 pub async fn ingest_url(
     config: &AppConfig,
     entry_url: &str,
