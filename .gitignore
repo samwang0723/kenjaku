@@ -11,6 +11,10 @@
 # Environment & Secrets
 .env
 
+# Claude Code project state — keep skills, ignore everything else
+.claude/*
+!.claude/skills/
+
 # OS
 .DS_Store
 Thumbs.db
