@@ -1,5 +1,5 @@
-use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 
 use kenjaku_core::config::RedisConfig;
 use kenjaku_core::error::{Error, Result};
@@ -26,12 +26,7 @@ impl RedisClient {
 
     /// Increment a query's score in the trending sorted set.
     /// Key format: `trending:{period}:{locale}:{date}`
-    pub async fn increment_trending(
-        &self,
-        key: &str,
-        query: &str,
-        ttl_secs: u64,
-    ) -> Result<()> {
+    pub async fn increment_trending(&self, key: &str, query: &str, ttl_secs: u64) -> Result<()> {
         let mut conn = self.conn.clone();
 
         // ZINCRBY key 1 member
@@ -63,11 +58,7 @@ impl RedisClient {
     }
 
     /// Get top entries from a trending sorted set.
-    pub async fn get_top_trending(
-        &self,
-        key: &str,
-        limit: usize,
-    ) -> Result<Vec<TrendingEntry>> {
+    pub async fn get_top_trending(&self, key: &str, limit: usize) -> Result<Vec<TrendingEntry>> {
         let mut conn = self.conn.clone();
 
         let results: Vec<(String, f64)> = redis::cmd("ZREVRANGE")

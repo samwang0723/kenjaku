@@ -130,7 +130,11 @@ impl From<SearchResponse> for SearchResponseDto {
         Self {
             request_id: resp.request_id,
             session_id: resp.session_id,
-            components: resp.components.into_iter().map(ComponentDto::from).collect(),
+            components: resp
+                .components
+                .into_iter()
+                .map(ComponentDto::from)
+                .collect(),
             metadata: SearchMetadataDto {
                 original_query: resp.metadata.original_query,
                 translated_query: resp.metadata.translated_query,

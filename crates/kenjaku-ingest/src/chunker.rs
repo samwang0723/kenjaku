@@ -7,7 +7,7 @@
 //!
 //! See Anthropic's Contextual Retrieval guide and OpenAI's cookbook.
 
-use tiktoken_rs::{cl100k_base, CoreBPE};
+use tiktoken_rs::{CoreBPE, cl100k_base};
 
 /// Chunk text into token-bounded segments with overlap, respecting sentence boundaries.
 ///
@@ -135,7 +135,11 @@ mod tests {
         // Build a long text that should definitely exceed 50 tokens.
         let text = "The quick brown fox jumps over the lazy dog. ".repeat(100);
         let chunks = chunk_text(&text, 50, 5);
-        assert!(chunks.len() > 1, "expected multiple chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() > 1,
+            "expected multiple chunks, got {}",
+            chunks.len()
+        );
 
         // Verify each chunk is within the budget (give small slack for decoding).
         let bpe = cl100k_base().unwrap();

@@ -230,8 +230,8 @@ fn is_artifact_line(line: &str) -> bool {
 /// HTML parser — good enough for known noise tags that rarely nest.
 fn strip_noise_tags(html: &str) -> String {
     const NOISE_TAGS: &[&str] = &[
-        "script", "style", "nav", "footer", "header", "aside", "form", "iframe", "noscript",
-        "svg", "template",
+        "script", "style", "nav", "footer", "header", "aside", "form", "iframe", "noscript", "svg",
+        "template",
     ];
 
     let mut result = html.to_string();

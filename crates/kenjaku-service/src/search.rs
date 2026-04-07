@@ -13,8 +13,8 @@ use kenjaku_core::types::component::SuggestionSource;
 use kenjaku_core::types::conversation::CreateConversation;
 use kenjaku_core::types::intent::Intent;
 use kenjaku_core::types::search::{
-    LlmSource, SearchMetadata, SearchRequest, SearchResponse, StreamChunk,
-    StreamDoneMetadata, StreamStartMetadata,
+    LlmSource, SearchMetadata, SearchRequest, SearchResponse, StreamChunk, StreamDoneMetadata,
+    StreamStartMetadata,
 };
 
 use crate::component::ComponentService;
@@ -114,19 +114,13 @@ impl SearchService {
         let llm_response = self.llm.generate(&search_query, &chunks).await?;
 
         // Step 5: Get suggestions (LLM first, fallback to Qdrant titles)
-        let suggestions = match self
-            .llm
-            .suggest(&search_query, &llm_response.answer)
-            .await
-        {
+        let suggestions = match self.llm.suggest(&search_query, &llm_response.answer).await {
             Ok(s) if s.len() >= self.suggestion_count => s[..self.suggestion_count].to_vec(),
-            _ => {
-                chunks
-                    .iter()
-                    .map(|c| c.title.clone())
-                    .take(self.suggestion_count)
-                    .collect()
-            }
+            _ => chunks
+                .iter()
+                .map(|c| c.title.clone())
+                .take(self.suggestion_count)
+                .collect(),
         };
 
         let suggestion_source = if suggestions.len() == self.suggestion_count {
@@ -136,11 +130,9 @@ impl SearchService {
         };
 
         // Step 6: Assemble components
-        let components = self.component_service.assemble(
-            &llm_response,
-            suggestions,
-            suggestion_source,
-        );
+        let components =
+            self.component_service
+                .assemble(&llm_response, suggestions, suggestion_source);
 
         // Step 7: Record trending (fire-and-forget)
         let _ = self
@@ -222,10 +214,7 @@ impl SearchService {
         request_id = %req.request_id,
         locale = %req.locale,
     ))]
-    pub async fn search_stream(
-        &self,
-        req: &SearchRequest,
-    ) -> Result<SearchStreamOutput> {
+    pub async fn search_stream(&self, req: &SearchRequest) -> Result<SearchStreamOutput> {
         let start = Instant::now();
 
         // Step 1 + 2: Classify intent AND translate/normalize in parallel.

@@ -3,12 +3,12 @@ pub mod handlers;
 pub mod middleware;
 pub mod router;
 
+use kenjaku_infra::qdrant::QdrantClient;
+use kenjaku_infra::redis::RedisClient;
 use kenjaku_service::autocomplete::AutocompleteService;
 use kenjaku_service::feedback::FeedbackService;
 use kenjaku_service::search::SearchService;
 use kenjaku_service::trending::TrendingService;
-use kenjaku_infra::qdrant::QdrantClient;
-use kenjaku_infra::redis::RedisClient;
 use sqlx::PgPool;
 
 /// Shared application state passed to all handlers.

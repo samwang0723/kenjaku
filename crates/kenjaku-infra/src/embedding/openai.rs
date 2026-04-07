@@ -112,7 +112,7 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn test_config(url: &str) -> EmbeddingConfig {
+    fn test_config(_url: &str) -> EmbeddingConfig {
         EmbeddingConfig {
             provider: "openai".to_string(),
             model: "text-embedding-3-small".to_string(),
@@ -150,7 +150,7 @@ mod tests {
             .await;
 
         let config = test_config(&server.uri());
-        let provider = OpenAiEmbeddingProvider {
+        let _provider = OpenAiEmbeddingProvider {
             client: Client::new(),
             config,
         };

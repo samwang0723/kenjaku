@@ -48,11 +48,7 @@ impl ClaudeContextualizer {
 #[async_trait]
 impl Contextualizer for ClaudeContextualizer {
     #[instrument(skip(self, document_content, chunk_content))]
-    async fn contextualize(
-        &self,
-        document_content: &str,
-        chunk_content: &str,
-    ) -> Result<String> {
+    async fn contextualize(&self, document_content: &str, chunk_content: &str) -> Result<String> {
         let doc_prompt = DOCUMENT_CONTEXT_PROMPT.replace("{doc_content}", document_content);
         let chunk_prompt = CHUNK_CONTEXT_PROMPT.replace("{chunk_content}", chunk_content);
 
@@ -163,6 +159,7 @@ enum ClaudeResponseBlock {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)] // Fields populated from API response, only some are read in logs.
 struct ClaudeUsage {
     input_tokens: u32,
     output_tokens: u32,

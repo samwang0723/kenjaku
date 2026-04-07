@@ -1,17 +1,17 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::extract::State;
-use axum::response::sse::{Event, Sse};
-use axum::response::IntoResponse;
 use axum::Json;
+use axum::extract::State;
+use axum::response::IntoResponse;
+use axum::response::sse::{Event, Sse};
 use futures::stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{error, info};
 
+use crate::AppState;
 use crate::dto::request::SearchRequestDto;
 use crate::dto::response::{ApiResponse, SearchResponseDto};
-use crate::AppState;
 
 use kenjaku_core::types::search::SearchRequest;
 use kenjaku_service::search::SearchStreamOutput;
@@ -105,12 +105,11 @@ async fn search_streaming(
             Err(e) => {
                 error!(request_id = %request_id, error = %e, "SSE search_stream failed");
                 let _ = tx
-                    .send(Ok(Event::default()
-                        .event("error")
-                        .data(format!(
-                            "{{\"error\":{}}}",
-                            serde_json::to_string(e.user_message()).unwrap_or_else(|_| "\"error\"".into())
-                        ))))
+                    .send(Ok(Event::default().event("error").data(format!(
+                        "{{\"error\":{}}}",
+                        serde_json::to_string(e.user_message())
+                            .unwrap_or_else(|_| "\"error\"".into())
+                    ))))
                     .await;
                 return;
             }
@@ -175,12 +174,10 @@ async fn search_streaming(
 
         if let Some(e) = stream_error {
             let _ = tx
-                .send(Ok(Event::default()
-                    .event("error")
-                    .data(format!(
-                        "{{\"error\":{}}}",
-                        serde_json::to_string(e.user_message()).unwrap_or_else(|_| "\"error\"".into())
-                    ))))
+                .send(Ok(Event::default().event("error").data(format!(
+                    "{{\"error\":{}}}",
+                    serde_json::to_string(e.user_message()).unwrap_or_else(|_| "\"error\"".into())
+                ))))
                 .await;
             return;
         }
@@ -191,8 +188,7 @@ async fn search_streaming(
             .complete_stream(context, &accumulated)
             .await;
 
-        let done_json = serde_json::to_string(&done_metadata)
-            .unwrap_or_else(|_| "{}".into());
+        let done_json = serde_json::to_string(&done_metadata).unwrap_or_else(|_| "{}".into());
         let _ = tx
             .send(Ok(Event::default().event("done").data(done_json)))
             .await;

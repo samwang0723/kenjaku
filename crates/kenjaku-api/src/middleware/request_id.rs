@@ -7,10 +7,7 @@ use uuid::Uuid;
 static X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
 /// Middleware that ensures every request has an X-Request-Id header.
-pub async fn ensure_request_id(
-    mut request: Request,
-    next: Next,
-) -> Response {
+pub async fn ensure_request_id(mut request: Request, next: Next) -> Response {
     if !request.headers().contains_key(&X_REQUEST_ID) {
         let request_id = Uuid::new_v4().to_string();
         request.headers_mut().insert(

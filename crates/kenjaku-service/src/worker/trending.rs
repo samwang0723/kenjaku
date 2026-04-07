@@ -56,8 +56,8 @@ impl TrendingFlushWorker {
                 let mut flushed = 0;
                 for entry in entries {
                     if entry.score >= self.config.popularity_threshold as f64 {
-                        if let Ok(date) = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
-                            .or_else(|_| {
+                        if let Ok(date) =
+                            NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").or_else(|_| {
                                 // Parse week format: 2026-W14
                                 let today = Utc::now().date_naive();
                                 Ok::<NaiveDate, chrono::ParseError>(today)

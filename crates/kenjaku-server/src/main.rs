@@ -7,7 +7,7 @@ use kenjaku_core::config::load_config;
 use kenjaku_infra::embedding::create_embedding_provider;
 use kenjaku_infra::llm::GeminiProvider;
 use kenjaku_infra::postgres::{
-    create_pool, run_migrations, ConversationRepository, FeedbackRepository, TrendingRepository,
+    ConversationRepository, FeedbackRepository, TrendingRepository, create_pool, run_migrations,
 };
 use kenjaku_infra::qdrant::QdrantClient;
 use kenjaku_infra::redis::RedisClient;
@@ -24,8 +24,8 @@ use kenjaku_service::translation::TranslationService;
 use kenjaku_service::trending::TrendingService;
 use kenjaku_service::worker::TrendingFlushWorker;
 
-use kenjaku_api::router::build_router;
 use kenjaku_api::AppState;
+use kenjaku_api::router::build_router;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -98,11 +98,8 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Spawn background workers
-    let flush_worker = TrendingFlushWorker::new(
-        redis.clone(),
-        trending_repo,
-        config.trending.clone(),
-    );
+    let flush_worker =
+        TrendingFlushWorker::new(redis.clone(), trending_repo, config.trending.clone());
     tokio::spawn(flush_worker.run());
     tokio::spawn(conversation_worker.run());
 

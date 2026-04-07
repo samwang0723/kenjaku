@@ -243,14 +243,8 @@ pub fn load_config() -> crate::error::Result<AppConfig> {
 
     let config = config::Config::builder()
         .add_source(config::File::with_name("config/base").required(true))
-        .add_source(
-            config::File::with_name(&format!("config/{app_env}"))
-                .required(false),
-        )
-        .add_source(
-            config::File::with_name(&format!("config/secrets.{app_env}"))
-                .required(false),
-        )
+        .add_source(config::File::with_name(&format!("config/{app_env}")).required(false))
+        .add_source(config::File::with_name(&format!("config/secrets.{app_env}")).required(false))
         .add_source(
             config::Environment::with_prefix("KENJAKU")
                 .separator("__")
@@ -327,7 +321,9 @@ contextualizer:
         let original_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
         // SAFETY: This is a single-threaded test; no other threads read APP_ENV.
-        unsafe { std::env::set_var("APP_ENV", "local"); }
+        unsafe {
+            std::env::set_var("APP_ENV", "local");
+        }
 
         let cfg = load_config().unwrap();
         assert_eq!(cfg.server.port, 8080);
@@ -335,7 +331,10 @@ contextualizer:
         assert_eq!(cfg.embedding.provider, "openai");
         assert_eq!(cfg.embedding.api_key, "sk-test-key");
         assert_eq!(cfg.llm.api_key, "gemini-test-key");
-        assert_eq!(cfg.postgres.url, "postgres://user:pass@localhost:5432/kenjaku");
+        assert_eq!(
+            cfg.postgres.url,
+            "postgres://user:pass@localhost:5432/kenjaku"
+        );
 
         // Validate secrets pass
         assert!(cfg.validate_secrets().is_ok());
@@ -348,17 +347,61 @@ contextualizer:
         // Test validate_secrets directly to avoid test isolation issues
         // with shared global state (current_dir, env vars).
         let cfg = AppConfig {
-            server: ServerConfig { host: "0.0.0.0".into(), port: 8080 },
-            qdrant: QdrantConfig { url: "http://localhost:6334".into(), collection_name: "docs".into(), vector_size: 1536 },
-            postgres: PostgresConfig { url: String::new(), max_connections: 10 },
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+            },
+            qdrant: QdrantConfig {
+                url: "http://localhost:6334".into(),
+                collection_name: "docs".into(),
+                vector_size: 1536,
+            },
+            postgres: PostgresConfig {
+                url: String::new(),
+                max_connections: 10,
+            },
             redis: RedisConfig { url: String::new() },
-            embedding: EmbeddingConfig { provider: "openai".into(), model: "m".into(), api_key: String::new(), dimensions: 1536, batch_size: 100 },
-            llm: LlmConfig { provider: "gemini".into(), model: "m".into(), api_key: String::new(), max_tokens: 2048, temperature: 0.7 },
-            contextualizer: ContextualizerConfig { provider: "anthropic".into(), model: "m".into(), api_key: String::new() },
-            trending: TrendingConfig { popularity_threshold: 5, flush_interval_secs: 300, daily_ttl_secs: 172800, weekly_ttl_secs: 1209600 },
-            chunking: ChunkingConfig { chunk_size: 512, chunk_overlap: 50 },
-            search: SearchConfig { semantic_weight: 0.8, bm25_weight: 0.2, over_retrieve_factor: 10, component_layout: ComponentLayout::default(), suggestion_count: 3 },
-            telemetry: TelemetryConfig { service_name: "kenjaku".into(), otlp_endpoint: None, log_level: "info".into() },
+            embedding: EmbeddingConfig {
+                provider: "openai".into(),
+                model: "m".into(),
+                api_key: String::new(),
+                dimensions: 1536,
+                batch_size: 100,
+            },
+            llm: LlmConfig {
+                provider: "gemini".into(),
+                model: "m".into(),
+                api_key: String::new(),
+                max_tokens: 2048,
+                temperature: 0.7,
+            },
+            contextualizer: ContextualizerConfig {
+                provider: "anthropic".into(),
+                model: "m".into(),
+                api_key: String::new(),
+            },
+            trending: TrendingConfig {
+                popularity_threshold: 5,
+                flush_interval_secs: 300,
+                daily_ttl_secs: 172800,
+                weekly_ttl_secs: 1209600,
+            },
+            chunking: ChunkingConfig {
+                chunk_size: 512,
+                chunk_overlap: 50,
+            },
+            search: SearchConfig {
+                semantic_weight: 0.8,
+                bm25_weight: 0.2,
+                over_retrieve_factor: 10,
+                component_layout: ComponentLayout::default(),
+                suggestion_count: 3,
+            },
+            telemetry: TelemetryConfig {
+                service_name: "kenjaku".into(),
+                otlp_endpoint: None,
+                log_level: "info".into(),
+            },
         };
 
         let result = cfg.validate_secrets();
@@ -374,17 +417,63 @@ contextualizer:
     #[test]
     fn test_validate_secrets_passes_when_set() {
         let cfg = AppConfig {
-            server: ServerConfig { host: "0.0.0.0".into(), port: 8080 },
-            qdrant: QdrantConfig { url: "http://localhost:6334".into(), collection_name: "docs".into(), vector_size: 1536 },
-            postgres: PostgresConfig { url: "postgres://u:p@localhost/db".into(), max_connections: 10 },
-            redis: RedisConfig { url: "redis://localhost:6379".into() },
-            embedding: EmbeddingConfig { provider: "openai".into(), model: "m".into(), api_key: "sk-key".into(), dimensions: 1536, batch_size: 100 },
-            llm: LlmConfig { provider: "gemini".into(), model: "m".into(), api_key: "gm-key".into(), max_tokens: 2048, temperature: 0.7 },
-            contextualizer: ContextualizerConfig { provider: "anthropic".into(), model: "m".into(), api_key: "sk-ant-key".into() },
-            trending: TrendingConfig { popularity_threshold: 5, flush_interval_secs: 300, daily_ttl_secs: 172800, weekly_ttl_secs: 1209600 },
-            chunking: ChunkingConfig { chunk_size: 512, chunk_overlap: 50 },
-            search: SearchConfig { semantic_weight: 0.8, bm25_weight: 0.2, over_retrieve_factor: 10, component_layout: ComponentLayout::default(), suggestion_count: 3 },
-            telemetry: TelemetryConfig { service_name: "kenjaku".into(), otlp_endpoint: None, log_level: "info".into() },
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+            },
+            qdrant: QdrantConfig {
+                url: "http://localhost:6334".into(),
+                collection_name: "docs".into(),
+                vector_size: 1536,
+            },
+            postgres: PostgresConfig {
+                url: "postgres://u:p@localhost/db".into(),
+                max_connections: 10,
+            },
+            redis: RedisConfig {
+                url: "redis://localhost:6379".into(),
+            },
+            embedding: EmbeddingConfig {
+                provider: "openai".into(),
+                model: "m".into(),
+                api_key: "sk-key".into(),
+                dimensions: 1536,
+                batch_size: 100,
+            },
+            llm: LlmConfig {
+                provider: "gemini".into(),
+                model: "m".into(),
+                api_key: "gm-key".into(),
+                max_tokens: 2048,
+                temperature: 0.7,
+            },
+            contextualizer: ContextualizerConfig {
+                provider: "anthropic".into(),
+                model: "m".into(),
+                api_key: "sk-ant-key".into(),
+            },
+            trending: TrendingConfig {
+                popularity_threshold: 5,
+                flush_interval_secs: 300,
+                daily_ttl_secs: 172800,
+                weekly_ttl_secs: 1209600,
+            },
+            chunking: ChunkingConfig {
+                chunk_size: 512,
+                chunk_overlap: 50,
+            },
+            search: SearchConfig {
+                semantic_weight: 0.8,
+                bm25_weight: 0.2,
+                over_retrieve_factor: 10,
+                component_layout: ComponentLayout::default(),
+                suggestion_count: 3,
+            },
+            telemetry: TelemetryConfig {
+                service_name: "kenjaku".into(),
+                otlp_endpoint: None,
+                log_level: "info".into(),
+            },
         };
 
         assert!(cfg.validate_secrets().is_ok());

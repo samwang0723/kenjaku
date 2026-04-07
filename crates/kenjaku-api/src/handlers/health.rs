@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 
-use crate::dto::response::{ApiResponse, HealthResponseDto, ReadyCheckDto, ReadyResponseDto};
 use crate::AppState;
+use crate::dto::response::{ApiResponse, HealthResponseDto, ReadyCheckDto, ReadyResponseDto};
 
 /// GET /health
 pub async fn health() -> Json<ApiResponse<HealthResponseDto>> {
@@ -15,9 +15,7 @@ pub async fn health() -> Json<ApiResponse<HealthResponseDto>> {
 }
 
 /// GET /ready
-pub async fn ready(
-    State(state): State<Arc<AppState>>,
-) -> Json<ApiResponse<ReadyResponseDto>> {
+pub async fn ready(State(state): State<Arc<AppState>>) -> Json<ApiResponse<ReadyResponseDto>> {
     let mut checks = Vec::new();
     let mut all_ok = true;
 

@@ -62,22 +62,13 @@ impl GeminiProvider {
 #[async_trait]
 impl LlmProvider for GeminiProvider {
     #[instrument(skip(self, context), fields(model = %self.config.model))]
-    async fn generate(
-        &self,
-        query: &str,
-        context: &[RetrievedChunk],
-    ) -> Result<LlmResponse> {
+    async fn generate(&self, query: &str, context: &[RetrievedChunk]) -> Result<LlmResponse> {
         // When context is empty (e.g., intent classification, simple completion),
         // skip the google_search grounding tool — it adds 1-3s of latency we don't need.
         // Also use a small max_tokens cap since these calls produce short outputs.
         let no_context = context.is_empty();
         let (prompt, tools, max_tokens, temperature) = if no_context {
-            (
-                query.to_string(),
-                None,
-                256u32,
-                0.0_f32,
-            )
+            (query.to_string(), None, 256u32, 0.0_f32)
         } else {
             let context_str = Self::build_context(context);
             (
@@ -360,11 +351,7 @@ impl LlmProvider for GeminiProvider {
     }
 
     #[instrument(skip(self))]
-    async fn suggest(
-        &self,
-        query: &str,
-        answer: &str,
-    ) -> Result<Vec<String>> {
+    async fn suggest(&self, query: &str, answer: &str) -> Result<Vec<String>> {
         let prompt = format!(
             "Based on the following question and answer, suggest exactly 3 follow-up questions \
             the user might want to ask. Return them as a JSON array of strings.\n\n\
