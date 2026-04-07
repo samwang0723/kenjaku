@@ -55,6 +55,17 @@ docker-restart:
 docker-ps:
 	docker compose ps
 
+# ── geto-web (visual frontend) ─────────────────────────────────
+geto-web-build:
+	docker compose build geto-web
+
+geto-web-up: geto-web-build
+	docker compose up -d geto-web
+	@echo "geto-web available at http://localhost:3000"
+
+geto-web-logs:
+	docker compose logs -f geto-web
+
 # Run tests inside docker (infra must be up)
 docker-test:
 	docker compose up -d qdrant postgres redis

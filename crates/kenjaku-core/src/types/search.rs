@@ -88,12 +88,38 @@ pub struct LlmUsage {
     pub total_tokens: u32,
 }
 
-/// A single SSE stream chunk.
+/// A single SSE stream chunk (text delta).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamChunk {
     pub delta: String,
     pub chunk_type: StreamChunkType,
     pub finished: bool,
+}
+
+/// Metadata sent at the START of a streaming search — everything we know
+/// before the LLM begins producing tokens. Allows the client to populate its
+/// debug panel immediately.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamStartMetadata {
+    pub request_id: String,
+    pub session_id: String,
+    pub original_query: String,
+    pub translated_query: Option<String>,
+    pub locale: super::locale::Locale,
+    pub intent: super::intent::Intent,
+    pub retrieval_count: usize,
+    pub preamble_latency_ms: u64,
+}
+
+/// Metadata sent at the END of a streaming search — total latency and
+/// auxiliary components (sources, suggestions) that weren't part of the
+/// token stream.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamDoneMetadata {
+    pub latency_ms: u64,
+    pub sources: Vec<LlmSource>,
+    pub suggestions: Vec<String>,
+    pub llm_model: String,
 }
 
 /// Type of content in a stream chunk.

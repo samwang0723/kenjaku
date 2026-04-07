@@ -73,6 +73,17 @@ services:
       start_period: 5s
       retries: 3
 
+  geto-web:
+    build:
+      context: ./geto-web
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      kenjaku:
+        condition: service_healthy
+    restart: unless-stopped
+
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.120.0
     ports:
