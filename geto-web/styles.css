@@ -39,21 +39,30 @@
   font-family: inherit;
 }
 
+/* Theme: Suguru Geto (Jujutsu Kaisen) — deep indigo robes, forest-green
+   tabard, gold trim, parchment cream highlights. */
 :root {
-  --bg-primary: #0B1426;
-  --bg-card: #131E30;
-  --bg-input: #1A2538;
-  --border: #1E2D42;
-  --text-primary: #E8EAED;
-  --text-secondary: #8899AA;
-  --text-muted: #5F6F80;
-  --accent-blue: #4A8CFF;
-  --accent-green: #34C759;
-  --accent-red: #FF3B30;
-  --accent-purple: #7B68EE;
-  --accent-orange: #FF8A00;
-  --query-gradient-start: #7AA2F7;
-  --query-gradient-end: #A78BFA;
+  /* Indigo robe (primary background, depths) */
+  --bg-primary: #161A36;       /* deepest navy */
+  --bg-card:    #1F2549;       /* indigo robe */
+  --bg-input:   #272E5A;       /* slightly lifted indigo */
+  --border:     #2E366A;       /* indigo seam */
+
+  /* Parchment / pale skin tones for text */
+  --text-primary:   #F1ECDB;   /* warm cream */
+  --text-secondary: #B0A88A;   /* faded gold */
+  --text-muted:     #6E6A55;   /* dull olive */
+
+  /* Forest-green tabard + gold trim accents */
+  --accent-blue:   #4F7A55;    /* tabard green (used as primary accent) */
+  --accent-green:  #6FA265;    /* highlight green */
+  --accent-red:    #C04A4A;    /* sash red */
+  --accent-purple: #7A6BAA;    /* night-sky violet (compat) */
+  --accent-orange: #C7A04A;    /* gold trim */
+
+  /* Query echo gradient (cream → gold) */
+  --query-gradient-start: #F1ECDB;
+  --query-gradient-end:   #C7A04A;
 }
 
 body {
@@ -587,9 +596,9 @@ body {
   transition: all 0.15s;
 }
 .time-pill.active {
-  background: rgba(17,153,250,0.15);
-  color: #1199FA;
-  border-color: #1199FA;
+  background: rgba(199, 160, 74, 0.15);
+  color: var(--accent-orange);
+  border-color: var(--accent-orange);
 }
 .time-pill:not(.active):hover {
   background: rgba(255,255,255,0.08);
@@ -623,11 +632,11 @@ body {
   border: 1px solid var(--border);
 }
 .asset-action-btn.buy {
-  background: #1199FA;
-  color: #fff;
+  background: var(--accent-orange);
+  color: var(--bg-primary);
 }
 .asset-action-btn.view:hover { background: rgba(255,255,255,0.1); }
-.asset-action-btn.buy:hover { background: #3A7CE6; }
+.asset-action-btn.buy:hover { background: #D9B254; }
 
 /* Multi-card grid */
 .asset-grid {
