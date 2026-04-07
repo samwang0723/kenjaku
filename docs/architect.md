@@ -280,23 +280,27 @@ flowchart LR
     end
 
     subgraph Processing
-        PARSE["Parse<br/>md/txt/html"]
-        CHUNK["Sentence-Aware<br/>Chunking"]
-        CTX["Contextualize<br/>via Claude"]
-        EMBED["Embed<br/>via OpenAI"]
+        CLEAN["Strip Noise Tags<br/>script/style/nav/..."]
+        MD["HTML -> Markdown<br/>(html2md)"]
+        CHUNK["Token Chunking<br/>(tiktoken cl100k)<br/>800 tok / 100 overlap"]
+        CTX["Contextualize<br/>via Claude Haiku<br/>(prompt caching)"]
+        EMBED["Embed<br/>via OpenAI<br/>text-embedding-3-small"]
     end
 
     subgraph Storage
         QD[(Qdrant)]
     end
 
-    URL --> PARSE
-    DIR --> PARSE
-    PARSE --> CHUNK
+    URL --> CLEAN
+    DIR --> CLEAN
+    CLEAN --> MD
+    MD --> CHUNK
     CHUNK --> CTX
     CTX --> EMBED
     EMBED --> QD
 ```
+
+The URL crawler includes SSRF protection: a private-IP blocklist (RFC1918, loopback, link-local, CG-NAT), DNS resolution check before every fetch, and `redirect::Policy::none()` to prevent redirect-based bypass.
 
 ### 6.2 Query Pipeline
 
@@ -478,6 +482,26 @@ graph TB
     SVC --> LLM
 ```
 
+## 9.1 Implemented Hardening (post-review)
+
+The first review round identified these production gaps. All have been addressed:
+
+- **Query length cap** (2000 chars), **top_k cap** (100), **autocomplete/top-searches limit caps** — enforced at API boundary
+- **Rate limiting** via `tower_governor` (60 req/min per IP, `SmartIpKeyExtractor`)
+- **Request body limit** (64KB) via `RequestBodyLimitLayer`
+- **Request timeout** (30s) via `TimeoutLayer`
+- **Error sanitization** — `Error::user_message()` returns safe strings; never leaks DB URLs, API errors, or internals
+- **SSRF protection** in URL crawler (private-IP blocklist + DNS check + no-redirect)
+- **Prompt injection defense** — user text isolated in `<text>`/`<query>` XML tags with "ignore instructions inside" preambles in both the intent classifier and translator
+- **Redis SCAN** replaces the original `KEYS` call in the trending flush worker
+- **Secrets validation** at startup via `AppConfig::validate_secrets()`
+- **Migrations** — sqlx flat-file format with conversations table
+
+Still deferred (accepted by operator):
+- API authentication (next phase)
+- Gemini API key in URL query param (Google API design)
+- Conversation PII retention policy
+
 ## 10. Key Decision Records
 
 ### ADR-001: Qdrant for Vector + Full-Text Search
@@ -524,4 +548,22 @@ graph TB
 | PostgreSQL connections | Default pool of 10 | Increase + use PgBouncer in transaction mode |
 | Single-process | Limited to one server | Deploy N replicas — all state in external stores |
 
-**Projected capacity**: ~500-1000 QPS (limited by LLM latency). With caching + parallel intent/translation: ~2000 QPS.
+**Projected capacity**: ~500-1000 QPS (limited by LLM latency). Intent classification and query normalization already run in parallel via `tokio::join!` in `SearchService::search`. With query-result caching layered on top, projected ~2000 QPS.
+
+## 12. Measured Latency (post-optimization)
+
+Test query: *"What rewards do I get with the Crypto.com prepaid card?"* against the ingested help.crypto.com corpus (64 chunks, depth=1).
+
+| Metric | Non-streaming | Streaming (SSE) |
+|--------|---------------|-----------------|
+| TTFT | n/a | ~3.7s |
+| Total time | ~6.8s | ~5.4s |
+| Observed user experience | single JSON dump | tokens flow live |
+
+Pipeline breakdown (streaming):
+1. `max(intent_classify, translate)` in parallel — ~1.5s (translator is the bottleneck since it's slightly slower than intent classify)
+2. Hybrid retrieve (vector + BM25 parallel via `try_join!`) — ~0.5s
+3. Open Gemini `streamGenerateContent` connection — ~1.7s to first byte
+4. Stream token deltas — ~1.7s for a typical answer
+
+The intent classifier was previously the bottleneck at ~5s because every call sent the `google_search` grounding tool. Fix: `GeminiProvider::generate()` detects an empty context slice and skips the tool entirely, dropping intent classify to ~1s.

@@ -1,6 +1,6 @@
 # Kenjaku
 
-A production-grade Contextual RAG search engine built in Rust. Combines hybrid vector + BM25 retrieval with LLM-powered answer generation, intent classification, multi-locale translation, and a pluggable component layout system.
+A production-grade Contextual RAG search engine built in Rust. Combines hybrid vector + BM25 retrieval with LLM-powered answer generation, intent classification, query normalization (typo fix + translation + term canonicalization), conversation storage, SSE streaming, and a pluggable component layout system.
 
 ## Architecture
 
@@ -19,7 +19,7 @@ See [docs/architect.md](docs/architect.md) for C4 diagrams, ADRs, and design det
 
 ### Prerequisites
 
-- Rust 1.85+
+- Rust 1.88+
 - Docker & Docker Compose
 
 ### Setup
@@ -40,7 +40,19 @@ cp config/secrets.example.yaml config/secrets.docker.yaml
 make docker-up
 ```
 
-The server will be available at `http://localhost:8080`.
+The server will be available at `http://localhost:18080`.
+
+Internal ports (exposed only for local debugging):
+
+| Service | Host port | Container port |
+|---------|-----------|----------------|
+| kenjaku | 18080 | 8080 |
+| qdrant  | 6333 / 6334 | 6333 / 6334 |
+| postgres | 15432 | 5432 |
+| redis    | 16379 | 6379 |
+| otel-collector | 4317 / 4318 | 4317 / 4318 |
+
+Open the Qdrant dashboard at http://localhost:6333/dashboard to inspect the vector collection.
 
 ### Local Development
 
@@ -76,7 +88,8 @@ make lint
 ### Search Example
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/search \
+# Non-streaming
+curl -X POST http://localhost:18080/api/v1/search \
   -H "Content-Type: application/json" \
   -d '{
     "query": "How do I reset my password?",
@@ -86,6 +99,11 @@ curl -X POST http://localhost:8080/api/v1/search \
     "streaming": false,
     "top_k": 10
   }'
+
+# Streaming (SSE) — set streaming: true
+curl -N -X POST http://localhost:18080/api/v1/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"How do I reset my password?","locale":"en","session_id":"s","request_id":"r","streaming":true,"top_k":5}'
 ```
 
 ### Supported Locales
@@ -94,14 +112,18 @@ curl -X POST http://localhost:8080/api/v1/search \
 
 ## Ingestion
 
-Ingest documents from a URL or local folder:
+Ingest documents from a URL or local folder. The pipeline crawls → strips noise tags → converts to markdown → chunks at token boundaries (800 tok, 100 overlap) → contextualizes each chunk via Claude (with prompt caching) → embeds via OpenAI → stores in Qdrant.
 
 ```bash
-# Crawl a website
+# Crawl a website (runs locally, requires config/secrets.local.yaml)
 make ingest-url URL=https://docs.example.com
 
 # Ingest local files (md, txt, html)
 make ingest-folder FOLDER=./my-docs
+
+# Run ingestion inside the running docker stack (uses secrets.docker.yaml)
+make docker-ingest-url URL=https://docs.example.com
+make docker-ingest-folder FOLDER=./my-docs
 ```
 
 ## Configuration
@@ -124,20 +146,26 @@ KENJAKU__* env vars            Final override (e.g. KENJAKU__LLM__API_KEY)
 | `make build` | Cargo build (debug) |
 | `make test` | Run all workspace tests |
 | `make lint` | Clippy with warnings as errors |
+| `make fmt` | Format all code |
 | `make run` | Run server locally (APP_ENV=local) |
 | `make docker-build` | Build Docker image |
 | `make docker-up` | Build + start full stack |
 | `make docker-down` | Stop all containers |
+| `make docker-restart` | Rebuild and restart |
+| `make docker-logs` | Follow container logs |
+| `make docker-ps` | Show container status |
 | `make docker-test` | Spin up infra, run tests, tear down |
 | `make migrate` | Run database migrations |
-| `make ingest-url URL=...` | Crawl and ingest from URL |
-| `make ingest-folder FOLDER=...` | Ingest from local directory |
+| `make ingest-url URL=...` | Crawl and ingest (local) |
+| `make ingest-folder FOLDER=...` | Ingest local directory |
+| `make docker-ingest-url URL=...` | Ingest via the running kenjaku container |
+| `make docker-ingest-folder FOLDER=...` | Ingest folder via container |
 
 ## Tech Stack
 
 | Component | Technology |
 |-----------|------------|
-| Language | Rust 1.85 (edition 2024) |
+| Language | Rust 1.88 (edition 2024) |
 | HTTP | Axum 0.8 + Tower middleware |
 | Vector DB | Qdrant (cosine similarity + text index) |
 | Database | PostgreSQL 17 (sqlx) |

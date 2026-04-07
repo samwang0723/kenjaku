@@ -20,7 +20,7 @@ Run tests for one crate: `cargo test -p kenjaku-service`
 
 ## Architecture
 
-Rust workspace (edition 2024, MSRV 1.85) with 6 crates in a strict DAG:
+Rust workspace (edition 2024, MSRV 1.88) with 6 crates in a strict DAG:
 
 ```
 core ← infra ← service ← api ← server
@@ -28,26 +28,27 @@ core ← infra ← service ← api ← server
                   ingest ──────────┘
 ```
 
-- **kenjaku-core** — Domain types (`Locale`, `Intent`, `Component`, `SearchRequest`), traits (`EmbeddingProvider`, `LlmProvider`, `IntentClassifier`, `Retriever`), config loader, error types. Zero external service dependencies.
+- **kenjaku-core** — Domain types (`Locale`, `Intent`, `Component`, `SearchRequest`, `Conversation`), traits (`EmbeddingProvider`, `LlmProvider`, `Contextualizer`, `IntentClassifier`, `Retriever`), config loader, error types. Zero external service dependencies.
 - **kenjaku-infra** — Implements core traits: `OpenAiEmbeddingProvider`, `GeminiProvider`, `ClaudeContextualizer`, `QdrantClient`, `RedisClient`, PostgreSQL repos. All external I/O lives here.
 - **kenjaku-service** — Business logic. `SearchService` orchestrates the RAG pipeline. `HybridRetriever` merges vector + BM25 via RRF. Background workers flush trending/conversations async.
 - **kenjaku-api** — Axum handlers, DTOs, router with rate limiting (`tower_governor`), body limit, timeout. Converts between DTOs and domain types.
 - **kenjaku-server** — Binary. Wires DI, spawns workers, graceful shutdown.
-- **kenjaku-ingest** — CLI binary. URL crawling + folder parsing + chunking.
+- **kenjaku-ingest** — CLI binary. Crawls URLs, strips HTML noise, converts to markdown via `html2md`, token-chunks via `tiktoken-rs` (cl100k_base), contextualizes via Claude, embeds via OpenAI, upserts to Qdrant.
 
 **Key rule**: Service layer depends only on `Arc<dyn Trait>`, never on concrete infra types.
 
 ## Search Pipeline (SearchService::search)
 
-1. Intent classification (LLM-based, defaults to `Unknown` on failure)
-2. Translation to English (if `locale.needs_translation()`)
-3. Hybrid retrieval (vector + BM25 in parallel via `tokio::try_join!`)
-4. RRF reranking (weighted merge)
-5. LLM answer generation (Gemini with google_search grounding)
-6. Suggestion generation (LLM fallback to document titles)
-7. Component assembly (configurable layout order from YAML)
-8. Trending recording (fire-and-forget to Redis)
-9. Conversation queuing (mpsc channel → background batch insert to PostgreSQL)
+1 & 2. **Intent classification + query normalization in parallel** via `tokio::join!`. The translator is also a normalizer: it auto-detects source language, fixes typos, canonicalizes domain terminology, and runs on every query (including English). Both failures degrade gracefully to raw query + `Unknown` intent.
+3. Hybrid retrieval — vector and BM25 full-text searched in parallel via `tokio::try_join!` in `HybridRetriever`.
+4. RRF reranking (weighted merge, 80/20 semantic/lexical by default).
+5. LLM answer generation — Gemini with `google_search` grounding tool (only when context is non-empty).
+6. Suggestion generation (LLM fallback to document titles).
+7. Component assembly (configurable layout order from YAML).
+8. Trending recording (fire-and-forget to Redis).
+9. Conversation queuing (mpsc channel → background batch insert to PostgreSQL).
+
+**Gemini provider optimization**: `LlmProvider::generate()` detects empty context (intent classifier, suggest, etc.) and skips the `google_search` tool + caps `max_tokens` to 256. This dropped intent classification from ~5s to ~1s.
 
 ## Error Handling
 
@@ -59,9 +60,19 @@ core ← infra ← service ← api ← server
 
 ## Type Conventions
 
-- `Locale` enum (en/zh/zh-TW/ja/ko/de/fr/es) — validated at API boundary via `FromStr`, used throughout as typed enum, serialized as BCP-47 tags.
+- `Locale` enum (en/zh/zh-TW/ja/ko/de/fr/es) — validated at API boundary via `FromStr`, used throughout as typed enum, serialized as BCP-47 tags. Note: the translator ignores `locale` and auto-detects the source language instead.
 - `Intent` enum — classified per query, stored in metadata and conversations, serialized as snake_case.
 - `Component` enum (tagged `#[serde(tag = "type")]`) — response layout order configured via `search.component_layout.order` in YAML.
+
+## Ingest Pipeline
+
+`kenjaku-ingest` is a full pipeline (not a scaffold). Commands: `make docker-ingest-url URL=...` or `make docker-ingest-folder FOLDER=...` to run inside the running container.
+
+Chunking defaults: **800 tokens** per chunk, **100 token overlap**, cl100k_base tokenizer (matches OpenAI embeddings). Configurable via `--chunk-size` / `--chunk-overlap` CLI flags or `config/base.yaml`.
+
+HTML extraction: strips `<script>/<style>/<nav>/<footer>/<header>/<aside>/<form>/<iframe>/<svg>/<noscript>/<template>` tags, selects `<main>` or `<article>` or `<body>`, converts to clean markdown via `html2md`, drops bare URLs and empty link/image artifacts.
+
+SSRF protection: private IP blocklist (RFC1918, loopback, link-local, CG-NAT), DNS resolution check before every fetch, `redirect::Policy::none()`.
 
 ## Async Patterns
 
@@ -71,4 +82,8 @@ Two fire-and-forget pipelines decouple the search hot path from persistence:
 
 ## Input Validation Bounds
 
-Query: max 2000 chars. `top_k`: max 100. Autocomplete limit: max 50. Top-searches limit: max 100. Rate limit: 60 req/min per IP. Body limit: 64KB. Request timeout: 30s.
+Query: max 2000 chars. `top_k`: max 100. Autocomplete limit: max 50. Top-searches limit: max 100. Rate limit: 60 req/min per IP via `tower_governor` with `SmartIpKeyExtractor` (requires `into_make_service_with_connect_info::<SocketAddr>()` on the listener to expose the peer address). Body limit: 64KB. Request timeout: 30s.
+
+## SSE Streaming
+
+The streaming path uses the `eventsource-stream` crate to parse Gemini's SSE response (do NOT hand-roll — Gemini's separators vary, and the manual parser was buggy). The handler spawns a tokio task that feeds events into a `mpsc::channel(100)`, and the response is `Sse::new(ReceiverStream::new(rx))`. Errors in the spawned task are logged AND sent as `event: error` SSE events so the client sees them.
