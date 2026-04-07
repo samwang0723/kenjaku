@@ -17,7 +17,12 @@ impl FeedbackRepository {
         Self { pool }
     }
 
-    /// Create a new feedback entry.
+    /// Create or update feedback for a (session_id, request_id) pair.
+    ///
+    /// The first like/dislike/cancel on an answer inserts a row; any
+    /// subsequent click on the same answer updates the existing row in
+    /// place (action, reason, description, timestamp). Enforced by the
+    /// `idx_feedback_session_request_unique` index.
     pub async fn create(&self, req: &CreateFeedbackRequest) -> Result<Feedback> {
         let id = Uuid::new_v4();
         let action_str = req.action.to_string();
@@ -26,6 +31,11 @@ impl FeedbackRepository {
             r#"
             INSERT INTO feedback (id, session_id, request_id, action, reason_category_id, description)
             VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (session_id, request_id) DO UPDATE SET
+                action = EXCLUDED.action,
+                reason_category_id = EXCLUDED.reason_category_id,
+                description = EXCLUDED.description,
+                created_at = NOW()
             RETURNING id, session_id, request_id, action, reason_category_id, description, created_at
             "#,
         )
@@ -37,7 +47,7 @@ impl FeedbackRepository {
         .bind(&req.description)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| Error::Database(format!("Failed to create feedback: {e}")))?;
+        .map_err(|e| Error::Database(format!("Failed to upsert feedback: {e}")))?;
 
         row_to_feedback(&row)
     }
