@@ -12,6 +12,7 @@ use kenjaku_infra::postgres::{
 use kenjaku_infra::qdrant::QdrantClient;
 use kenjaku_infra::redis::RedisClient;
 use kenjaku_infra::telemetry::init_telemetry;
+use kenjaku_infra::title_resolver::TitleResolver;
 
 use kenjaku_service::autocomplete::AutocompleteService;
 use kenjaku_service::component::ComponentService;
@@ -89,6 +90,10 @@ async fn main() -> anyhow::Result<()> {
     let (conversation_service, conversation_worker) =
         ConversationService::new(conversation_repo, 1024);
 
+    // Title resolver: resolves Gemini google_search redirect URLs into
+    // real page titles, with Redis-backed caching.
+    let title_resolver = Arc::new(TitleResolver::new(Some(redis.connection_manager())));
+
     let search_service = SearchService::new(
         retriever,
         llm_provider,
@@ -97,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
         translation_service,
         trending_service.clone(),
         conversation_service,
+        Some(title_resolver),
         config.qdrant.collection_name.clone(),
         config.search.suggestion_count,
     );

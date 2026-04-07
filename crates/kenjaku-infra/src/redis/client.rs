@@ -12,6 +12,13 @@ pub struct RedisClient {
 }
 
 impl RedisClient {
+    /// Borrow the underlying connection manager. Useful when another
+    /// component (e.g. `TitleResolver`) wants its own cached commands
+    /// without going through the wrapper API.
+    pub fn connection_manager(&self) -> ConnectionManager {
+        self.conn.clone()
+    }
+
     /// Create a new Redis client.
     pub async fn new(config: &RedisConfig) -> Result<Self> {
         let client = redis::Client::open(config.url.as_str())

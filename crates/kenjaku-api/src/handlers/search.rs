@@ -138,8 +138,11 @@ async fn search_streaming(
             return; // client disconnected
         }
 
-        // Stream token deltas.
+        // Stream token deltas. We also harvest any google_search grounding
+        // sources Gemini attaches to the final event(s) so the `done`
+        // payload can show them alongside the internal chunk sources.
         let mut accumulated = String::new();
+        let mut grounding_sources: Vec<kenjaku_core::types::search::LlmSource> = Vec::new();
         let mut stream_error: Option<kenjaku_core::error::Error> = None;
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
@@ -158,6 +161,9 @@ async fn search_streaming(
                             info!(request_id = %request_id, "SSE client disconnected mid-stream");
                             return;
                         }
+                    }
+                    if let Some(g) = chunk.grounding {
+                        grounding_sources.extend(g);
                     }
                     if chunk.finished {
                         break;
@@ -182,10 +188,11 @@ async fn search_streaming(
             return;
         }
 
-        // Compute final done metadata (suggestions + latency) and persist conversation.
+        // Compute final done metadata (suggestions + latency, plus
+        // resolved+merged grounding sources) and persist conversation.
         let done_metadata = state
             .search_service
-            .complete_stream(context, &accumulated)
+            .complete_stream(context, &accumulated, grounding_sources)
             .await;
 
         let done_json = serde_json::to_string(&done_metadata).unwrap_or_else(|_| "{}".into());

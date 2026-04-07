@@ -47,12 +47,23 @@ impl GeminiProvider {
     }
 
     /// Build the search prompt with context.
+    ///
+    /// The model has the `google_search` tool enabled. The prompt prefers the
+    /// supplied internal context first (it is the authoritative product
+    /// knowledge base) but explicitly authorizes the model to fall back to
+    /// google_search when the context does not cover the question — instead
+    /// of refusing to answer.
     fn build_search_prompt(query: &str, context: &str) -> String {
         format!(
-            "You are a helpful search assistant. Answer the user's question based on the provided context.\n\
-            If the context doesn't contain enough information, say so honestly.\n\
-            Always cite your sources by referencing [Source N] numbers.\n\n\
-            Context:\n{context}\n\n\
+            "You are a helpful search assistant. You have two information sources:\n\
+            1. The internal context below — authoritative product knowledge. Prefer it whenever it answers the question.\n\
+            2. The google_search tool — use it to ground answers on questions the internal context does not cover, or to add up-to-date facts.\n\n\
+            Rules:\n\
+            - Always try to answer the question. Do NOT refuse just because the internal context is incomplete; use google_search to fill the gap.\n\
+            - When you cite from the internal context, use [Source N] referring to the numbered entries below.\n\
+            - When you ground via google_search, the platform will attach the web sources separately — do not invent [Source N] numbers for them.\n\
+            - If neither the context nor google_search yields a confident answer, then (and only then) say so plainly.\n\n\
+            Internal context:\n{context}\n\n\
             Question: {query}\n\n\
             Answer:"
         )
@@ -223,6 +234,7 @@ impl LlmProvider for GeminiProvider {
                             delta: String::new(),
                             chunk_type: StreamChunkType::Answer,
                             finished: true,
+                            grounding: None,
                         }));
                     }
 
@@ -246,7 +258,31 @@ impl LlmProvider for GeminiProvider {
                         .and_then(|c| c.finish_reason.as_ref())
                         .is_some();
 
-                    if text.is_empty() && !finished {
+                    // Extract google_search grounding sources from this event.
+                    // Gemini typically attaches grounding_metadata only on the
+                    // final event (where finish_reason is set), but we accept
+                    // it from any event.
+                    let grounding: Option<Vec<LlmSource>> = response
+                        .candidates
+                        .first()
+                        .and_then(|c| c.grounding_metadata.as_ref())
+                        .map(|meta| {
+                            meta.grounding_chunks
+                                .iter()
+                                .filter_map(|gc| {
+                                    gc.web.as_ref().and_then(|w| {
+                                        w.uri.as_ref().map(|uri| LlmSource {
+                                            title: w.title.clone().unwrap_or_default(),
+                                            url: uri.clone(),
+                                            snippet: None,
+                                        })
+                                    })
+                                })
+                                .collect()
+                        })
+                        .filter(|v: &Vec<LlmSource>| !v.is_empty());
+
+                    if text.is_empty() && !finished && grounding.is_none() {
                         return None;
                     }
 
@@ -254,6 +290,7 @@ impl LlmProvider for GeminiProvider {
                         delta: text,
                         chunk_type: StreamChunkType::Answer,
                         finished,
+                        grounding,
                     }))
                 }
                 Err(e) => Some(Err(Error::Llm(format!("SSE parse error: {e}")))),

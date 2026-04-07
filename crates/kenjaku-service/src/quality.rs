@@ -104,14 +104,13 @@ fn max_char_frequency(s: &str) -> usize {
 ///   take the raw query and capitalize its first character so
 ///   "bitcoin" and "Bitcoin" don't count as two different trends.
 pub fn normalize_for_trending(locale: Locale, raw: &str, normalized: &str) -> String {
-    if locale == Locale::En {
+    let source = if locale == Locale::En {
         let n = normalized.trim();
-        if !n.is_empty() {
-            return n.to_string();
-        }
-        return raw.trim().to_string();
-    }
-    capitalize_first(raw.trim())
+        if n.is_empty() { raw.trim() } else { n }
+    } else {
+        raw.trim()
+    };
+    capitalize_first(source)
 }
 
 fn capitalize_first(s: &str) -> String {
@@ -217,13 +216,23 @@ mod tests {
     #[test]
     fn english_uses_normalized() {
         let out = normalize_for_trending(Locale::En, "bitcon prce", "bitcoin price");
-        assert_eq!(out, "bitcoin price");
+        assert_eq!(out, "Bitcoin price");
     }
 
     #[test]
     fn english_falls_back_to_raw_when_normalized_empty() {
         let out = normalize_for_trending(Locale::En, "bitcoin", "");
-        assert_eq!(out, "bitcoin");
+        assert_eq!(out, "Bitcoin");
+    }
+
+    #[test]
+    fn english_capitalizes_first_char() {
+        let out = normalize_for_trending(
+            Locale::En,
+            "explain to me why BTC is valuable",
+            "why is BTC valuable",
+        );
+        assert_eq!(out, "Why is BTC valuable");
     }
 
     #[test]
