@@ -83,40 +83,12 @@ var progressBar = document.getElementById('progressBar');
 var debugInfo = document.getElementById('debugInfo');
 var scrollArea = document.getElementById('scrollArea');
 
-// ====== User Context ======
-// `locale` is only used for the autocomplete + top-searches endpoints,
-// which take an explicit locale. The /search endpoint auto-detects the
-// source locale from the query text via the LLM translator.
-var ctx = {
-  locale: document.getElementById('ctxLocale'),
-};
-
-var ctxFields = [
-  { el: ctx.locale, key: 'ctx.locale', event: 'change', reloadPills: true },
-];
-ctxFields.forEach(function(f) {
-  if (!f.el) return;
-  var saved = localStorage.getItem(f.key);
-  if (saved !== null && saved !== '') f.el.value = saved;
-  f.el.addEventListener(f.event, function() {
-    localStorage.setItem(f.key, this.value);
-    if (f.reloadPills) loadPills();
-  });
-});
-
+// `/search` auto-detects the query language via the LLM translator.
+// `/autocomplete` and `/top-searches` still take an explicit locale
+// query param but we default to `en` — they're visual pill helpers,
+// not user-facing search. Hardcoding avoids an otherwise-empty UI panel.
 function getLocale() {
-  return (ctx.locale && ctx.locale.value) || 'en';
-}
-
-var resetBtn = document.getElementById('resetContextBtn');
-if (resetBtn) {
-  resetBtn.addEventListener('click', function(e) {
-    e.stopPropagation();
-    e.preventDefault();
-    ctx.locale.value = 'en';
-    localStorage.removeItem('ctx.locale');
-    loadPills();
-  });
+  return 'en';
 }
 
 // ====== Session / Feedback State ======
