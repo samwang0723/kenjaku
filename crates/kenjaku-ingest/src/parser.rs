@@ -79,21 +79,72 @@ pub fn parse_markdown(content: &str) -> String {
     text
 }
 
-/// Extract the title from a document (first heading or filename).
+/// Extract the title from a document.
+///
+/// Tries (in order): markdown `# H1`, markdown `## H2`, a leading bold line
+/// (`**Title**`), and finally the filename stem prettified from slug form.
 pub fn extract_title(content: &str, path: &Path) -> String {
-    // Try to find first heading in content
-    for line in content.lines() {
+    for line in content.lines().take(40) {
         let trimmed = line.trim();
-        if trimmed.starts_with("# ") {
-            return trimmed.strip_prefix("# ").unwrap_or(trimmed).to_string();
+        if let Some(rest) = trimmed.strip_prefix("# ") {
+            return rest.trim().to_string();
+        }
+        if let Some(rest) = trimmed.strip_prefix("## ") {
+            return rest.trim().to_string();
+        }
+        if let Some(rest) = trimmed
+            .strip_prefix("**")
+            .and_then(|s| s.strip_suffix("**"))
+            && !rest.is_empty()
+            && rest.len() <= 120
+        {
+            return rest.trim().to_string();
         }
     }
 
-    // Fallback to filename
-    path.file_stem()
+    // Fallback to filename stem, prettified so "260617-our-company" becomes
+    // "Our Company" instead of a slug leaking into search results.
+    let stem = path
+        .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("Untitled")
-        .to_string()
+        .unwrap_or("Untitled");
+    prettify_slug_for_title(stem)
+}
+
+/// Local slug prettifier for the ingest crate (mirrors
+/// `kenjaku_service::quality::prettify_title` but without the cross-crate
+/// dep — ingest does not depend on the service layer).
+fn prettify_slug_for_title(stem: &str) -> String {
+    let trimmed = stem.trim();
+    if trimmed.is_empty() {
+        return "Untitled".to_string();
+    }
+
+    // Strip a leading all-digit prefix ("260617-foo" → "foo").
+    let stripped = match trimmed.find(['-', '_']) {
+        Some(idx) if idx > 0 && trimmed[..idx].chars().all(|c| c.is_ascii_digit()) => {
+            &trimmed[idx + 1..]
+        }
+        _ => trimmed,
+    };
+
+    let words: Vec<String> = stripped
+        .split(|c: char| c == '-' || c == '_' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect();
+
+    if words.is_empty() {
+        "Untitled".to_string()
+    } else {
+        words.join(" ")
+    }
 }
 
 /// Validate and canonicalize a directory path for traversal.
@@ -179,7 +230,22 @@ mod tests {
         let content = "No heading here, just text.";
         let path = Path::new("/tmp/my-document.md");
         let title = extract_title(content, path);
-        assert_eq!(title, "my-document");
+        assert_eq!(title, "My Document");
+    }
+
+    #[test]
+    fn test_extract_title_strips_numeric_prefix() {
+        let content = "no heading";
+        let path = Path::new("/tmp/260617-our-company.md");
+        let title = extract_title(content, path);
+        assert_eq!(title, "Our Company");
+    }
+
+    #[test]
+    fn test_extract_title_from_h2_fallback() {
+        let content = "Intro paragraph\n\n## Section Title\n\nmore";
+        let path = Path::new("/tmp/x.md");
+        assert_eq!(extract_title(content, path), "Section Title");
     }
 
     #[test]

@@ -125,6 +125,53 @@ fn capitalize_first(s: &str) -> String {
     }
 }
 
+/// Turn a slug/filename-stem title into something presentable:
+///
+/// - `"our-company"` → `"Our Company"`
+/// - `"260617-our-company"` → `"Our Company"` (strip leading numeric date prefix)
+/// - `"bitcoin_price_guide"` → `"Bitcoin Price Guide"`
+/// - `"Introduction to Crypto"` → unchanged (already has spaces + uppercase)
+/// - `"Untitled"` → unchanged
+///
+/// The heuristic leaves real, human-written titles alone: if the input already
+/// contains whitespace AND an uppercase letter, it is returned unchanged.
+pub fn prettify_title(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+
+    // Already looks like a real title: has a space and at least one uppercase.
+    if trimmed.contains(' ') && trimmed.chars().any(|c| c.is_uppercase()) {
+        return trimmed.to_string();
+    }
+
+    // Strip a leading all-digit prefix like "260617-", "20260407_".
+    let stripped = match trimmed.find(['-', '_']) {
+        Some(idx) if idx > 0 && trimmed[..idx].chars().all(|c| c.is_ascii_digit()) => {
+            &trimmed[idx + 1..]
+        }
+        _ => trimmed,
+    };
+
+    // No separators at all and no space → single word, just capitalize.
+    if !stripped.contains(['-', '_', ' ']) {
+        return capitalize_first(stripped);
+    }
+
+    // Split on `-` / `_` / whitespace and title-case each word.
+    let words: Vec<String> = stripped
+        .split(|c: char| c == '-' || c == '_' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .map(capitalize_first)
+        .collect();
+
+    if words.is_empty() {
+        return trimmed.to_string();
+    }
+    words.join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,6 +224,29 @@ mod tests {
     fn english_falls_back_to_raw_when_normalized_empty() {
         let out = normalize_for_trending(Locale::En, "bitcoin", "");
         assert_eq!(out, "bitcoin");
+    }
+
+    #[test]
+    fn prettify_slug_titles() {
+        assert_eq!(prettify_title("our-company"), "Our Company");
+        assert_eq!(prettify_title("260617-our-company"), "Our Company");
+        assert_eq!(prettify_title("bitcoin_price_guide"), "Bitcoin Price Guide");
+        assert_eq!(prettify_title("faq"), "Faq");
+    }
+
+    #[test]
+    fn prettify_leaves_real_titles_alone() {
+        assert_eq!(
+            prettify_title("Introduction to Crypto"),
+            "Introduction to Crypto"
+        );
+        assert_eq!(prettify_title("  Untitled  "), "Untitled");
+    }
+
+    #[test]
+    fn prettify_handles_empty() {
+        assert_eq!(prettify_title(""), "");
+        assert_eq!(prettify_title("   "), "");
     }
 
     #[test]
