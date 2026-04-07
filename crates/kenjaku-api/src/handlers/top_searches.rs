@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
 use axum::Json;
+use axum::extract::{Query, State};
 use serde::Deserialize;
 use tracing::error;
 
-use crate::dto::response::{ApiResponse, TopSearchDto};
 use crate::AppState;
+use crate::dto::response::{ApiResponse, TopSearchDto};
 
 use kenjaku_core::types::trending::TrendingPeriod;
 

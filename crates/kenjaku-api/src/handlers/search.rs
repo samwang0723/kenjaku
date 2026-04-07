@@ -1,19 +1,20 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::extract::State;
-use axum::response::sse::{Event, Sse};
-use axum::response::IntoResponse;
 use axum::Json;
+use axum::extract::State;
+use axum::response::IntoResponse;
+use axum::response::sse::{Event, Sse};
 use futures::stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{error, info};
 
+use crate::AppState;
 use crate::dto::request::SearchRequestDto;
 use crate::dto::response::{ApiResponse, SearchResponseDto};
-use crate::AppState;
 
 use kenjaku_core::types::search::SearchRequest;
+use kenjaku_service::search::SearchStreamOutput;
 
 /// Maximum query length in characters.
 const MAX_QUERY_LENGTH: usize = 2000;
@@ -81,54 +82,122 @@ pub async fn search(
     }
 }
 
+/// SSE streaming search. Emits three named events:
+///
+/// - `event: start` with `StreamStartMetadata` — sent once before the first
+///   token arrives (intent, translated_query, retrieval_count, etc.).
+/// - `event: delta` with `{"text": "..."}` — one per token delta from the LLM.
+/// - `event: done` with `StreamDoneMetadata` — sent after the last delta
+///   (total latency, sources, suggestions, model).
+/// - `event: error` with `{"error": "..."}` — on any failure.
 async fn search_streaming(
     state: Arc<AppState>,
     req: SearchRequest,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
     info!(request_id = %req.request_id, "SSE streaming handler started");
-    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(100);
     let request_id = req.request_id.clone();
 
     tokio::spawn(async move {
-        info!(request_id = %request_id, "SSE spawned task running");
-        match state.search_service.search_stream(&req).await {
-            Ok(mut stream) => {
-                info!(request_id = %request_id, "SSE got stream from search_stream, starting to read chunks");
-                let mut chunk_count = 0u32;
-                while let Some(chunk_result) = stream.next().await {
-                    match chunk_result {
-                        Ok(chunk) => {
-                            chunk_count += 1;
-                            let data = serde_json::to_string(&chunk).unwrap_or_default();
-                            let event = Event::default().data(data);
-                            if tx.send(Ok(event)).await.is_err() {
-                                info!(request_id = %request_id, chunks = chunk_count, "SSE client disconnected");
-                                break;
-                            }
-                            if chunk.finished {
-                                info!(request_id = %request_id, chunks = chunk_count, "SSE stream finished");
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            error!(request_id = %request_id, error = %e, "SSE chunk error");
-                            let event = Event::default()
-                                .event("error")
-                                .data(e.user_message().to_string());
-                            let _ = tx.send(Ok(event)).await;
-                            break;
-                        }
-                    }
-                }
-            }
+        // Open the stream — this runs intent classify + translate + retrieve.
+        let out = match state.search_service.search_stream(&req).await {
+            Ok(out) => out,
             Err(e) => {
                 error!(request_id = %request_id, error = %e, "SSE search_stream failed");
-                let event = Event::default()
-                    .event("error")
-                    .data(e.user_message().to_string());
-                let _ = tx.send(Ok(event)).await;
+                let _ = tx
+                    .send(Ok(Event::default().event("error").data(format!(
+                        "{{\"error\":{}}}",
+                        serde_json::to_string(e.user_message())
+                            .unwrap_or_else(|_| "\"error\"".into())
+                    ))))
+                    .await;
+                return;
+            }
+        };
+
+        // Destructure so the stream and context can be used independently.
+        let SearchStreamOutput {
+            start_metadata,
+            mut stream,
+            context,
+        } = out;
+
+        // Emit the `start` event with all preamble metadata.
+        let start_json = match serde_json::to_string(&start_metadata) {
+            Ok(s) => s,
+            Err(e) => {
+                error!(error = %e, "Failed to serialize start metadata");
+                return;
+            }
+        };
+        if tx
+            .send(Ok(Event::default().event("start").data(start_json)))
+            .await
+            .is_err()
+        {
+            return; // client disconnected
+        }
+
+        // Stream token deltas.
+        let mut accumulated = String::new();
+        let mut stream_error: Option<kenjaku_core::error::Error> = None;
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
+                Ok(chunk) => {
+                    if !chunk.delta.is_empty() {
+                        accumulated.push_str(&chunk.delta);
+                        let delta_json = serde_json::to_string(&serde_json::json!({
+                            "text": chunk.delta,
+                        }))
+                        .unwrap_or_else(|_| "{\"text\":\"\"}".into());
+                        if tx
+                            .send(Ok(Event::default().event("delta").data(delta_json)))
+                            .await
+                            .is_err()
+                        {
+                            info!(request_id = %request_id, "SSE client disconnected mid-stream");
+                            return;
+                        }
+                    }
+                    if chunk.finished {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    error!(request_id = %request_id, error = %e, "SSE chunk error");
+                    stream_error = Some(e);
+                    break;
+                }
             }
         }
+        drop(stream);
+
+        if let Some(e) = stream_error {
+            let _ = tx
+                .send(Ok(Event::default().event("error").data(format!(
+                    "{{\"error\":{}}}",
+                    serde_json::to_string(e.user_message()).unwrap_or_else(|_| "\"error\"".into())
+                ))))
+                .await;
+            return;
+        }
+
+        // Compute final done metadata (suggestions + latency) and persist conversation.
+        let done_metadata = state
+            .search_service
+            .complete_stream(context, &accumulated)
+            .await;
+
+        let done_json = serde_json::to_string(&done_metadata).unwrap_or_else(|_| "{}".into());
+        let _ = tx
+            .send(Ok(Event::default().event("done").data(done_json)))
+            .await;
+
+        info!(
+            request_id = %request_id,
+            latency_ms = done_metadata.latency_ms,
+            "SSE stream completed"
+        );
     });
 
     Sse::new(ReceiverStream::new(rx))

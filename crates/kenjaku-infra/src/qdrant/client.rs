@@ -1,15 +1,14 @@
-use qdrant_client::qdrant::{
-    Condition, CreateCollectionBuilder, Distance, Filter, PointStruct,
-    SearchPointsBuilder, VectorParamsBuilder, Value,
-    CreateFieldIndexCollectionBuilder, FieldType, TextIndexParamsBuilder, TokenizerType,
-    UpsertPointsBuilder,
-};
 use qdrant_client::Qdrant;
+use qdrant_client::qdrant::{
+    Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, Distance, FieldType,
+    Filter, PointStruct, SearchPointsBuilder, TextIndexParamsBuilder, TokenizerType,
+    UpsertPointsBuilder, Value, VectorParamsBuilder,
+};
 use tracing::info;
 
 use kenjaku_core::config::QdrantConfig;
 use kenjaku_core::error::{Error, Result};
-use kenjaku_core::types::search::{RetrievedChunk, RetrievalMethod};
+use kenjaku_core::types::search::{RetrievalMethod, RetrievedChunk};
 
 /// Wrapper around the Qdrant client with collection management.
 #[derive(Clone)]
@@ -50,11 +49,9 @@ impl QdrantClient {
 
             self.client
                 .create_collection(
-                    CreateCollectionBuilder::new(&self.config.collection_name)
-                        .vectors_config(VectorParamsBuilder::new(
-                            self.config.vector_size,
-                            Distance::Cosine,
-                        )),
+                    CreateCollectionBuilder::new(&self.config.collection_name).vectors_config(
+                        VectorParamsBuilder::new(self.config.vector_size, Distance::Cosine),
+                    ),
                 )
                 .await
                 .map_err(|e| Error::VectorStore(format!("Failed to create collection: {e}")))?;
@@ -89,16 +86,15 @@ impl QdrantClient {
                 ),
             )
             .await
-            .map_err(|e| Error::VectorStore(format!("Failed to create text index on {field_name}: {e}")))?;
+            .map_err(|e| {
+                Error::VectorStore(format!("Failed to create text index on {field_name}: {e}"))
+            })?;
 
         Ok(())
     }
 
     /// Upsert points (chunks with embeddings) into the collection.
-    pub async fn upsert_points(
-        &self,
-        points: Vec<PointData>,
-    ) -> Result<()> {
+    pub async fn upsert_points(&self, points: Vec<PointData>) -> Result<()> {
         let qdrant_points: Vec<PointStruct> = points
             .into_iter()
             .map(|p| {
@@ -118,20 +114,18 @@ impl QdrantClient {
                     payload.insert("source_url".to_string(), Value::from(url.clone()));
                 }
                 payload.insert("doc_type".to_string(), Value::from(p.doc_type.clone()));
-                payload.insert("ingested_at".to_string(), Value::from(p.ingested_at.clone()));
+                payload.insert(
+                    "ingested_at".to_string(),
+                    Value::from(p.ingested_at.clone()),
+                );
 
-                PointStruct::new(
-                    p.point_id.clone(),
-                    p.embedding.clone(),
-                    payload,
-                )
+                PointStruct::new(p.point_id.clone(), p.embedding.clone(), payload)
             })
             .collect();
 
         self.client
             .upsert_points(
-                UpsertPointsBuilder::new(&self.config.collection_name, qdrant_points)
-                    .wait(true),
+                UpsertPointsBuilder::new(&self.config.collection_name, qdrant_points).wait(true),
             )
             .await
             .map_err(|e| Error::VectorStore(format!("Failed to upsert points: {e}")))?;
@@ -148,12 +142,8 @@ impl QdrantClient {
         let results = self
             .client
             .search_points(
-                SearchPointsBuilder::new(
-                    &self.config.collection_name,
-                    embedding,
-                    top_k as u64,
-                )
-                .with_payload(true),
+                SearchPointsBuilder::new(&self.config.collection_name, embedding, top_k as u64)
+                    .with_payload(true),
             )
             .await
             .map_err(|e| Error::VectorStore(format!("Vector search failed: {e}")))?;
@@ -169,11 +159,8 @@ impl QdrantClient {
                     title: extract_string(&payload, "title").unwrap_or_default(),
                     original_content: extract_string(&payload, "original_content")
                         .unwrap_or_default(),
-                    contextualized_content: extract_string(
-                        &payload,
-                        "contextualized_content",
-                    )
-                    .unwrap_or_default(),
+                    contextualized_content: extract_string(&payload, "contextualized_content")
+                        .unwrap_or_default(),
                     source_url: extract_string(&payload, "source_url"),
                     score: point.score,
                     retrieval_method: RetrievalMethod::Vector,
@@ -185,16 +172,10 @@ impl QdrantClient {
     }
 
     /// Full-text search on contextualized_content (BM25-style via Qdrant text index).
-    pub async fn fulltext_search(
-        &self,
-        query: &str,
-        top_k: usize,
-    ) -> Result<Vec<RetrievedChunk>> {
+    pub async fn fulltext_search(&self, query: &str, top_k: usize) -> Result<Vec<RetrievedChunk>> {
         // Use scroll with filter for text matching
         // Qdrant's text index supports full-text search via match conditions
-        let filter = Filter::must([
-            Condition::matches_text("contextualized_content", query)
-        ]);
+        let filter = Filter::must([Condition::matches_text("contextualized_content", query)]);
 
         let results = self
             .client
@@ -222,11 +203,8 @@ impl QdrantClient {
                     title: extract_string(&payload, "title").unwrap_or_default(),
                     original_content: extract_string(&payload, "original_content")
                         .unwrap_or_default(),
-                    contextualized_content: extract_string(
-                        &payload,
-                        "contextualized_content",
-                    )
-                    .unwrap_or_default(),
+                    contextualized_content: extract_string(&payload, "contextualized_content")
+                        .unwrap_or_default(),
                     source_url: extract_string(&payload, "source_url"),
                     score: point.score,
                     retrieval_method: RetrievalMethod::FullText,
@@ -238,14 +216,8 @@ impl QdrantClient {
     }
 
     /// Search document titles for autocomplete suggestions.
-    pub async fn search_titles(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<String>> {
-        let filter = Filter::must([
-            Condition::matches_text("title", query)
-        ]);
+    pub async fn search_titles(&self, query: &str, limit: usize) -> Result<Vec<String>> {
+        let filter = Filter::must([Condition::matches_text("title", query)]);
 
         let results = self
             .client
@@ -297,10 +269,7 @@ pub struct PointData {
 }
 
 /// Extract a string value from a Qdrant payload.
-fn extract_string(
-    payload: &std::collections::HashMap<String, Value>,
-    key: &str,
-) -> Option<String> {
+fn extract_string(payload: &std::collections::HashMap<String, Value>, key: &str) -> Option<String> {
     payload.get(key).and_then(|v| {
         v.kind.as_ref().and_then(|k| {
             if let qdrant_client::qdrant::value::Kind::StringValue(s) = k {

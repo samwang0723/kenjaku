@@ -1,5 +1,5 @@
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 
 use kenjaku_core::config::PostgresConfig;
 use kenjaku_core::error::{Error, Result};

@@ -2,7 +2,9 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use kenjaku_core::error::{Error, Result};
-use kenjaku_core::types::feedback::{CreateFeedbackRequest, Feedback, FeedbackAction, ReasonCategory};
+use kenjaku_core::types::feedback::{
+    CreateFeedbackRequest, Feedback, FeedbackAction, ReasonCategory,
+};
 
 /// Repository for feedback operations.
 #[derive(Clone)]

@@ -9,9 +9,9 @@ const ALLOWED_EXTENSIONS: &[&str] = &["md", "markdown", "txt", "html", "htm"];
 /// Canonicalizes path, checks it is a regular file, validates the extension
 /// against `ALLOWED_EXTENSIONS`, then reads via buffered I/O.
 fn read_validated_file(path: &Path) -> anyhow::Result<(String, String)> {
-    let canonical = path.canonicalize().map_err(|e| {
-        anyhow::anyhow!("Failed to resolve path {}: {e}", path.display())
-    })?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("Failed to resolve path {}: {e}", path.display()))?;
 
     if !canonical.is_file() {
         return Err(anyhow::anyhow!(
@@ -27,9 +27,7 @@ fn read_validated_file(path: &Path) -> anyhow::Result<(String, String)> {
         .to_lowercase();
 
     if !ALLOWED_EXTENSIONS.contains(&extension.as_str()) {
-        return Err(anyhow::anyhow!(
-            "File type not in allowlist: {extension}"
-        ));
+        return Err(anyhow::anyhow!("File type not in allowlist: {extension}"));
     }
 
     // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
@@ -62,7 +60,7 @@ pub fn parse_file(path: &Path) -> anyhow::Result<(String, DocumentType)> {
 
 /// Convert markdown to plain text.
 pub fn parse_markdown(content: &str) -> String {
-    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+    use pulldown_cmark::{Event, Parser, TagEnd};
 
     let parser = Parser::new(content);
     let mut text = String::new();
@@ -100,9 +98,9 @@ pub fn extract_title(content: &str, path: &Path) -> String {
 
 /// Validate and canonicalize a directory path for traversal.
 fn validate_directory(dir: &Path) -> anyhow::Result<PathBuf> {
-    let canonical = dir.canonicalize().map_err(|e| {
-        anyhow::anyhow!("Failed to resolve directory {}: {e}", dir.display())
-    })?;
+    let canonical = dir
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("Failed to resolve directory {}: {e}", dir.display()))?;
 
     if !canonical.is_dir() {
         return Err(anyhow::anyhow!(
@@ -142,10 +140,10 @@ fn discover_files_inner(dir: &Path, root: &Path) -> Vec<PathBuf> {
 
                 if canonical.is_dir() {
                     files.extend(discover_files_inner(&canonical, root));
-                } else if let Some(ext) = canonical.extension().and_then(|e| e.to_str()) {
-                    if supported_extensions.contains(&ext.to_lowercase().as_str()) {
-                        files.push(canonical);
-                    }
+                } else if let Some(ext) = canonical.extension().and_then(|e| e.to_str())
+                    && supported_extensions.contains(&ext.to_lowercase().as_str())
+                {
+                    files.push(canonical);
                 }
             }
         }
@@ -191,9 +189,18 @@ mod tests {
         let txt_path = dir.path().join("test.txt");
         let jpg_path = dir.path().join("image.jpg");
 
-        std::fs::File::create(&md_path).unwrap().write_all(b"# Test").unwrap();
-        std::fs::File::create(&txt_path).unwrap().write_all(b"text").unwrap();
-        std::fs::File::create(&jpg_path).unwrap().write_all(b"").unwrap();
+        std::fs::File::create(&md_path)
+            .unwrap()
+            .write_all(b"# Test")
+            .unwrap();
+        std::fs::File::create(&txt_path)
+            .unwrap()
+            .write_all(b"text")
+            .unwrap();
+        std::fs::File::create(&jpg_path)
+            .unwrap()
+            .write_all(b"")
+            .unwrap();
 
         let files = discover_files(dir.path());
         assert_eq!(files.len(), 2); // md + txt, not jpg

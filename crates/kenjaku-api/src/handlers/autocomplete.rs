@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
 use axum::Json;
+use axum::extract::{Query, State};
 use serde::Deserialize;
 use tracing::error;
 
-use crate::dto::response::{ApiResponse, AutocompleteResponseDto};
 use crate::AppState;
+use crate::dto::response::{ApiResponse, AutocompleteResponseDto};
 
 /// Maximum autocomplete limit.
 const MAX_LIMIT: usize = 50;
@@ -34,7 +34,9 @@ pub async fn autocomplete(
     Query(params): Query<AutocompleteQuery>,
 ) -> Json<ApiResponse<AutocompleteResponseDto>> {
     if params.q.is_empty() {
-        return Json(ApiResponse::err("Query parameter 'q' is required".to_string()));
+        return Json(ApiResponse::err(
+            "Query parameter 'q' is required".to_string(),
+        ));
     }
 
     let limit = params.limit.min(MAX_LIMIT);

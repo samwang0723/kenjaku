@@ -214,10 +214,10 @@ fn is_artifact_line(line: &str) -> bool {
 
     // Bare URL line (e.g., "https://example.com" or "<https://...>")
     let url_candidate = t.trim_start_matches('<').trim_end_matches('>');
-    if url_candidate.starts_with("http://") || url_candidate.starts_with("https://") {
-        if !url_candidate.contains(' ') {
-            return true;
-        }
+    if (url_candidate.starts_with("http://") || url_candidate.starts_with("https://"))
+        && !url_candidate.contains(' ')
+    {
+        return true;
     }
 
     // Pure punctuation/bracket noise
@@ -230,8 +230,8 @@ fn is_artifact_line(line: &str) -> bool {
 /// HTML parser — good enough for known noise tags that rarely nest.
 fn strip_noise_tags(html: &str) -> String {
     const NOISE_TAGS: &[&str] = &[
-        "script", "style", "nav", "footer", "header", "aside", "form", "iframe", "noscript",
-        "svg", "template",
+        "script", "style", "nav", "footer", "header", "aside", "form", "iframe", "noscript", "svg",
+        "template",
     ];
 
     let mut result = html.to_string();

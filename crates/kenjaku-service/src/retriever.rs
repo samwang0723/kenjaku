@@ -52,14 +52,10 @@ impl Retriever for HybridRetriever {
         let over_retrieve_k = top_k * self.over_retrieve_factor;
 
         // Embed the query
-        let embeddings = self
-            .embedding_provider
-            .embed(&[query.to_string()])
-            .await?;
-        let query_embedding = embeddings
-            .into_iter()
-            .next()
-            .ok_or_else(|| kenjaku_core::error::Error::Embedding("No embedding returned".to_string()))?;
+        let embeddings = self.embedding_provider.embed(&[query.to_string()]).await?;
+        let query_embedding = embeddings.into_iter().next().ok_or_else(|| {
+            kenjaku_core::error::Error::Embedding("No embedding returned".to_string())
+        })?;
 
         // Run vector and full-text search in parallel
         let (vector_results, fulltext_results) = tokio::try_join!(

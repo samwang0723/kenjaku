@@ -4,9 +4,10 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 /// Supported locales for the search engine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Locale {
+    #[default]
     #[serde(rename = "en")]
     En,
     #[serde(rename = "zh")]
@@ -55,12 +56,6 @@ impl Locale {
             Locale::Fr => "fr",
             Locale::Es => "es",
         }
-    }
-}
-
-impl Default for Locale {
-    fn default() -> Self {
-        Locale::En
     }
 }
 

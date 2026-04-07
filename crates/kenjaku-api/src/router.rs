@@ -1,18 +1,18 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::routing::{get, post};
 use axum::Router;
+use axum::routing::{get, post};
+use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_governor::key_extractor::SmartIpKeyExtractor;
-use tower_governor::GovernorLayer;
 use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::handlers;
 use crate::AppState;
+use crate::handlers;
 
 /// Build the API router with all routes, rate limiting, and security layers.
 #[allow(deprecated)] // TimeoutLayer::new deprecated in tower-http 0.6, replacement API differs

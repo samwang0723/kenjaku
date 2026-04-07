@@ -23,12 +23,7 @@ impl AutocompleteService {
 
     /// Get autocomplete suggestions for a partial query.
     #[instrument(skip(self))]
-    pub async fn suggest(
-        &self,
-        query: &str,
-        locale: &str,
-        limit: usize,
-    ) -> Result<Vec<String>> {
+    pub async fn suggest(&self, query: &str, locale: &str, limit: usize) -> Result<Vec<String>> {
         let mut suggestions = HashSet::new();
 
         // Source 1: Popular past searches matching prefix

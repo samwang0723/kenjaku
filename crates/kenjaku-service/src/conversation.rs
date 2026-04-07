@@ -17,7 +17,10 @@ impl ConversationService {
     /// Create a new conversation service with a flush worker.
     ///
     /// Returns the service (for sending) and the worker (to be spawned).
-    pub fn new(repo: ConversationRepository, buffer_size: usize) -> (Self, ConversationFlushWorker) {
+    pub fn new(
+        repo: ConversationRepository,
+        buffer_size: usize,
+    ) -> (Self, ConversationFlushWorker) {
         let (tx, rx) = mpsc::channel(buffer_size);
         let worker = ConversationFlushWorker { repo, rx };
         (Self { tx }, worker)
