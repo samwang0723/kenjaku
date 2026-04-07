@@ -35,6 +35,10 @@ core ← infra ← service ← api ← server
 - **kenjaku-server** — Binary. Wires DI, spawns workers, graceful shutdown.
 - **kenjaku-ingest** — CLI binary. Crawls URLs, strips HTML noise, converts to markdown via `html2md`, token-chunks via `tiktoken-rs` (cl100k_base), contextualizes via Claude, embeds via OpenAI, upserts to Qdrant.
 
+Plus a sibling static-site frontend (not a Cargo crate):
+
+- **geto-web/** — Vanilla JS phone-frame SPA served by nginx. Talks to the kenjaku API via a same-origin reverse proxy (no CORS). Renders the SSE `start`/`delta`/`done` events into a debug panel + streaming markdown answer with clickable `[Source N]` chips.
+
 **Key rule**: Service layer depends only on `Arc<dyn Trait>`, never on concrete infra types.
 
 ## Search Pipeline (SearchService::search)
@@ -86,4 +90,28 @@ Query: max 2000 chars. `top_k`: max 100. Autocomplete limit: max 50. Top-searche
 
 ## SSE Streaming
 
-The streaming path uses the `eventsource-stream` crate to parse Gemini's SSE response (do NOT hand-roll — Gemini's separators vary, and the manual parser was buggy). The handler spawns a tokio task that feeds events into a `mpsc::channel(100)`, and the response is `Sse::new(ReceiverStream::new(rx))`. Errors in the spawned task are logged AND sent as `event: error` SSE events so the client sees them.
+The streaming path uses the `eventsource-stream` crate to parse Gemini's SSE response (do NOT hand-roll — Gemini's separators vary, and the manual parser was buggy).
+
+`SearchService::search_stream` returns a `SearchStreamOutput` containing:
+
+- `start_metadata: StreamStartMetadata` — everything known before the LLM begins producing tokens (intent, translated_query, locale, retrieval_count, preamble_latency_ms, request_id, session_id)
+- `stream` — the LLM token stream (`Pin<Box<dyn Stream<Item = Result<StreamChunk>>>>`)
+- `context: StreamContext` — bookkeeping (sources, instants, ids) consumed by `complete_stream()` when the token stream finishes
+
+The `/api/v1/search` handler emits **named** SSE events into a `mpsc::channel(100)`:
+
+- `event: start` → `StreamStartMetadata` JSON, sent once before the first token
+- `event: delta` → `{"text": "..."}` per token from the LLM
+- `event: done` → `StreamDoneMetadata` (`latency_ms`, `sources`, `suggestions`, `llm_model`) — built by `SearchService::complete_stream(context, accumulated_answer)` which also runs `LlmProvider::suggest()` and queues the conversation record
+- `event: error` → `{"error": "..."}` on any failure (logged AND sent so the client sees it)
+
+Errors in the spawned task are logged AND sent as `event: error` SSE events so the client sees them.
+
+## CI
+
+`.github/workflows/ci.yml` runs on push to `main` and on PRs:
+
+- **Rust stable** job — `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo build --locked`, `cargo test --locked`. Uses `Swatinem/rust-cache` keyed on `kenjaku-stable`.
+- **Docker build** job (depends on Rust) — validates `docker compose config -q`, then builds both `kenjaku` and `geto-web` images via Buildx with GHA cache.
+
+`CARGO_TERM_COLOR=always` and `RUSTFLAGS=-D warnings` are set workspace-wide. When clippy fires a new lint locally that the CI catches first, fix it the same way you would any compile error — don't add `#[allow]` unless the lint is genuinely wrong for the case (the existing `clippy::too_many_arguments` allows on the ingest pipeline functions are an example of an intentional escape hatch).

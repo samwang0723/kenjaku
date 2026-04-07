@@ -11,6 +11,9 @@ kenjaku-service    Search pipeline, hybrid retrieval, RRF reranking, trending, c
 kenjaku-api        Axum HTTP handlers, rate limiting, input validation, SSE streaming
 kenjaku-server     Binary with DI, graceful shutdown, background workers
 kenjaku-ingest     CLI for document crawling, parsing, and chunking
+
+geto-web/          Static phone-frame SPA UI (vanilla JS + nginx) talking
+                   to the kenjaku API via same-origin reverse proxy
 ```
 
 See [docs/architect.md](docs/architect.md) for C4 diagrams, ADRs, and design details.
@@ -40,13 +43,16 @@ cp config/secrets.example.yaml config/secrets.docker.yaml
 make docker-up
 ```
 
-The server will be available at `http://localhost:18080`.
+- Backend API: `http://localhost:18080`
+- Visual frontend (geto-web): `http://localhost:3000` — mobile phone-frame
+  SPA that streams answers and renders source citations
 
 Internal ports (exposed only for local debugging):
 
 | Service | Host port | Container port |
 |---------|-----------|----------------|
 | kenjaku | 18080 | 8080 |
+| geto-web | 3000 | 80 |
 | qdrant  | 6333 / 6334 | 6333 / 6334 |
 | postgres | 15432 | 5432 |
 | redis    | 16379 | 6379 |
@@ -160,6 +166,9 @@ KENJAKU__* env vars            Final override (e.g. KENJAKU__LLM__API_KEY)
 | `make ingest-folder FOLDER=...` | Ingest local directory |
 | `make docker-ingest-url URL=...` | Ingest via the running kenjaku container |
 | `make docker-ingest-folder FOLDER=...` | Ingest folder via container |
+| `make geto-web-build` | Build the geto-web frontend image |
+| `make geto-web-up` | Build + start geto-web (depends on a healthy kenjaku) |
+| `make geto-web-logs` | Follow geto-web container logs |
 
 ## Tech Stack
 
@@ -175,6 +184,17 @@ KENJAKU__* env vars            Final override (e.g. KENJAKU__LLM__API_KEY)
 | Contextualizer | Anthropic Claude Haiku 4.5 |
 | Observability | OpenTelemetry + structured JSON logging |
 | Container | Alpine Linux (~30MB runtime image) |
+
+## CI
+
+GitHub Actions runs on every push to `main` and every PR
+(`.github/workflows/ci.yml`):
+
+- **Rust stable** — `cargo fmt --check`, `cargo clippy -D warnings`,
+  `cargo build --locked`, `cargo test --locked` (cached via
+  `Swatinem/rust-cache`)
+- **Docker build** — validates `docker compose config`, then builds
+  both the `kenjaku` and `geto-web` images via Buildx with GHA cache
 
 ## License
 

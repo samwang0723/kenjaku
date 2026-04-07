@@ -35,6 +35,7 @@ C4Container
     Person(user, "End User")
 
     Container_Boundary(kenjaku, "Kenjaku System") {
+        Container(geto, "geto-web", "nginx + vanilla JS", "Mobile phone-frame SPA. Same-origin reverse proxy to /api/, renders SSE start/delta/done events into a debug panel + streaming markdown answer")
         Container(server, "kenjaku-server", "Rust/Axum", "HTTP server, graceful shutdown, worker orchestration")
         Container(api, "kenjaku-api", "Rust/Axum", "REST endpoints, DTOs, middleware, SSE streaming")
         Container(service, "kenjaku-service", "Rust", "Search orchestration, hybrid retrieval, reranking, trending, feedback")
@@ -47,7 +48,8 @@ C4Container
     ContainerDb(postgres, "PostgreSQL", "RDBMS", "Conversations, feedback, trending")
     ContainerDb(redis, "Redis", "Cache", "Real-time trending sorted sets")
 
-    Rel(user, api, "HTTPS")
+    Rel(user, geto, "HTTPS (browser)")
+    Rel(geto, api, "Reverse-proxy /api/, /health, /ready")
     Rel(api, service, "Rust calls")
     Rel(service, core, "Domain types")
     Rel(service, infra, "Data access")
@@ -567,3 +569,35 @@ Pipeline breakdown (streaming):
 4. Stream token deltas — ~1.7s for a typical answer
 
 The intent classifier was previously the bottleneck at ~5s because every call sent the `google_search` grounding tool. Fix: `GeminiProvider::generate()` detects an empty context slice and skips the tool entirely, dropping intent classify to ~1s.
+
+## 13. SSE Streaming Protocol
+
+The `/api/v1/search` handler emits **named** SSE events so the geto-web client can populate its debug panel as soon as the preamble work is done — without waiting for the first LLM token.
+
+`SearchService::search_stream` returns a `SearchStreamOutput` containing:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `start_metadata` | `StreamStartMetadata` | Everything known before the LLM begins (intent, translated_query, locale, retrieval_count, preamble_latency_ms, request_id, session_id) |
+| `stream` | `Pin<Box<dyn Stream<Item = Result<StreamChunk>>>>` | Token deltas from the LLM |
+| `context` | `StreamContext` | Bookkeeping (sources, instants, ids) consumed by `complete_stream()` after the stream finishes |
+
+The handler then emits these events into a `mpsc::channel(100)` which is wrapped in `Sse::new(ReceiverStream::new(rx))`:
+
+| Event | Payload | Sent when |
+|-------|---------|-----------|
+| `event: start` | `StreamStartMetadata` JSON | Once, before the first token |
+| `event: delta` | `{"text": "..."}` | Per LLM token chunk |
+| `event: done` | `StreamDoneMetadata` (`latency_ms`, `sources`, `suggestions`, `llm_model`) | After the last delta — built by `SearchService::complete_stream(context, accumulated_answer)` which also runs `LlmProvider::suggest()` and queues the conversation record |
+| `event: error` | `{"error": "..."}` | On any failure (logged AND sent so the client sees it) |
+
+The server-side parser uses the `eventsource-stream` crate to consume Gemini's `streamGenerateContent?alt=sse` response — do NOT hand-roll a parser, Gemini's separators vary across responses and the manual parser was buggy.
+
+## 14. CI
+
+`.github/workflows/ci.yml` runs on push to `main` and on PRs:
+
+- **Rust stable** job — `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo build --locked`, `cargo test --locked`. Cache key `kenjaku-stable` via `Swatinem/rust-cache@v2`. Workspace-wide `RUSTFLAGS=-D warnings`.
+- **Docker build** job (depends on Rust) — validates `docker compose config -q`, then builds both `kenjaku` and `geto-web` images via `docker/build-push-action@v6` with GHA cache.
+
+Both jobs must pass before merge.
