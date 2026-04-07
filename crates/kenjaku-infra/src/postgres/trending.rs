@@ -48,11 +48,15 @@ impl TrendingRepository {
     }
 
     /// Get top popular queries for a locale and period.
+    ///
+    /// `min_count` enforces the crowdsourcing quality floor — entries
+    /// with fewer than this many searches never surface.
     pub async fn get_top(
         &self,
         locale: &str,
         period: &TrendingPeriod,
         limit: usize,
+        min_count: i64,
     ) -> Result<Vec<PopularQuery>> {
         let period_str = period.to_string();
 
@@ -60,13 +64,14 @@ impl TrendingRepository {
             r#"
             SELECT id, locale, query, search_count, period, period_date
             FROM popular_queries
-            WHERE locale = $1 AND period = $2
+            WHERE locale = $1 AND period = $2 AND search_count >= $3
             ORDER BY search_count DESC
-            LIMIT $3
+            LIMIT $4
             "#,
         )
         .bind(locale)
         .bind(&period_str)
+        .bind(min_count)
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await
@@ -76,11 +81,15 @@ impl TrendingRepository {
     }
 
     /// Get popular queries matching a prefix (for autocomplete).
+    ///
+    /// `min_count` enforces the crowdsourcing quality floor — entries
+    /// with fewer than this many searches never surface.
     pub async fn search_popular(
         &self,
         locale: &str,
         prefix: &str,
         limit: usize,
+        min_count: i64,
     ) -> Result<Vec<PopularQuery>> {
         let pattern = format!("{prefix}%");
 
@@ -88,13 +97,14 @@ impl TrendingRepository {
             r#"
             SELECT id, locale, query, search_count, period, period_date
             FROM popular_queries
-            WHERE locale = $1 AND query ILIKE $2
+            WHERE locale = $1 AND query ILIKE $2 AND search_count >= $3
             ORDER BY search_count DESC
-            LIMIT $3
+            LIMIT $4
             "#,
         )
         .bind(locale)
         .bind(&pattern)
+        .bind(min_count)
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await

@@ -134,10 +134,11 @@ impl SearchService {
             self.component_service
                 .assemble(&llm_response, suggestions, suggestion_source);
 
-        // Step 7: Record trending (fire-and-forget)
+        // Step 7: Record trending (fire-and-forget). The trending service
+        // applies a gibberish guard and normalizes the stored form.
         let _ = self
             .trending_service
-            .record_query(req.locale.as_str(), &req.query)
+            .record_query(req.locale, &req.query, &search_query)
             .await;
 
         let latency_ms = start.elapsed().as_millis() as u64;
@@ -251,10 +252,11 @@ impl SearchService {
         // Step 4: Open the LLM stream
         let stream = self.llm.generate_stream(&search_query, &chunks).await?;
 
-        // Step 5: Record trending (fire-and-forget)
+        // Step 5: Record trending (fire-and-forget). The trending service
+        // applies a gibberish guard and normalizes the stored form.
         let _ = self
             .trending_service
-            .record_query(req.locale.as_str(), &req.query)
+            .record_query(req.locale, &req.query, &search_query)
             .await;
 
         let preamble_latency_ms = start.elapsed().as_millis() as u64;
