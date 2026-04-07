@@ -106,8 +106,8 @@ impl Contextualizer for ClaudeContextualizer {
         result
             .content
             .first()
-            .and_then(|block| match block {
-                ClaudeResponseBlock::Text { text } => Some(text.clone()),
+            .map(|block| match block {
+                ClaudeResponseBlock::Text { text } => text.clone(),
             })
             .ok_or_else(|| Error::Llm("Empty Claude response".to_string()))
     }
