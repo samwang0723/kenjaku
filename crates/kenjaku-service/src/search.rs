@@ -68,8 +68,14 @@ impl SearchService {
     pub async fn search(&self, req: &SearchRequest) -> Result<SearchResponse> {
         let start = Instant::now();
 
-        // Step 1: Classify intent (run in parallel with translation if possible)
-        let intent = match self.intent_classifier.classify(&req.query).await {
+        // Step 1 + 2: Classify intent AND translate/normalize query in parallel.
+        // Both are independent LLM calls, so we save ~1s by issuing them together.
+        let (intent_result, translate_result) = tokio::join!(
+            self.intent_classifier.classify(&req.query),
+            self.translation_service.translate(&req.query),
+        );
+
+        let intent = match intent_result {
             Ok(classification) => {
                 info!(
                     intent = %classification.intent,
@@ -84,15 +90,17 @@ impl SearchService {
             }
         };
 
-        // Step 2: Translate if needed
-        let (search_query, translated) = if req.locale.needs_translation() {
-            let translated = self
-                .translation_service
-                .translate(&req.query, req.locale.as_str())
-                .await?;
-            (translated.clone(), Some(translated))
+        let search_query = match translate_result {
+            Ok(normalized) => normalized,
+            Err(e) => {
+                warn!(error = %e, "Query normalization failed, falling back to raw query");
+                req.query.clone()
+            }
+        };
+        let translated = if search_query != req.query {
+            Some(search_query.clone())
         } else {
-            (req.query.clone(), None)
+            None
         };
 
         // Step 3: Retrieve with hybrid search
@@ -205,20 +213,13 @@ impl SearchService {
         &self,
         req: &SearchRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>> {
-        // Step 1: Classify intent
-        let _intent = match self.intent_classifier.classify(&req.query).await {
-            Ok(c) => c.intent,
-            Err(_) => Intent::Unknown,
-        };
-
-        // Step 2: Translate if needed
-        let search_query = if req.locale.needs_translation() {
-            self.translation_service
-                .translate(&req.query, req.locale.as_str())
-                .await?
-        } else {
-            req.query.clone()
-        };
+        // Step 1 + 2: Classify intent AND translate/normalize in parallel.
+        let (intent_result, translate_result) = tokio::join!(
+            self.intent_classifier.classify(&req.query),
+            self.translation_service.translate(&req.query),
+        );
+        let _intent = intent_result.map(|c| c.intent).unwrap_or(Intent::Unknown);
+        let search_query = translate_result.unwrap_or_else(|_| req.query.clone());
 
         // Step 3: Retrieve
         let chunks = self

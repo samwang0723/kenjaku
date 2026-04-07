@@ -23,13 +23,9 @@ pub trait LlmProvider: Send + Sync {
         context: &[RetrievedChunk],
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>>;
 
-    /// Translate text between locales.
-    async fn translate(
-        &self,
-        text: &str,
-        from_locale: &str,
-        to_locale: &str,
-    ) -> Result<String>;
+    /// Translate text to the target locale. The source language is auto-detected
+    /// by the implementation (callers should not pass a `from_locale`).
+    async fn translate(&self, text: &str, to_locale: &str) -> Result<String>;
 
     /// Generate follow-up query suggestions based on the query and answer.
     async fn suggest(
