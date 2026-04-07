@@ -6,8 +6,11 @@ A production-grade Contextual RAG search engine built in Rust. Combines hybrid v
 
 ```
 kenjaku-core       Domain types, traits, config, errors
-kenjaku-infra      Qdrant, PostgreSQL, Redis, OpenAI, Gemini, Claude, OpenTelemetry
-kenjaku-service    Search pipeline, hybrid retrieval, RRF reranking, trending, conversations
+kenjaku-infra      Qdrant, PostgreSQL, Redis, OpenAI, Gemini, Claude,
+                   TitleResolver (Gemini grounding URL → real page title),
+                   OpenTelemetry
+kenjaku-service    Search pipeline, hybrid retrieval, RRF reranking, trending,
+                   conversations, query quality guard, grounding source merge
 kenjaku-api        Axum HTTP handlers, rate limiting, input validation, SSE streaming
 kenjaku-server     Binary with DI, graceful shutdown, background workers
 kenjaku-ingest     CLI for document crawling, parsing, and chunking
@@ -86,7 +89,7 @@ make lint
 |--------|------|-------------|
 | `POST` | `/api/v1/search` | RAG search with optional SSE streaming |
 | `GET` | `/api/v1/top-searches` | Popular queries by locale and period |
-| `GET` | `/api/v1/autocomplete` | Query suggestions from trending + document titles |
+| `GET` | `/api/v1/autocomplete` | Query suggestions from trending (gated by `crowd_sourcing_min_count`) + prettified document titles |
 | `POST` | `/api/v1/feedback` | User feedback (like/dislike/cancel) on responses |
 | `GET` | `/health` | Liveness check |
 | `GET` | `/ready` | Readiness check (qdrant + postgres + redis) |
@@ -178,9 +181,9 @@ KENJAKU__* env vars            Final override (e.g. KENJAKU__LLM__API_KEY)
 | HTTP | Axum 0.8 + Tower middleware |
 | Vector DB | Qdrant (cosine similarity + text index) |
 | Database | PostgreSQL 17 (sqlx) |
-| Cache | Redis 7 (trending sorted sets) |
+| Cache | Redis 7 (trending sorted sets + resolved title cache) |
 | Embeddings | OpenAI text-embedding-3-small |
-| LLM | Google Gemini (with google_search grounding) |
+| LLM | Google Gemini (with `google_search` grounding — sources merged into responses, real page titles resolved) |
 | Contextualizer | Anthropic Claude Haiku 4.5 |
 | Observability | OpenTelemetry + structured JSON logging |
 | Container | Alpine Linux (~30MB runtime image) |
