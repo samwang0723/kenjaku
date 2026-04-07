@@ -7,7 +7,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use futures::stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::error;
+use tracing::{error, info};
 
 use crate::dto::request::SearchRequestDto;
 use crate::dto::response::{ApiResponse, SearchResponseDto};
@@ -85,24 +85,33 @@ async fn search_streaming(
     state: Arc<AppState>,
     req: SearchRequest,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    info!(request_id = %req.request_id, "SSE streaming handler started");
     let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let request_id = req.request_id.clone();
 
     tokio::spawn(async move {
+        info!(request_id = %request_id, "SSE spawned task running");
         match state.search_service.search_stream(&req).await {
             Ok(mut stream) => {
+                info!(request_id = %request_id, "SSE got stream from search_stream, starting to read chunks");
+                let mut chunk_count = 0u32;
                 while let Some(chunk_result) = stream.next().await {
                     match chunk_result {
                         Ok(chunk) => {
+                            chunk_count += 1;
                             let data = serde_json::to_string(&chunk).unwrap_or_default();
                             let event = Event::default().data(data);
                             if tx.send(Ok(event)).await.is_err() {
+                                info!(request_id = %request_id, chunks = chunk_count, "SSE client disconnected");
                                 break;
                             }
                             if chunk.finished {
+                                info!(request_id = %request_id, chunks = chunk_count, "SSE stream finished");
                                 break;
                             }
                         }
                         Err(e) => {
+                            error!(request_id = %request_id, error = %e, "SSE chunk error");
                             let event = Event::default()
                                 .event("error")
                                 .data(e.user_message().to_string());
@@ -113,6 +122,7 @@ async fn search_streaming(
                 }
             }
             Err(e) => {
+                error!(request_id = %request_id, error = %e, "SSE search_stream failed");
                 let event = Event::default()
                     .event("error")
                     .data(e.user_message().to_string());

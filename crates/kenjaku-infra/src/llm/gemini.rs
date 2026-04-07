@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::instrument;
+use tracing::{info, instrument};
 
 use kenjaku_core::config::LlmConfig;
 use kenjaku_core::error::{Error, Result};
@@ -67,20 +67,38 @@ impl LlmProvider for GeminiProvider {
         query: &str,
         context: &[RetrievedChunk],
     ) -> Result<LlmResponse> {
-        let context_str = Self::build_context(context);
-        let prompt = Self::build_search_prompt(query, &context_str);
+        // When context is empty (e.g., intent classification, simple completion),
+        // skip the google_search grounding tool — it adds 1-3s of latency we don't need.
+        // Also use a small max_tokens cap since these calls produce short outputs.
+        let no_context = context.is_empty();
+        let (prompt, tools, max_tokens, temperature) = if no_context {
+            (
+                query.to_string(),
+                None,
+                256u32,
+                0.0_f32,
+            )
+        } else {
+            let context_str = Self::build_context(context);
+            (
+                Self::build_search_prompt(query, &context_str),
+                Some(vec![GeminiTool {
+                    google_search: Some(serde_json::json!({})),
+                }]),
+                self.config.max_tokens,
+                self.config.temperature,
+            )
+        };
 
         let request = GeminiRequest {
             contents: vec![GeminiContent {
                 parts: vec![GeminiPart::Text { text: prompt }],
                 role: Some("user".to_string()),
             }],
-            tools: Some(vec![GeminiTool {
-                google_search: Some(serde_json::json!({})),
-            }]),
+            tools,
             generation_config: Some(GeminiGenerationConfig {
-                max_output_tokens: Some(self.config.max_tokens),
-                temperature: Some(self.config.temperature),
+                max_output_tokens: Some(max_tokens),
+                temperature: Some(temperature),
             }),
         };
 
@@ -191,63 +209,65 @@ impl LlmProvider for GeminiProvider {
             return Err(Error::Llm(format!("Gemini returned {status}: {body}")));
         }
 
-        let byte_stream = response.bytes_stream();
-        let stream = futures::stream::unfold(
-            (byte_stream, String::new()),
-            |(mut byte_stream, mut buffer)| async move {
-                use futures::StreamExt;
-                loop {
-                    match byte_stream.next().await {
-                        Some(Ok(bytes)) => {
-                            buffer.push_str(&String::from_utf8_lossy(&bytes));
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown")
+            .to_string();
+        info!(content_type = %content_type, "Gemini stream response opened");
 
-                            // Parse SSE data lines
-                            while let Some(pos) = buffer.find("\n\n") {
-                                let event = buffer[..pos].to_string();
-                                buffer = buffer[pos + 2..].to_string();
+        // Use eventsource-stream — handles SSE framing (CRLF/LF, multi-line data,
+        // event/id/retry fields, partial chunks) properly. We just consume the
+        // parsed events and convert each `data` payload to a StreamChunk.
+        use eventsource_stream::Eventsource;
+        use futures::StreamExt;
 
-                                if let Some(data) = event.strip_prefix("data: ") {
-                                    if let Ok(response) =
-                                        serde_json::from_str::<GeminiResponse>(data)
-                                    {
-                                        if let Some(text) = response
-                                            .candidates
-                                            .first()
-                                            .and_then(|c| c.content.parts.first())
-                                            .map(|p| match p {
-                                                GeminiPart::Text { text } => text.clone(),
-                                            })
-                                        {
-                                            let finished = response
-                                                .candidates
-                                                .first()
-                                                .and_then(|c| c.finish_reason.as_ref())
-                                                .is_some();
-
-                                            return Some((
-                                                Ok(StreamChunk {
-                                                    delta: text,
-                                                    chunk_type: StreamChunkType::Answer,
-                                                    finished,
-                                                }),
-                                                (byte_stream, buffer),
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Some(Err(e)) => {
-                            return Some((
-                                Err(Error::Llm(format!("Stream error: {e}"))),
-                                (byte_stream, buffer),
-                            ));
-                        }
-                        None => return None,
+        let event_stream = response.bytes_stream().eventsource();
+        let stream = event_stream.filter_map(|event_result| async move {
+            match event_result {
+                Ok(event) => {
+                    if event.data.trim() == "[DONE]" {
+                        return Some(Ok(StreamChunk {
+                            delta: String::new(),
+                            chunk_type: StreamChunkType::Answer,
+                            finished: true,
+                        }));
                     }
+
+                    let response: GeminiResponse = match serde_json::from_str(&event.data) {
+                        Ok(r) => r,
+                        Err(_) => return None, // skip unparseable events
+                    };
+
+                    let text = response
+                        .candidates
+                        .first()
+                        .and_then(|c| c.content.parts.first())
+                        .map(|p| match p {
+                            GeminiPart::Text { text } => text.clone(),
+                        })
+                        .unwrap_or_default();
+
+                    let finished = response
+                        .candidates
+                        .first()
+                        .and_then(|c| c.finish_reason.as_ref())
+                        .is_some();
+
+                    if text.is_empty() && !finished {
+                        return None;
+                    }
+
+                    Some(Ok(StreamChunk {
+                        delta: text,
+                        chunk_type: StreamChunkType::Answer,
+                        finished,
+                    }))
                 }
-            },
-        );
+                Err(e) => Some(Err(Error::Llm(format!("SSE parse error: {e}")))),
+            }
+        });
 
         Ok(Box::pin(stream))
     }

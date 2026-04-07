@@ -19,6 +19,7 @@ redis = { workspace = true }
 qdrant-client = { workspace = true }
 config = { workspace = true }
 futures = { workspace = true }
+eventsource-stream = { workspace = true }
 
 # Telemetry
 tracing-subscriber = { workspace = true }
