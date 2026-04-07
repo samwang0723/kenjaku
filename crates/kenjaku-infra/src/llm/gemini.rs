@@ -259,8 +259,8 @@ impl LlmProvider for GeminiProvider {
                         .is_some();
 
                     // Extract google_search grounding sources from this event.
-                    // Gemini typically attaches grounding_metadata only on the
-                    // final event (where finish_reason is set), but we accept
+                    // Gemini typically attaches groundingMetadata only on the
+                    // final event (where finishReason is set), but we accept
                     // it from any event.
                     let grounding: Option<Vec<LlmSource>> = response
                         .candidates
@@ -281,6 +281,12 @@ impl LlmProvider for GeminiProvider {
                                 .collect()
                         })
                         .filter(|v: &Vec<LlmSource>| !v.is_empty());
+                    if let Some(g) = grounding.as_ref() {
+                        info!(
+                            grounding_count = g.len(),
+                            finished, "Captured Gemini grounding sources from stream event"
+                        );
+                    }
 
                     if text.is_empty() && !finished && grounding.is_none() {
                         return None;
@@ -498,6 +504,7 @@ struct GeminiGenerationConfig {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GeminiResponse {
     candidates: Vec<GeminiCandidate>,
     #[serde(default)]
@@ -505,6 +512,7 @@ struct GeminiResponse {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GeminiCandidate {
     content: GeminiContent,
     #[serde(default)]
@@ -514,24 +522,28 @@ struct GeminiCandidate {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GroundingMetadata {
     #[serde(default)]
     grounding_chunks: Vec<GroundingChunk>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GroundingChunk {
     #[serde(default)]
     web: Option<WebChunk>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WebChunk {
     uri: Option<String>,
     title: Option<String>,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GeminiUsageMetadata {
     prompt_token_count: Option<u32>,
     candidates_token_count: Option<u32>,

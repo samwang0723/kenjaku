@@ -329,12 +329,21 @@ impl SearchService {
             grounding_sources
         };
 
-        let mut merged_sources = ctx.sources.clone();
-        let mut seen: std::collections::HashSet<String> =
-            merged_sources.iter().map(|s| s.url.clone()).collect();
+        // Order: google_search grounding sources first (real-time, web-grounded
+        // facts) followed by internal chunk sources (product knowledge base).
+        // Deduped by URL — if a URL appears in both, the grounding entry wins
+        // because it carries the resolved page title.
+        let mut merged_sources: Vec<LlmSource> =
+            Vec::with_capacity(resolved_grounding.len() + ctx.sources.len());
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for src in resolved_grounding {
             if seen.insert(src.url.clone()) {
                 merged_sources.push(src);
+            }
+        }
+        for src in &ctx.sources {
+            if seen.insert(src.url.clone()) {
+                merged_sources.push(src.clone());
             }
         }
 
