@@ -3,6 +3,249 @@
 // Talks to POST /api/v1/search (both SSE and JSON), GET /api/v1/autocomplete,
 // GET /api/v1/top-searches, POST /api/v1/feedback.
 
+// ====== i18n ======
+// Client-side string table keyed by BCP-47 locale. Empty userLocale ("Auto")
+// falls back to English. Strings are looked up via t(key).
+var TRANSLATIONS = {
+  en: {
+    app_title: 'Kenjaku AI',
+    search_greeting: 'What can I help you with?',
+    top_searches: 'Top searches',
+    searching: 'Searching',
+    debug: 'Debug',
+    ask_followup: 'Ask a follow-up',
+    debug_auth_title: 'Debug: Auth Token (staging/production)',
+    debug_raw_json: 'Debug: Raw JSON',
+    bearer_token: 'Bearer Token',
+    bearer_placeholder: 'Paste token for non-local environments',
+    copy: 'Copy',
+    helpful: 'Helpful',
+    not_helpful: 'Not helpful',
+    source_one: 'Source',
+    source_other: 'Sources',
+    sources_title: 'Sources',
+    help_us_improve: 'Help us improve',
+    tell_us_more: 'Tell us more',
+    submit: 'Submit',
+    thanks_feedback: 'Thanks for your feedback!',
+    locale_auto: 'Auto',
+    reason_factually_incorrect: 'Factually incorrect',
+    reason_missing_key_information: 'Missing key information',
+    reason_ignored_or_refused_instructions: 'Ignored or refused instructions',
+    reason_harmful_or_offensive: 'Harmful or offensive',
+  },
+  zh: {
+    app_title: 'Kenjaku AI',
+    search_greeting: '我可以帮你什么?',
+    top_searches: '热门搜索',
+    searching: '搜索中',
+    debug: '调试',
+    ask_followup: '继续提问',
+    debug_auth_title: '调试: 认证令牌 (staging/production)',
+    debug_raw_json: '调试: 原始 JSON',
+    bearer_token: 'Bearer 令牌',
+    bearer_placeholder: '粘贴非本地环境的令牌',
+    copy: '复制',
+    helpful: '有帮助',
+    not_helpful: '没帮助',
+    source_one: '来源',
+    source_other: '来源',
+    sources_title: '来源',
+    help_us_improve: '帮助我们改进',
+    tell_us_more: '告诉我们更多',
+    submit: '提交',
+    thanks_feedback: '感谢您的反馈!',
+    locale_auto: '自动',
+    reason_factually_incorrect: '事实错误',
+    reason_missing_key_information: '缺少关键信息',
+    reason_ignored_or_refused_instructions: '忽略或拒绝指令',
+    reason_harmful_or_offensive: '有害或冒犯',
+  },
+  'zh-TW': {
+    app_title: 'Kenjaku AI',
+    search_greeting: '我可以幫你什麼?',
+    top_searches: '熱門搜尋',
+    searching: '搜尋中',
+    debug: '除錯',
+    ask_followup: '繼續提問',
+    debug_auth_title: '除錯: 認證權杖 (staging/production)',
+    debug_raw_json: '除錯: 原始 JSON',
+    bearer_token: 'Bearer 權杖',
+    bearer_placeholder: '貼上非本地環境的權杖',
+    copy: '複製',
+    helpful: '有幫助',
+    not_helpful: '沒幫助',
+    source_one: '來源',
+    source_other: '來源',
+    sources_title: '來源',
+    help_us_improve: '幫助我們改進',
+    tell_us_more: '告訴我們更多',
+    submit: '送出',
+    thanks_feedback: '感謝您的回饋!',
+    locale_auto: '自動',
+    reason_factually_incorrect: '事實錯誤',
+    reason_missing_key_information: '缺少關鍵資訊',
+    reason_ignored_or_refused_instructions: '忽略或拒絕指令',
+    reason_harmful_or_offensive: '有害或冒犯',
+  },
+  ja: {
+    app_title: 'Kenjaku AI',
+    search_greeting: '何かお手伝いできますか?',
+    top_searches: '人気の検索',
+    searching: '検索中',
+    debug: 'デバッグ',
+    ask_followup: '続けて質問する',
+    debug_auth_title: 'デバッグ: 認証トークン (staging/production)',
+    debug_raw_json: 'デバッグ: Raw JSON',
+    bearer_token: 'Bearer トークン',
+    bearer_placeholder: '非ローカル環境のトークンを貼り付け',
+    copy: 'コピー',
+    helpful: '役に立った',
+    not_helpful: '役に立たない',
+    source_one: 'ソース',
+    source_other: 'ソース',
+    sources_title: 'ソース',
+    help_us_improve: '改善にご協力ください',
+    tell_us_more: '詳しく教えてください',
+    submit: '送信',
+    thanks_feedback: 'フィードバックありがとうございます!',
+    locale_auto: '自動',
+    reason_factually_incorrect: '事実と異なる',
+    reason_missing_key_information: '重要な情報が不足',
+    reason_ignored_or_refused_instructions: '指示を無視/拒否',
+    reason_harmful_or_offensive: '有害または不適切',
+  },
+  ko: {
+    app_title: 'Kenjaku AI',
+    search_greeting: '무엇을 도와드릴까요?',
+    top_searches: '인기 검색',
+    searching: '검색 중',
+    debug: '디버그',
+    ask_followup: '추가 질문하기',
+    debug_auth_title: '디버그: 인증 토큰 (staging/production)',
+    debug_raw_json: '디버그: Raw JSON',
+    bearer_token: 'Bearer 토큰',
+    bearer_placeholder: '비로컬 환경의 토큰 붙여넣기',
+    copy: '복사',
+    helpful: '도움됨',
+    not_helpful: '도움 안됨',
+    source_one: '출처',
+    source_other: '출처',
+    sources_title: '출처',
+    help_us_improve: '개선을 도와주세요',
+    tell_us_more: '자세히 알려주세요',
+    submit: '제출',
+    thanks_feedback: '피드백 감사합니다!',
+    locale_auto: '자동',
+    reason_factually_incorrect: '사실과 다름',
+    reason_missing_key_information: '핵심 정보 누락',
+    reason_ignored_or_refused_instructions: '지시 무시/거부',
+    reason_harmful_or_offensive: '유해하거나 불쾌함',
+  },
+  de: {
+    app_title: 'Kenjaku AI',
+    search_greeting: 'Wobei kann ich helfen?',
+    top_searches: 'Top-Suchanfragen',
+    searching: 'Suche läuft',
+    debug: 'Debug',
+    ask_followup: 'Folgefrage stellen',
+    debug_auth_title: 'Debug: Auth-Token (staging/production)',
+    debug_raw_json: 'Debug: Raw JSON',
+    bearer_token: 'Bearer-Token',
+    bearer_placeholder: 'Token für Nicht-Lokal-Umgebungen einfügen',
+    copy: 'Kopieren',
+    helpful: 'Hilfreich',
+    not_helpful: 'Nicht hilfreich',
+    source_one: 'Quelle',
+    source_other: 'Quellen',
+    sources_title: 'Quellen',
+    help_us_improve: 'Hilf uns besser zu werden',
+    tell_us_more: 'Mehr erzählen',
+    submit: 'Senden',
+    thanks_feedback: 'Danke für dein Feedback!',
+    locale_auto: 'Auto',
+    reason_factually_incorrect: 'Sachlich falsch',
+    reason_missing_key_information: 'Wichtige Informationen fehlen',
+    reason_ignored_or_refused_instructions: 'Anweisungen ignoriert/abgelehnt',
+    reason_harmful_or_offensive: 'Schädlich oder beleidigend',
+  },
+  fr: {
+    app_title: 'Kenjaku AI',
+    search_greeting: 'Comment puis-je vous aider ?',
+    top_searches: 'Recherches populaires',
+    searching: 'Recherche en cours',
+    debug: 'Débogage',
+    ask_followup: 'Poser une question',
+    debug_auth_title: 'Débogage : jeton d\'auth (staging/production)',
+    debug_raw_json: 'Débogage : JSON brut',
+    bearer_token: 'Jeton Bearer',
+    bearer_placeholder: 'Coller le jeton pour les environnements distants',
+    copy: 'Copier',
+    helpful: 'Utile',
+    not_helpful: 'Pas utile',
+    source_one: 'Source',
+    source_other: 'Sources',
+    sources_title: 'Sources',
+    help_us_improve: 'Aidez-nous à nous améliorer',
+    tell_us_more: 'Dites-nous en plus',
+    submit: 'Envoyer',
+    thanks_feedback: 'Merci pour votre retour !',
+    locale_auto: 'Auto',
+    reason_factually_incorrect: 'Factuellement incorrect',
+    reason_missing_key_information: 'Information clé manquante',
+    reason_ignored_or_refused_instructions: 'Instructions ignorées/refusées',
+    reason_harmful_or_offensive: 'Nuisible ou offensant',
+  },
+  es: {
+    app_title: 'Kenjaku AI',
+    search_greeting: '¿En qué puedo ayudarte?',
+    top_searches: 'Búsquedas populares',
+    searching: 'Buscando',
+    debug: 'Depurar',
+    ask_followup: 'Hacer otra pregunta',
+    debug_auth_title: 'Depurar: token de auth (staging/production)',
+    debug_raw_json: 'Depurar: JSON sin procesar',
+    bearer_token: 'Token Bearer',
+    bearer_placeholder: 'Pega el token para entornos no locales',
+    copy: 'Copiar',
+    helpful: 'Útil',
+    not_helpful: 'No útil',
+    source_one: 'Fuente',
+    source_other: 'Fuentes',
+    sources_title: 'Fuentes',
+    help_us_improve: 'Ayúdanos a mejorar',
+    tell_us_more: 'Cuéntanos más',
+    submit: 'Enviar',
+    thanks_feedback: '¡Gracias por tus comentarios!',
+    locale_auto: 'Auto',
+    reason_factually_incorrect: 'Incorrecto fácticamente',
+    reason_missing_key_information: 'Falta información clave',
+    reason_ignored_or_refused_instructions: 'Instrucciones ignoradas/rechazadas',
+    reason_harmful_or_offensive: 'Dañino u ofensivo',
+  },
+};
+
+function t(key) {
+  var loc = (typeof userLocale !== 'undefined' && userLocale) ? userLocale : 'en';
+  var table = TRANSLATIONS[loc] || TRANSLATIONS.en;
+  return table[key] || TRANSLATIONS.en[key] || key;
+}
+
+function applyI18n() {
+  var nodes = document.querySelectorAll('[data-i18n]');
+  for (var i = 0; i < nodes.length; i++) {
+    nodes[i].textContent = t(nodes[i].getAttribute('data-i18n'));
+  }
+  var phNodes = document.querySelectorAll('[data-i18n-placeholder]');
+  for (var j = 0; j < phNodes.length; j++) {
+    phNodes[j].placeholder = t(phNodes[j].getAttribute('data-i18n-placeholder'));
+  }
+  var titleNodes = document.querySelectorAll('[data-i18n-title]');
+  for (var k = 0; k < titleNodes.length; k++) {
+    titleNodes[k].title = t(titleNodes[k].getAttribute('data-i18n-title'));
+  }
+}
+
 // ====== Environment Switcher ======
 // When running behind Nginx (Docker Compose on localhost:3000) we use relative
 // proxy paths to avoid CORS. Otherwise we call the backend directly.
@@ -96,7 +339,7 @@ var localeSwitcher = document.getElementById('localeSwitcher');
 var localeLabel = document.getElementById('localeLabel');
 function renderLocaleLabel() {
   if (!localeLabel) return;
-  if (!userLocale) { localeLabel.textContent = 'Auto'; return; }
+  if (!userLocale) { localeLabel.textContent = t('locale_auto'); return; }
   var opt = localeSwitcher && localeSwitcher.querySelector('option[value="' + userLocale + '"]');
   localeLabel.textContent = opt ? opt.textContent : userLocale;
 }
@@ -110,10 +353,12 @@ if (localeSwitcher) {
     } else {
       localStorage.removeItem('kenjaku_locale');
     }
+    applyI18n();
     renderLocaleLabel();
     loadPills();
   });
 }
+applyI18n();
 
 // Stable per-device identifier used for the server's session-locale memory.
 // Distinct from `sessionId`, which rotates on every fresh conversation.
@@ -153,10 +398,10 @@ function clearConversationState() {
 // Reason categories match the server-seeded rows in `reason_categories` table.
 // IDs here are the serial PK values from `migrations/20260406000001_initial.up.sql`.
 var DISLIKE_REASONS = [
-  { id: 1, slug: 'factually_incorrect',            label: 'Factually incorrect' },
-  { id: 2, slug: 'missing_key_information',        label: 'Missing key information' },
-  { id: 3, slug: 'ignored_or_refused_instructions', label: 'Ignored or refused instructions' },
-  { id: 4, slug: 'harmful_or_offensive',           label: 'Harmful or offensive' },
+  { id: 1, slug: 'factually_incorrect',             i18n: 'reason_factually_incorrect' },
+  { id: 2, slug: 'missing_key_information',         i18n: 'reason_missing_key_information' },
+  { id: 3, slug: 'ignored_or_refused_instructions', i18n: 'reason_ignored_or_refused_instructions' },
+  { id: 4, slug: 'harmful_or_offensive',            i18n: 'reason_harmful_or_offensive' },
 ];
 
 // ====== Send / Stop Button ======
@@ -199,7 +444,7 @@ function showSearchView() {
   searchView.style.display = 'block';
   resultsView.style.display = 'none';
   searchInput.value = '';
-  searchInput.placeholder = 'Ask a follow-up';
+  searchInput.placeholder = t('ask_followup');
 }
 
 // ====== Raw JSON helper ======
@@ -402,16 +647,16 @@ function renderSources(comp) {
   setTimeout(function() { injectSourcesSheet(sources); }, 0);
 
   var html = '<div class="action-bar">';
-  html += '<button class="action-icon" title="Copy" onclick="copyAnswer()">' +
+  html += '<button class="action-icon" title="' + escapeHtml(t('copy')) + '" onclick="copyAnswer()">' +
     '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/>' +
     '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>';
-  html += '<button class="action-icon feedback-thumb thumb-up" id="thumbUp" title="Helpful">' +
+  html += '<button class="action-icon feedback-thumb thumb-up" id="thumbUp" title="' + escapeHtml(t('helpful')) + '">' +
     '<svg viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg></button>';
-  html += '<button class="action-icon feedback-thumb thumb-down" id="thumbDown" title="Not helpful">' +
+  html += '<button class="action-icon feedback-thumb thumb-down" id="thumbDown" title="' + escapeHtml(t('not_helpful')) + '">' +
     '<svg viewBox="0 0 24 24"><path d="M10 15V19a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10zM17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg></button>';
   html += '<span class="sources-pill" onclick="openSourcesSheet()">';
   html += '<svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
-  html += count + ' Source' + (count !== 1 ? 's' : '');
+  html += count + ' ' + (count !== 1 ? t('source_other') : t('source_one'));
   html += '</span>';
   html += '</div>';
   return html;
@@ -419,12 +664,12 @@ function renderSources(comp) {
 
 function renderActionBarNoSources() {
   return '<div class="action-bar">' +
-    '<button class="action-icon" title="Copy" onclick="copyAnswer()">' +
+    '<button class="action-icon" title="' + escapeHtml(t('copy')) + '" onclick="copyAnswer()">' +
     '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/>' +
     '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>' +
-    '<button class="action-icon feedback-thumb thumb-up" id="thumbUp" title="Helpful">' +
+    '<button class="action-icon feedback-thumb thumb-up" id="thumbUp" title="' + escapeHtml(t('helpful')) + '">' +
     '<svg viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg></button>' +
-    '<button class="action-icon feedback-thumb thumb-down" id="thumbDown" title="Not helpful">' +
+    '<button class="action-icon feedback-thumb thumb-down" id="thumbDown" title="' + escapeHtml(t('not_helpful')) + '">' +
     '<svg viewBox="0 0 24 24"><path d="M10 15V19a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10zM17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg></button>' +
     '</div>';
 }
@@ -564,7 +809,7 @@ async function doSearch(query, isFollowUp) {
 
   showResultsView(query);
   searchInput.value = '';
-  searchInput.placeholder = 'Ask a follow-up';
+  searchInput.placeholder = t('ask_followup');
 
   if (currentAbortController) currentAbortController.abort();
   currentAbortController = new AbortController();
@@ -792,7 +1037,7 @@ async function submitFeedback(requestId, action, detail, isCancel) {
       body: JSON.stringify(body),
     });
     if (resp.ok) {
-      if (!isCancel) showToast('Thanks for your feedback!', 'success');
+      if (!isCancel) showToast(t('thanks_feedback'), 'success');
     } else {
       feedbackState[requestId] = null;
       updateThumbButtons();
@@ -826,7 +1071,7 @@ function injectFeedbackSheet() {
   sheet.id = 'feedbackSheet';
 
   var html = '<div class="feedback-sheet-header">';
-  html += '<span class="feedback-sheet-title">Help us improve</span>';
+  html += '<span class="feedback-sheet-title">' + escapeHtml(t('help_us_improve')) + '</span>';
   html += '<button class="feedback-sheet-close" id="feedbackSheetClose"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>';
   html += '</div>';
   html += '<div class="feedback-reasons">';
@@ -835,12 +1080,12 @@ function injectFeedbackSheet() {
     html += '<label class="feedback-reason">';
     html += '<input type="radio" name="dislike_reason" value="' + r.id + '">';
     html += '<span class="feedback-radio"></span>';
-    html += '<span class="feedback-reason-text">' + escapeHtml(r.label) + '</span>';
+    html += '<span class="feedback-reason-text">' + escapeHtml(t(r.i18n)) + '</span>';
     html += '</label>';
   }
   html += '</div>';
-  html += '<textarea class="feedback-details" id="feedbackDetails" placeholder="Tell us more" rows="3"></textarea>';
-  html += '<button class="feedback-submit-btn" id="feedbackSubmitBtn">Submit</button>';
+  html += '<textarea class="feedback-details" id="feedbackDetails" placeholder="' + escapeHtml(t('tell_us_more')) + '" rows="3"></textarea>';
+  html += '<button class="feedback-submit-btn" id="feedbackSubmitBtn">' + escapeHtml(t('submit')) + '</button>';
 
   setHtml(sheet, html);
   frame.appendChild(sheet);
@@ -906,7 +1151,7 @@ function injectSourcesSheet(sources) {
   sheet.id = 'sourcesSheet';
 
   var html = '<div class="sources-sheet-header">';
-  html += '<span class="sources-sheet-title">Sources</span>';
+  html += '<span class="sources-sheet-title">' + escapeHtml(t('sources_title')) + '</span>';
   html += '<button class="sources-sheet-close" onclick="closeSourcesSheet()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>';
   html += '</div>';
 

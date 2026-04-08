@@ -20,7 +20,7 @@
         </button>
         <div class="header-title" id="headerTitle">
           <div class="header-title-row">
-            <span class="header-sparkle"><img src="enso.svg" alt="" width="18" height="18" style="display:block"></span> Kenjaku AI
+            <span class="header-sparkle"><img src="enso.svg" alt="" width="18" height="18" style="display:block"></span> <span data-i18n="app_title">Kenjaku AI</span>
           </div>
           <div class="header-pills-row">
             <span class="env-pill">
@@ -54,8 +54,8 @@
       <div class="scroll-area" id="scrollArea">
         <!-- Initial search view -->
         <div id="searchView" class="search-view">
-          <div class="search-greeting">What can I help you with?</div>
-          <div class="pills-label"><span class="pills-label-icon"><img src="enso.svg" alt="" width="18" height="18" style="display:block"></span> Top searches</div>
+          <div class="search-greeting" data-i18n="search_greeting">What can I help you with?</div>
+          <div class="pills-label"><span class="pills-label-icon"><img src="enso.svg" alt="" width="18" height="18" style="display:block"></span> <span data-i18n="top_searches">Top searches</span></div>
           <div class="pills" id="pills"></div>
         </div>
 
@@ -63,11 +63,11 @@
         <div id="resultsView" class="results-view" style="display:none">
           <div class="query-echo" id="queryEcho"></div>
           <div class="search-status" id="searchStatus" style="display:none">
-            <span class="status-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span> Searching
+            <span class="status-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span> <span data-i18n="searching">Searching</span>
           </div>
           <div id="results" class="results"></div>
           <details id="debugInfo" class="debug-info" style="display:none">
-            <summary class="debug-summary">Debug</summary>
+            <summary class="debug-summary" data-i18n="debug">Debug</summary>
             <div class="debug-tags" id="debugTags"></div>
             <div class="debug-ids" id="debugIds"></div>
           </details>
@@ -77,7 +77,7 @@
       <!-- Fixed bottom bar -->
       <div class="bottom-bar">
         <div class="search-input-wrap">
-          <input type="text" id="searchInput" placeholder="Ask a follow-up" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="autoCompleteDropdown" aria-autocomplete="list">
+          <input type="text" id="searchInput" data-i18n-placeholder="ask_followup" placeholder="Ask a follow-up" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="autoCompleteDropdown" aria-autocomplete="list">
           <button id="searchBtn" type="button" class="send-btn">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
               stroke-linecap="round" stroke-linejoin="round">
@@ -91,14 +91,14 @@
   </div>
 
   <details class="debug-panel debug-auth-panel" id="authPanel">
-    <summary>Debug: Auth Token (staging/production)</summary>
+    <summary data-i18n="debug_auth_title">Debug: Auth Token (staging/production)</summary>
     <div class="debug-context-grid">
-      <label>Bearer Token<input type="password" id="bearerToken" placeholder="Paste token for non-local environments" autocomplete="off"></label>
+      <label><span data-i18n="bearer_token">Bearer Token</span><input type="password" id="bearerToken" data-i18n-placeholder="bearer_placeholder" placeholder="Paste token for non-local environments" autocomplete="off"></label>
     </div>
   </details>
 
   <details class="debug-panel">
-    <summary>Debug: Raw JSON</summary>
+    <summary data-i18n="debug_raw_json">Debug: Raw JSON</summary>
     <pre id="rawJson"></pre>
   </details>
 
