@@ -1,0 +1,1146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Kenjaku — Architecture Reference</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-0: #0a0f1a;
+  --bg-1: #0f1624;
+  --bg-2: #141c2e;
+  --bg-3: #1c2538;
+  --bg-code: #070b15;
+  --border: rgba(180, 168, 240, 0.12);
+  --border-strong: rgba(180, 168, 240, 0.28);
+
+  --text-primary: #F2E8D2;
+  --text-secondary: #B0A795;
+  --text-muted: #6E6857;
+
+  --gold: #C7A04A;
+  --sage: #6FA265;
+  --rose: #FF7591;
+  --violet: #B4A8F0;
+
+  --radius: 10px;
+  --radius-lg: 14px;
+}
+
+* { box-sizing: border-box; min-width: 0; }
+html, body { margin: 0; }
+body {
+  background: var(--bg-0);
+  color: var(--text-primary);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.65;
+  letter-spacing: 0.02em;
+  -webkit-font-smoothing: antialiased;
+  overflow-wrap: break-word;
+}
+
+a {
+  color: var(--gold);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color .15s;
+}
+a:hover { border-bottom-color: var(--gold); }
+
+/* ====== Layout ====== */
+.shell {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 56px;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 48px 32px 120px;
+}
+@media (max-width: 960px) {
+  .shell { grid-template-columns: 1fr; gap: 24px; padding: 24px 20px 80px; }
+  .toc { position: static !important; height: auto !important; max-height: none !important; }
+}
+
+/* ====== TOC ====== */
+.toc {
+  position: sticky;
+  top: 32px;
+  height: calc(100vh - 64px);
+  overflow-y: auto;
+  padding-right: 8px;
+  font-size: 12.5px;
+}
+.toc h4 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 0 0 12px;
+}
+.toc ol { list-style: none; padding: 0; margin: 0 0 20px; counter-reset: item; }
+.toc ol li {
+  counter-increment: item;
+  position: relative;
+  padding: 5px 0 5px 32px;
+}
+.toc ol li::before {
+  content: counter(item, decimal-leading-zero);
+  position: absolute;
+  left: 0;
+  top: 5px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.toc a {
+  color: var(--text-secondary);
+  border-bottom: none;
+  transition: color .15s;
+}
+.toc a:hover,
+.toc a.active { color: var(--gold); }
+
+/* ====== Hero ====== */
+.hero {
+  border-top: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+  padding: 64px 0 72px;
+  margin-bottom: 56px;
+}
+.kicker {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-bottom: 22px;
+}
+.hero h1 {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 300;
+  font-size: clamp(38px, 5.8vw, 62px);
+  line-height: 1.08;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  margin: 0 0 24px;
+}
+.hero h1 em {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--gold);
+  letter-spacing: 0.18em;
+}
+.hero .lede {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 17px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  max-width: 720px;
+  margin: 0 0 36px;
+  font-weight: 400;
+  letter-spacing: 0.015em;
+}
+.hero .pills { display: flex; gap: 8px; flex-wrap: wrap; }
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(180,168,240,0.04);
+}
+.pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gold); }
+.pill.sage .dot   { background: var(--sage); }
+.pill.rose .dot   { background: var(--rose); }
+.pill.violet .dot { background: var(--violet); }
+
+/* ====== Section ====== */
+section {
+  scroll-margin-top: 32px;
+  margin-bottom: 80px;
+}
+.sec-num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-bottom: 10px;
+}
+h2 {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 400;
+  font-size: 30px;
+  line-height: 1.15;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  margin: 0 0 28px;
+}
+h3 {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 500;
+  font-size: 16px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin: 40px 0 14px;
+  color: var(--text-primary);
+}
+h4 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 28px 0 12px;
+}
+p { margin: 0 0 16px; color: var(--text-secondary); }
+p strong, li strong { color: var(--text-primary); font-weight: 600; }
+ul, ol { color: var(--text-secondary); padding-left: 20px; margin: 0 0 16px; }
+ul li, ol li { margin: 4px 0; }
+
+/* ====== Mermaid wrap ====== */
+.diagram {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 28px 24px;
+  margin: 24px 0;
+  overflow-x: auto;
+}
+.diagram pre.mermaid {
+  margin: 0;
+  text-align: center;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-family: 'Inter', sans-serif;
+}
+.diagram-caption {
+  display: block;
+  text-align: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 14px;
+  letter-spacing: 0.05em;
+}
+
+/* ====== Table ====== */
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin: 16px 0 24px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+th, td {
+  text-align: left;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  overflow-wrap: break-word;
+}
+thead th {
+  background: var(--bg-2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:nth-child(even) { background: rgba(180,168,240,0.025); }
+td code { font-size: 12.5px; color: var(--violet); }
+
+/* ====== Code ====== */
+pre:not(.mermaid) {
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  overflow-x: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  margin: 16px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+pre:not(.mermaid).sql {
+  white-space: pre;
+  word-break: normal;
+}
+code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+  color: var(--gold);
+  background: rgba(199,160,74,0.08);
+  padding: 1.5px 6px;
+  border-radius: 4px;
+}
+pre code { background: transparent; padding: 0; color: inherit; font-size: inherit; }
+
+/* ====== Cards / grid ====== */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+@media (max-width: 720px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+.card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px;
+}
+.card .label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--gold);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.card h4 {
+  color: var(--text-primary);
+  font-family: 'Inter', system-ui, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 13px;
+  font-weight: 500;
+  margin: 0 0 12px;
+}
+.card p { margin: 0; font-size: 13.5px; }
+
+/* ====== Callouts ====== */
+.callout {
+  border-left: 3px solid var(--gold);
+  background: rgba(199,160,74,0.07);
+  padding: 16px 22px;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  margin: 20px 0;
+  color: var(--text-secondary);
+}
+.callout strong { color: var(--text-primary); }
+.callout.sage   { border-color: var(--sage);   background: rgba(111,162,101,0.08); }
+.callout.rose   { border-color: var(--rose);   background: rgba(255,117,145,0.07); }
+.callout.violet { border-color: var(--violet); background: rgba(180,168,240,0.07); }
+
+/* ====== Footer ====== */
+footer {
+  border-top: 1px solid var(--border);
+  padding-top: 24px;
+  margin-top: 72px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+footer a { color: var(--text-muted); border-bottom-color: var(--text-muted); }
+</style>
+</head>
+<body>
+<div class="shell">
+
+<aside class="toc" aria-label="Table of contents">
+  <h4>Contents</h4>
+  <ol>
+    <li><a href="#overview">System Overview</a></li>
+    <li><a href="#crates">Crate Graph</a></li>
+    <li><a href="#principles">Design Principles</a></li>
+    <li><a href="#pipeline">Search Pipeline</a></li>
+    <li><a href="#components">Component System</a></li>
+    <li><a href="#dataflow">Data Flow</a></li>
+    <li><a href="#topology">Infrastructure</a></li>
+    <li><a href="#schema">Database Schema</a></li>
+    <li><a href="#security">Security</a></li>
+    <li><a href="#adrs">Decision Records</a></li>
+    <li><a href="#scaling">Scaling</a></li>
+    <li><a href="#latency">Measured Latency</a></li>
+    <li><a href="#sse">SSE Protocol</a></li>
+    <li><a href="#ci">CI Pipeline</a></li>
+  </ol>
+</aside>
+
+<main>
+
+<header class="hero">
+  <div class="kicker">Architecture Reference</div>
+  <h1><em>Kenjaku</em><br>Contextual RAG Search Engine</h1>
+  <p class="lede">A Rust workspace of six strictly-layered crates: hybrid vector + BM25 retrieval, LLM answer generation with Google Search grounding, multi-locale translation, pluggable component layouts, SSE streaming, and an in-memory session history store for follow-up context.</p>
+  <div class="pills">
+    <span class="pill"><span class="dot"></span>Rust 1.88 · edition 2024</span>
+    <span class="pill sage"><span class="dot"></span>6 crates · strict DAG</span>
+    <span class="pill violet"><span class="dot"></span>Axum + Tower</span>
+    <span class="pill rose"><span class="dot"></span>Qdrant · PostgreSQL · Redis</span>
+  </div>
+</header>
+
+<!-- §1 -->
+<section id="overview">
+  <div class="sec-num">§ 01 · System Overview</div>
+  <h2>Context &amp; Containers</h2>
+  <p>Kenjaku is a contextual Retrieval-Augmented Generation (RAG) search engine. It combines hybrid vector + full-text retrieval, LLM-based answer generation, intent classification, multi-locale translation, and a pluggable component layout system to deliver structured search responses.</p>
+
+  <h3>System Context</h3>
+  <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    USER(["👤 End User&lt;br/&gt;&lt;small&gt;Searches via API or UI&lt;/small&gt;"])
+    ADMIN(["👤 Content Admin&lt;br/&gt;&lt;small&gt;Ingests via CLI&lt;/small&gt;"])
+
+    subgraph KJ[" "]
+        direction TB
+        KENJAKU["🔎 &lt;b&gt;Kenjaku Search Engine&lt;/b&gt;&lt;br/&gt;&lt;small&gt;Contextual RAG · hybrid retrieval&lt;br/&gt;LLM generation · multi-locale&lt;/small&gt;"]
+    end
+
+    OAI["☁ &lt;b&gt;OpenAI&lt;/b&gt;&lt;br/&gt;&lt;small&gt;text-embedding-3-small&lt;/small&gt;"]
+    GEM["☁ &lt;b&gt;Google Gemini&lt;/b&gt;&lt;br/&gt;&lt;small&gt;generation · translate&lt;br/&gt;suggest · intent&lt;/small&gt;"]
+    CLD["☁ &lt;b&gt;Anthropic Claude&lt;/b&gt;&lt;br/&gt;&lt;small&gt;chunk contextualization&lt;/small&gt;"]
+
+    USER -- "HTTPS + SSE" --&gt; KENJAKU
+    ADMIN -- "CLI" --&gt; KENJAKU
+    KENJAKU -- "embed" --&gt; OAI
+    KENJAKU -- "generate" --&gt; GEM
+    KENJAKU -- "contextualize" --&gt; CLD
+
+    classDef person fill:#1c2538,stroke:#C7A04A,color:#F2E8D2,stroke-width:2px
+    classDef system fill:#2a3350,stroke:#FF7591,color:#F2E8D2,stroke-width:2.5px
+    classDef ext fill:#141c2e,stroke:#6FA265,color:#F2E8D2,stroke-width:1.5px,stroke-dasharray:4 3
+    class USER,ADMIN person
+    class KENJAKU system
+    class OAI,GEM,CLD ext
+    style KJ fill:transparent,stroke:transparent
+</pre>
+  </div>
+  <span class="diagram-caption">Trust boundaries · users &amp; admin → kenjaku → 3 external LLM providers</span>
+
+  <h3>Container Diagram</h3>
+  <div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    USER["End User"]
+
+    subgraph KJSYS["Kenjaku System"]
+        direction TB
+        GETO["geto-web&lt;br/&gt;nginx + vanilla JS&lt;br/&gt;phone-frame SPA · SSE"]
+        SERVER["kenjaku-server&lt;br/&gt;HTTP · DI · workers"]
+        API["kenjaku-api&lt;br/&gt;REST · SSE · middleware"]
+        SERVICE["kenjaku-service&lt;br/&gt;search · retrieval&lt;br/&gt;history · blending"]
+        INFRA["kenjaku-infra&lt;br/&gt;provider impls&lt;br/&gt;DB clients · telemetry"]
+        CORE["kenjaku-core&lt;br/&gt;domain types · traits&lt;br/&gt;config · errors"]
+        INGEST["kenjaku-ingest&lt;br/&gt;crawl · parse&lt;br/&gt;chunk · embed"]
+    end
+
+    QD[("Qdrant&lt;br/&gt;vectors + BM25")]
+    PG[("PostgreSQL&lt;br/&gt;conversations · feedback&lt;br/&gt;trending · suggestions")]
+    RD[("Redis&lt;br/&gt;trending · locale memory&lt;br/&gt;title cache")]
+
+    USER -->|HTTPS| GETO
+    GETO -->|same-origin proxy| API
+    SERVER --> API
+    API --> SERVICE
+    SERVICE --> INFRA
+    SERVICE --> CORE
+    INFRA --> CORE
+    INGEST --> SERVICE
+    INGEST --> INFRA
+
+    INFRA -->|gRPC| QD
+    INFRA -->|SQL| PG
+    INFRA -->|RESP| RD
+
+    classDef user fill:#1c2538,stroke:#C7A04A,color:#F2E8D2,stroke-width:2px
+    classDef web fill:#2a3350,stroke:#FF7591,color:#F2E8D2,stroke-width:2px
+    classDef rust fill:#1c2538,stroke:#B4A8F0,color:#F2E8D2,stroke-width:1.5px
+    classDef coreCls fill:#1c2538,stroke:#C7A04A,color:#F2E8D2,stroke-width:2.5px
+    classDef db fill:#141c2e,stroke:#6FA265,color:#F2E8D2,stroke-width:1.5px
+    class USER user
+    class GETO web
+    class SERVER,API,SERVICE,INFRA,INGEST rust
+    class CORE coreCls
+    class QD,PG,RD db
+</pre>
+  </div>
+  <span class="diagram-caption">Client → web → API → service → infra → data &amp; external providers</span>
+</section>
+
+<!-- §2 -->
+<section id="crates">
+  <div class="sec-num">§ 02 · Dependency DAG</div>
+  <h2>Crate Graph</h2>
+  <p>A strict directed acyclic graph. <code>kenjaku-core</code> is the leaf: zero external service dependencies, only types and traits. All I/O lives in <code>kenjaku-infra</code>. Service logic depends only on <code>Arc&lt;dyn Trait&gt;</code> — never on concrete provider types.</p>
+
+  <div class="diagram">
+<pre class="mermaid">
+graph TD
+  SERVER[kenjaku-server&lt;br/&gt;&lt;i&gt;binary&lt;/i&gt;] --&gt; API[kenjaku-api]
+  SERVER --&gt; SERVICE[kenjaku-service]
+  SERVER --&gt; INFRA[kenjaku-infra]
+  SERVER --&gt; CORE[kenjaku-core]
+  API --&gt; SERVICE
+  API --&gt; INFRA
+  API --&gt; CORE
+  SERVICE --&gt; INFRA
+  SERVICE --&gt; CORE
+  INFRA --&gt; CORE
+  INGEST[kenjaku-ingest&lt;br/&gt;&lt;i&gt;binary&lt;/i&gt;] --&gt; SERVICE
+  INGEST --&gt; INFRA
+  INGEST --&gt; CORE
+  classDef core fill:#1c2538,stroke:#C7A04A,color:#F2E8D2,stroke-width:2px
+  classDef infra fill:#1c2538,stroke:#6FA265,color:#F2E8D2,stroke-width:2px
+  classDef service fill:#1c2538,stroke:#B4A8F0,color:#F2E8D2,stroke-width:2px
+  classDef api fill:#1c2538,stroke:#FF7591,color:#F2E8D2,stroke-width:2px
+  class CORE core
+  class INFRA infra
+  class SERVICE service
+  class API api
+  class SERVER,INGEST api
+</pre>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Crate</th><th>Depends On</th><th>Depended By</th></tr></thead>
+      <tbody>
+        <tr><td><code>kenjaku-core</code></td><td>(none — leaf)</td><td>infra, service, api, server, ingest</td></tr>
+        <tr><td><code>kenjaku-infra</code></td><td>core</td><td>service, api, server, ingest</td></tr>
+        <tr><td><code>kenjaku-service</code></td><td>core, infra</td><td>api, server, ingest</td></tr>
+        <tr><td><code>kenjaku-api</code></td><td>core, infra, service</td><td>server</td></tr>
+        <tr><td><code>kenjaku-server</code></td><td>core, infra, service, api</td><td>(binary)</td></tr>
+        <tr><td><code>kenjaku-ingest</code></td><td>core, infra, service</td><td>(binary)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- §3 -->
+<section id="principles">
+  <div class="sec-num">§ 03 · Design Principles</div>
+  <h2>Golden Rules</h2>
+
+  <h3>3.1 · Trait-Based Abstraction</h3>
+  <p>All external dependencies are abstracted behind traits defined in <code>kenjaku-core::traits</code>:</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Trait</th><th>Purpose</th><th>Implementation</th></tr></thead>
+      <tbody>
+        <tr><td><code>EmbeddingProvider</code></td><td>Vector embedding generation</td><td><code>OpenAiEmbeddingProvider</code></td></tr>
+        <tr><td><code>LlmProvider</code></td><td>Answer generation, streaming, translation, suggestions</td><td><code>GeminiProvider</code></td></tr>
+        <tr><td><code>Contextualizer</code></td><td>Chunk contextualization during ingestion</td><td><code>ClaudeContextualizer</code></td></tr>
+        <tr><td><code>IntentClassifier</code></td><td>Query intent classification</td><td><code>LlmIntentClassifier</code></td></tr>
+        <tr><td><code>Retriever</code></td><td>Document retrieval</td><td><code>HybridRetriever</code></td></tr>
+        <tr><td><code>Reranker</code></td><td>Result fusion / reranking</td><td><code>RrfReranker</code></td></tr>
+        <tr><td><code>Clusterer</code></td><td>Corpus clustering for default suggestions</td><td><code>LinfaClusterer</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout">
+    <strong>Golden Rule.</strong> Business logic in <code>service</code> never imports concrete provider types. It depends only on <code>Arc&lt;dyn Trait&gt;</code>.
+  </div>
+
+  <h3>3.2 · Immutable Domain Types</h3>
+  <p>All domain types in <code>kenjaku-core::types</code> are immutable <code>#[derive(Clone, Serialize, Deserialize)]</code> structs. State transitions produce new values, not mutations.</p>
+
+  <h3>3.3 · Fire-and-Forget Paths</h3>
+  <p>Hot-path latency is protected by decoupling non-critical work:</p>
+  <ul>
+    <li><strong>Trending</strong> — direct Redis <code>ZINCRBY</code>, errors logged but not propagated</li>
+    <li><strong>Conversations</strong> — bounded <code>mpsc</code> channel, batch-flushed by a worker</li>
+    <li><strong>Locale memory</strong> — Redis <code>SET EX</code> spawned via <code>tokio::spawn</code>, 2h TTL</li>
+    <li><strong>Session history</strong> — in-memory <code>DashMap</code> per session, janitor evicts idle sessions</li>
+  </ul>
+
+  <h3>3.4 · Configuration Hierarchy</h3>
+<pre><code>config/base.yaml              — defaults, no secrets (committed)
+config/{APP_ENV}.yaml         — env overrides (committed)
+config/secrets.{env}.yaml     — API keys, DB credentials (gitignored)
+KENJAKU__* env vars           — final override layer</code></pre>
+  <p>Secrets MUST live in <code>secrets.{env}.yaml</code> or env vars. <code>AppConfig::validate_secrets()</code> runs at startup and fails fast with a clear message listing what is missing.</p>
+
+  <h3>3.5 · Supported Locales</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Code</th><th>Language</th><th>Code</th><th>Language</th></tr></thead>
+      <tbody>
+        <tr><td><code>en</code></td><td>English</td><td><code>ko</code></td><td>Korean</td></tr>
+        <tr><td><code>zh</code></td><td>Chinese (Simplified)</td><td><code>de</code></td><td>German</td></tr>
+        <tr><td><code>zh-TW</code></td><td>Chinese (Traditional)</td><td><code>fr</code></td><td>French</td></tr>
+        <tr><td><code>ja</code></td><td>Japanese</td><td><code>es</code></td><td>Spanish</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Locale on <code>/search</code> is auto-detected by the LLM translator from the query text and pinned into the answer via Gemini <code>systemInstruction</code>. For GET endpoints (<code>/top-searches</code>, <code>/autocomplete</code>) a resolution chain applies: <code>?locale=</code> → session memory (Redis, 2h TTL) → <code>Accept-Language</code> → <code>en</code>.</p>
+
+  <h3>3.6 · Intent Classification</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Intent</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>factual</code></td><td>Seeking specific factual information</td></tr>
+        <tr><td><code>navigational</code></td><td>Looking for a specific page or resource</td></tr>
+        <tr><td><code>how_to</code></td><td>Procedural or step-by-step question</td></tr>
+        <tr><td><code>comparison</code></td><td>Comparing options</td></tr>
+        <tr><td><code>troubleshooting</code></td><td>Diagnosing or fixing a problem</td></tr>
+        <tr><td><code>exploratory</code></td><td>Open-ended research</td></tr>
+        <tr><td><code>conversational</code></td><td>Chitchat — not a real search</td></tr>
+        <tr><td><code>unknown</code></td><td>Cannot determine</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- §4 -->
+<section id="pipeline">
+  <div class="sec-num">§ 04 · Search Pipeline</div>
+  <h2>Request Flow</h2>
+  <p>Intent classification and query normalization run in parallel via <code>tokio::join!</code>; vector and BM25 retrieval run in parallel via <code>tokio::try_join!</code>. Both failures degrade gracefully — the search hot path never blocks.</p>
+  <div class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant H as Handler
+    participant S as SearchService
+    participant IC as IntentClassifier
+    participant TS as TranslationService
+    participant HS as SessionHistoryStore
+    participant R as HybridRetriever
+    participant E as EmbeddingProvider
+    participant Q as Qdrant
+    participant RR as RrfReranker
+    participant L as LlmProvider
+    participant CS as ComponentService
+
+    C->>H: POST /api/v1/search
+    H->>S: search(SearchRequest, X-Session-Id)
+
+    par Parallel preamble
+      S->>IC: classify(query)
+      IC-->>S: Intent
+    and
+      S->>TS: translate(query)
+      TS-->>S: normalized_en + detected_locale
+    end
+
+    S->>HS: snapshot_for_llm(session_id)
+    HS-->>S: history[..N]
+
+    S->>R: retrieve(normalized, top_k)
+    par
+      R->>E: embed(query)
+      E-->>R: vector
+      R->>Q: vector_search
+      Q-->>R: vector_results
+    and
+      R->>Q: fulltext_search
+      Q-->>R: fulltext_results
+    end
+    R->>RR: weighted RRF merge
+    RR-->>R: chunks
+    R-->>S: chunks
+
+    S->>L: generate(query, chunks, history, locale)
+    L-->>S: answer + grounding sources
+
+    S->>L: suggest(query, answer)
+    L-->>S: suggestions
+
+    S->>CS: assemble(response)
+    CS-->>S: components
+
+    par Fire-and-forget
+      S->>HS: append(turn)
+    end
+
+    S-->>H: SearchResponse
+    H-->>C: JSON or SSE
+</pre>
+  </div>
+</section>
+
+<!-- §5 -->
+<section id="components">
+  <div class="sec-num">§ 05 · Component System</div>
+  <h2>Pluggable Response Layout</h2>
+  <p>The component system provides a configurable layout for search responses. Order comes from <code>search.component_layout.order</code> in YAML.</p>
+  <div class="diagram">
+<pre class="mermaid">
+graph LR
+  subgraph ORDER["ComponentLayout (from config)"]
+    O[order: llm_answer, sources, suggestions]
+  end
+  subgraph ASM["ComponentService.assemble()"]
+    A[LlmAnswerComponent]
+    B[SourcesComponent]
+    C[SuggestionsComponent]
+  end
+  O --&gt; A --&gt; B --&gt; C
+  subgraph RESP["SearchResponse"]
+    R["components: Vec&amp;lt;Component&amp;gt;"]
+  end
+  C --&gt; R
+</pre>
+  </div>
+  <div class="callout sage">
+    <strong>Adding a new component.</strong> (1) New variant in <code>ComponentType</code> / <code>Component</code> enums. (2) New component struct. (3) New arm in <code>ComponentService::assemble()</code>. (4) Update config YAML.
+  </div>
+</section>
+
+<!-- §6 -->
+<section id="dataflow">
+  <div class="sec-num">§ 06 · Data Flow</div>
+  <h2>Ingestion &amp; Query Pipelines</h2>
+
+  <h3>6.1 · Ingestion</h3>
+  <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+  URL[URL Crawl] --&gt; CLEAN
+  DIR[Local Folder] --&gt; CLEAN
+  CLEAN["Strip noise&lt;br/&gt;script · style · nav"] --&gt; MD["HTML → Markdown&lt;br/&gt;(html2md)"]
+  MD --&gt; CHUNK["Token chunking&lt;br/&gt;800 · 100 overlap&lt;br/&gt;cl100k_base"]
+  CHUNK --&gt; CTX["Contextualize&lt;br/&gt;Claude Haiku&lt;br/&gt;prompt caching"]
+  CTX --&gt; EMBED["Embed&lt;br/&gt;OpenAI&lt;br/&gt;text-embedding-3-small"]
+  EMBED --&gt; QD[(Qdrant)]
+</pre>
+  </div>
+  <p>The URL crawler enforces SSRF protection: private-IP blocklist (RFC1918, loopback, link-local, CG-NAT), DNS resolution check before every fetch, and <code>redirect::Policy::none()</code> to prevent redirect-based bypass.</p>
+
+  <h3>6.2 · Query</h3>
+  <div class="diagram">
+<pre class="mermaid">
+flowchart TD
+  Q[User Query] --&gt; IC{Intent classify}
+  Q --&gt; TR[Translate &amp; detect locale]
+  TR --&gt; SEARCH_Q[Normalized EN]
+  SEARCH_Q --&gt; VS["Vector search&lt;br/&gt;Qdrant"]
+  SEARCH_Q --&gt; FT["BM25 text search&lt;br/&gt;Qdrant"]
+  VS --&gt; RRF["Weighted RRF merge"]
+  FT --&gt; RRF
+  RRF --&gt; LLM["LLM generate&lt;br/&gt;+ history + context"]
+  LLM --&gt; SUG[LLM suggest follow-ups]
+  LLM --&gt; ASM[Assemble components]
+  SUG --&gt; ASM
+  ASM --&gt; RESP[SearchResponse]
+  Q --&gt; TREND[Record trending]
+  RESP --&gt; CONV[Queue conversation]
+  RESP --&gt; HIST[Append session history]
+</pre>
+  </div>
+</section>
+
+<!-- §7 -->
+<section id="topology">
+  <div class="sec-num">§ 07 · Infrastructure</div>
+  <h2>Topology</h2>
+  <div class="diagram">
+<pre class="mermaid">
+graph TB
+  subgraph APP["Application"]
+    SRV["kenjaku-server :8080"]
+    ING["kenjaku-ingest CLI"]
+  end
+  subgraph DATA["Data"]
+    QD[(Qdrant :6334)]
+    PG[(PostgreSQL :5432)]
+    RD[(Redis :6379)]
+  end
+  subgraph EXT["External APIs"]
+    OAI[OpenAI]
+    GEM[Gemini]
+    CLD[Claude]
+  end
+  subgraph OBS["Observability"]
+    OTLP[OTLP Collector]
+    LOG[JSON Logs]
+  end
+  SRV --&gt; QD
+  SRV --&gt; PG
+  SRV --&gt; RD
+  SRV --&gt; OAI
+  SRV --&gt; GEM
+  SRV --&gt; OTLP
+  SRV --&gt; LOG
+  ING --&gt; QD
+  ING --&gt; OAI
+  ING --&gt; CLD
+</pre>
+  </div>
+
+  <h3>Background Workers</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Worker</th><th>Trigger</th><th>Function</th></tr></thead>
+      <tbody>
+        <tr><td><code>TrendingFlushWorker</code></td><td>Timer (300s)</td><td>SCANs Redis <code>trending:*</code>, flushes entries above threshold to PostgreSQL</td></tr>
+        <tr><td><code>ConversationFlushWorker</code></td><td>Channel drain</td><td>Batch-inserts queued conversation records (up to 64 per flush)</td></tr>
+        <tr><td><code>SuggestionRefreshWorker</code></td><td>Cron <code>0 3 * * *</code></td><td>Mini-batch k-means over Qdrant, one multi-locale Gemini call per cluster, atomic swap via <code>refresh_batches.status</code></td></tr>
+        <tr><td><code>SessionHistoryStore</code> janitor</td><td>Periodic scan</td><td>Evicts sessions idle past <code>session_idle_ttl_seconds</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- §8 -->
+<section id="schema">
+  <div class="sec-num">§ 08 · Data Schema</div>
+  <h2>PostgreSQL · Qdrant · Redis</h2>
+
+  <h3>PostgreSQL</h3>
+<pre class="sql"><code>-- Reason categories for negative feedback
+CREATE TABLE reason_categories (
+    id SERIAL PRIMARY KEY,
+    slug VARCHAR(100) UNIQUE NOT NULL,
+    label VARCHAR(255) NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+-- User feedback — (session_id, request_id) unique index upserts
+-- repeat like/dislike clicks in place.
+CREATE TABLE feedback (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id VARCHAR(255) NOT NULL,
+    request_id VARCHAR(255) NOT NULL,
+    action VARCHAR(20) NOT NULL CHECK (action IN ('like','dislike','cancel')),
+    reason_category_id INTEGER REFERENCES reason_categories(id),
+    description TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX idx_feedback_session_request_unique
+    ON feedback(session_id, request_id);
+
+-- Popular / trending search queries (flushed from Redis)
+CREATE TABLE popular_queries (
+    id SERIAL PRIMARY KEY,
+    locale VARCHAR(10) NOT NULL,
+    query TEXT NOT NULL,
+    search_count BIGINT NOT NULL DEFAULT 0,
+    period VARCHAR(20) NOT NULL,
+    period_date DATE NOT NULL,
+    UNIQUE(locale, query, period, period_date)
+);
+
+-- Conversation records for analytics and audit
+CREATE TABLE conversations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id VARCHAR(255) NOT NULL,
+    request_id VARCHAR(255) NOT NULL UNIQUE,
+    query TEXT NOT NULL,
+    response_text TEXT NOT NULL,
+    locale VARCHAR(10) NOT NULL,
+    intent VARCHAR(50) NOT NULL,
+    meta JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Default suggestions — atomic swap via refresh_batches.status
+CREATE TABLE refresh_batches (
+    id BIGSERIAL PRIMARY KEY,
+    corpus_fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL, -- running · active · superseded · failed
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    llm_calls INTEGER,
+    questions_kept INTEGER,
+    questions_rejected INTEGER
+);
+CREATE UNIQUE INDEX idx_refresh_batches_single_active
+    ON refresh_batches ((status)) WHERE status = 'active';
+
+CREATE TABLE default_suggestions (
+    id BIGSERIAL PRIMARY KEY,
+    batch_id BIGINT NOT NULL REFERENCES refresh_batches(id) ON DELETE CASCADE,
+    locale VARCHAR(10) NOT NULL,
+    question TEXT NOT NULL,
+    question_lower TEXT NOT NULL,
+    topic_cluster_id INTEGER NOT NULL,
+    topic_label TEXT,
+    weight REAL NOT NULL,
+    generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);</code></pre>
+
+  <h3>Qdrant Collection</h3>
+<pre><code>{
+  "collection_name": "documents",
+  "vectors": { "size": 1536, "distance": "Cosine" },
+  "payload_indices": {
+    "contextualized_content": "text (tokenized, lowercase, word)",
+    "title": "text (tokenized, lowercase, word)"
+  }
+}</code></pre>
+
+  <h3>Redis Key Patterns</h3>
+<pre><code>trending:daily:{locale}:{YYYY-MM-DD}    ZSET  (query → score)   TTL 2 days
+trending:weekly:{locale}:{YYYY-W##}     ZSET  (query → score)   TTL 14 days
+title:{redirect_url}                     JSON  {u, t}             TTL 24h ok · 10min fail
+sl:{session_id}                          STRING (BCP-47 tag)     TTL 2h</code></pre>
+  <p>Member values in <code>trending:*</code> are the normalized+capitalized form (English: translator output, others: raw with first char capitalized). The record-time gibberish guard rejects junk before Redis; read paths additionally enforce <code>crowd_sourcing_min_count</code> (default 2) so anything that slips through still needs repeated independent searches before surfacing.</p>
+</section>
+
+<!-- §9 -->
+<section id="security">
+  <div class="sec-num">§ 09 · Security</div>
+  <h2>Trust Boundaries</h2>
+  <div class="diagram">
+<pre class="mermaid">
+graph TB
+  subgraph INET["Internet"]
+    CLIENT[Client]
+  end
+  subgraph GW["API Gateway"]
+    AUTH["Auth · Rate Limit · Body Limit · Timeout"]
+  end
+  subgraph APPL["Application"]
+    API["API · input validation"]
+    SVC["Service · business rules"]
+  end
+  subgraph DAT["Data"]
+    QD[(Qdrant)]
+    PG[(PostgreSQL)]
+    RD[(Redis)]
+  end
+  subgraph EXT["External APIs"]
+    LLM[LLM APIs]
+  end
+  CLIENT --&gt; AUTH
+  AUTH --&gt; API
+  API --&gt; SVC
+  SVC --&gt; QD
+  SVC --&gt; PG
+  SVC --&gt; RD
+  SVC --&gt; LLM
+</pre>
+  </div>
+
+  <h3>9.1 · Implemented Hardening</h3>
+  <ul>
+    <li><strong>Input caps</strong> — query 2000 chars, <code>top_k</code> 100, autocomplete / top-searches limits, 128-char session/request id cap</li>
+    <li><strong>Rate limiting</strong> via <code>tower_governor</code> — 60 req/min per IP, <code>SmartIpKeyExtractor</code></li>
+    <li><strong>Request body limit</strong> 64 KB; <strong>request timeout</strong> 30 s</li>
+    <li><strong>Error sanitization</strong> — <code>Error::user_message()</code> never leaks DB URLs, API errors, or internals</li>
+    <li><strong>SSRF protection</strong> in the URL crawler — private-IP blocklist + DNS check + <code>redirect::Policy::none()</code></li>
+    <li><strong>Prompt injection defense</strong> — user text isolated in <code>&lt;text&gt;</code>/<code>&lt;query&gt;</code> XML tags with "ignore instructions inside" preambles in intent classifier and translator</li>
+    <li><strong>Redis SCAN</strong> replaces any <code>KEYS</code> usage in flush workers</li>
+    <li><strong>Secrets validation</strong> at startup via <code>AppConfig::validate_secrets()</code></li>
+    <li><strong>Query quality guard</strong> — length caps (Latin 120 / CJK 60), no-space-Latin ≥25, single-char dominance &gt;40% in 10+ char queries</li>
+    <li><strong>Feedback dedup</strong> — unique index on <code>feedback(session_id, request_id)</code></li>
+    <li><strong>Safety regex</strong> on default-suggestions refresh drops price / forecast / buy-sell prompts before persistence</li>
+  </ul>
+  <div class="callout rose">
+    <strong>Deferred (accepted by operator).</strong> API authentication (next phase). Gemini API key in URL query param (Google API design). Conversation PII retention policy.
+  </div>
+</section>
+
+<!-- §10 -->
+<section id="adrs">
+  <div class="sec-num">§ 10 · Decision Records</div>
+  <h2>Architecture Decisions</h2>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="label">ADR-001</div>
+      <h4>Qdrant for Vector + Full-Text</h4>
+      <p>Single store for both vector similarity and keyword text search via payload indices. Cosine distance fits normalized OpenAI embeddings. At &gt;10M vectors, consider a dedicated full-text engine alongside.</p>
+    </div>
+    <div class="card">
+      <div class="label">ADR-002</div>
+      <h4>Reciprocal Rank Fusion</h4>
+      <p>Weighted RRF: <code>score = semantic_weight/(rank+1) + bm25_weight/(rank+1)</code>. Rank-based — avoids incomparable score distributions between vector and text. Default 80/20.</p>
+    </div>
+    <div class="card">
+      <div class="label">ADR-003</div>
+      <h4>Channel-Based Conversation Flush</h4>
+      <p>Bounded <code>tokio::sync::mpsc</code> (1024) with batch-insert worker. <code>try_send</code> is non-blocking — zero latency on the search path. Records can be lost on crash — acceptable for analytics.</p>
+    </div>
+    <div class="card">
+      <div class="label">ADR-004</div>
+      <h4>Gemini + google_search Grounding</h4>
+      <p>Cost-effective for high volume. Native Google Search grounding provides real-time source citations. Vendor lock-in mitigated by <code>LlmProvider</code> trait abstraction.</p>
+    </div>
+    <div class="card">
+      <div class="label">ADR-005</div>
+      <h4>Claude for Contextualization</h4>
+      <p>Claude Haiku 4.5 with prompt caching — document content (large) is cached; only the chunk prompt (small) changes per call. Separate from runtime LLM because contextualization is write-path only.</p>
+    </div>
+    <div class="card">
+      <div class="label">ADR-006</div>
+      <h4>In-Memory Session History</h4>
+      <p>Per-session <code>DashMap&lt;String, VecDeque&lt;Turn&gt;&gt;</code> — capped, idle-TTL evicted, no cross-instance sharing. Separate from the durable <code>conversations</code> table; PG remains the audit source of truth.</p>
+    </div>
+  </div>
+</section>
+
+<!-- §11 -->
+<section id="scaling">
+  <div class="sec-num">§ 11 · Scaling</div>
+  <h2>Bottlenecks &amp; Mitigations</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Bottleneck</th><th>Impact</th><th>Mitigation</th></tr></thead>
+      <tbody>
+        <tr><td>LLM latency (3 sequential calls)</td><td>~600 ms minimum</td><td>Parallelize intent + translation via <code>tokio::join!</code>; cache intent for repeats</td></tr>
+        <tr><td>Embedding latency</td><td>50–200 ms / query</td><td>Cache embeddings for repeated queries</td></tr>
+        <tr><td>Redis <code>KEYS</code></td><td>O(N) blocks Redis</td><td>Replaced with <code>SCAN</code> cursor iteration</td></tr>
+        <tr><td>PostgreSQL pool</td><td>Default 10 connections</td><td>Increase + PgBouncer in transaction mode</td></tr>
+        <tr><td>Single process</td><td>Replica limit</td><td>Deploy N replicas — all durable state in external stores</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Projected capacity:</strong> ~500–1000 QPS (LLM-latency bound). With query-result caching layered on top, projected ~2000 QPS.</p>
+</section>
+
+<!-- §12 -->
+<section id="latency">
+  <div class="sec-num">§ 12 · Measured Latency</div>
+  <h2>Post-Optimization Numbers</h2>
+  <p>Test query against the ingested corpus (64 chunks, depth = 1):</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Metric</th><th>Non-streaming</th><th>Streaming (SSE)</th></tr></thead>
+      <tbody>
+        <tr><td>TTFT</td><td>n/a</td><td>~3.7 s</td></tr>
+        <tr><td>Total time</td><td>~6.8 s</td><td>~5.4 s</td></tr>
+        <tr><td>UX</td><td>Single JSON dump</td><td>Tokens flow live</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <h4>Streaming pipeline breakdown</h4>
+  <ol>
+    <li><code>max(intent_classify, translate)</code> in parallel — ~1.5 s</li>
+    <li>Hybrid retrieve (vector + BM25 parallel) — ~0.5 s</li>
+    <li>Open Gemini <code>streamGenerateContent</code> — ~1.7 s to first byte</li>
+    <li>Stream token deltas — ~1.7 s for a typical answer</li>
+  </ol>
+  <div class="callout violet">
+    <strong>Historical note.</strong> The intent classifier was previously ~5 s because every call sent the <code>google_search</code> grounding tool. Fix: <code>GeminiProvider::generate()</code> detects empty context and skips the tool entirely.
+  </div>
+</section>
+
+<!-- §13 -->
+<section id="sse">
+  <div class="sec-num">§ 13 · SSE Protocol</div>
+  <h2>Streaming Contract</h2>
+  <p><code>SearchService::search_stream</code> returns a <code>SearchStreamOutput</code>:</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>start_metadata</code></td><td><code>StreamStartMetadata</code></td><td>Everything known before the LLM begins: intent, translated_query, locale, retrieval_count, preamble_latency_ms, request_id, session_id</td></tr>
+        <tr><td><code>stream</code></td><td><code>Pin&lt;Box&lt;dyn Stream&lt;Item = StreamChunk&gt;&gt;&gt;</code></td><td>Token deltas. Each chunk may carry <code>grounding: Vec&lt;LlmSource&gt;</code> extracted from Gemini's <code>groundingMetadata.groundingChunks[].web</code></td></tr>
+        <tr><td><code>context</code></td><td><code>StreamContext</code></td><td>Bookkeeping (sources, instants, ids, history_key) consumed by <code>complete_stream()</code> after the stream finishes</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>Events emitted into a <code>mpsc::channel(100)</code> wrapped in <code>Sse::new(ReceiverStream::new(rx))</code>:</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Event</th><th>Payload</th><th>Sent when</th></tr></thead>
+      <tbody>
+        <tr><td><code>start</code></td><td><code>StreamStartMetadata</code> JSON</td><td>Once, before the first token</td></tr>
+        <tr><td><code>delta</code></td><td><code>{"text": "..."}</code></td><td>Per LLM token chunk</td></tr>
+        <tr><td><code>done</code></td><td><code>StreamDoneMetadata</code></td><td>After the last delta — <code>complete_stream</code> resolves grounding URLs via <code>TitleResolver</code>, merges sources, runs <code>suggest()</code>, queues conversation + history</td></tr>
+        <tr><td><code>error</code></td><td><code>{"error": "..."}</code></td><td>On any failure — logged AND sent so the client sees it</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout rose">
+    <strong>Do not hand-roll SSE parsing.</strong> The server uses <code>eventsource-stream</code> to consume Gemini's <code>streamGenerateContent?alt=sse</code> — Gemini's separators vary across responses and a manual parser was buggy.
+  </div>
+</section>
+
+<!-- §14 -->
+<section id="ci">
+  <div class="sec-num">§ 14 · CI</div>
+  <h2>Pipeline</h2>
+  <p><code>.github/workflows/ci.yml</code> runs on push to <code>main</code> and on PRs:</p>
+  <ul>
+    <li><strong>Rust stable job</strong> — <code>cargo fmt --check</code>, <code>cargo clippy --workspace --all-targets -- -D warnings</code>, <code>cargo build --locked</code>, <code>cargo test --locked</code>. Cache key <code>kenjaku-stable</code> via <code>Swatinem/rust-cache@v2</code>. Workspace-wide <code>RUSTFLAGS=-D warnings</code>.</li>
+    <li><strong>Docker build job</strong> (depends on Rust) — validates <code>docker compose config -q</code>, then builds both <code>kenjaku</code> and <code>geto-web</code> images via <code>docker/build-push-action@v6</code> with GHA cache.</li>
+  </ul>
+  <div class="callout sage">
+    <strong>Both jobs must pass before merge.</strong>
+  </div>
+</section>
+
+<footer>
+  Source: <a href="architect.md">docs/architect.md</a> · Kenjaku workspace · generated visualization
+</footer>
+
+</main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js"
+        integrity="sha384-R63zfMfSwJF4xCR11wXii+QUsbiBIdiDzDbtxia72oGWfkT7WHJfmD/I/eeHPJyT"
+        crossorigin="anonymous"
+        referrerpolicy="no-referrer"></script>
+<script>
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'base',
+  themeVariables: {
+    fontFamily: "'Inter', system-ui, sans-serif",
+    fontSize: '14px',
+    background: '#0f1624',
+    primaryColor: '#1c2538',
+    primaryTextColor: '#F2E8D2',
+    primaryBorderColor: '#C7A04A',
+    lineColor: '#B4A8F0',
+    secondaryColor: '#141c2e',
+    tertiaryColor: '#0a0f1a',
+    secondaryTextColor: '#F2E8D2',
+    tertiaryTextColor: '#F2E8D2',
+    nodeTextColor: '#F2E8D2',
+    clusterBkg: 'rgba(180,168,240,0.04)',
+    clusterBorder: 'rgba(180,168,240,0.22)',
+    edgeLabelBackground: '#0f1624',
+    labelBackground: '#0f1624',
+    mainBkg: '#1c2538',
+    actorBorder: '#C7A04A',
+    actorBkg: '#1c2538',
+    actorTextColor: '#F2E8D2',
+    actorLineColor: '#B4A8F0',
+    signalColor: '#B4A8F0',
+    signalTextColor: '#F2E8D2',
+    labelBoxBkgColor: '#1c2538',
+    labelBoxBorderColor: '#C7A04A',
+    noteBkgColor: '#2a3350',
+    noteTextColor: '#F2E8D2',
+    noteBorderColor: '#B4A8F0',
+    sequenceNumberColor: '#F2E8D2',
+  },
+  flowchart: { curve: 'basis', htmlLabels: true, padding: 16 },
+  sequence: { actorMargin: 48, messageMargin: 36, noteMargin: 12, boxMargin: 10 },
+});
+
+// TOC active-link highlighting on scroll
+const links = document.querySelectorAll('.toc a');
+const sections = Array.from(links)
+  .map(a => document.querySelector(a.getAttribute('href')))
+  .filter(Boolean);
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      const id = '#' + entry.target.id;
+      links.forEach(a => a.classList.toggle('active', a.getAttribute('href') === id));
+    }
+  });
+}, { rootMargin: '-30% 0px -60% 0px' });
+sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>

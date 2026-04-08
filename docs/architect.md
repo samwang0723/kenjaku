@@ -4,62 +4,78 @@
 
 Kenjaku is a contextual Retrieval-Augmented Generation (RAG) search engine built as a Rust workspace with 6 crates. It combines hybrid vector + full-text retrieval, LLM-based answer generation, intent classification, multi-locale translation, and a pluggable component layout system to deliver structured search responses.
 
-### C4 Context Diagram
+### System Context
 
 ```mermaid
-C4Context
-    title System Context — Kenjaku RAG Search Engine
+flowchart LR
+    USER["End User<br/>searches via API or UI"]
+    ADMIN["Content Admin<br/>ingests via CLI"]
 
-    Person(user, "End User", "Searches for information via API or UI")
-    Person(admin, "Content Admin", "Ingests documents via CLI")
+    KENJAKU["<b>Kenjaku Search Engine</b><br/>Contextual RAG · hybrid retrieval<br/>LLM generation · multi-locale"]
 
-    System(kenjaku, "Kenjaku Search Engine", "Contextual RAG search with hybrid retrieval, LLM generation, and multi-locale support")
+    OAI["OpenAI<br/>text-embedding-3-small"]
+    GEM["Google Gemini<br/>generation · translate<br/>suggest · intent"]
+    CLD["Anthropic Claude<br/>chunk contextualization"]
 
-    System_Ext(openai, "OpenAI API", "text-embedding-3-small for vector embeddings")
-    System_Ext(gemini, "Google Gemini API", "LLM generation, translation, suggestions, intent classification")
-    System_Ext(claude, "Anthropic Claude API", "Chunk contextualization during ingestion")
+    USER -->|HTTPS + SSE| KENJAKU
+    ADMIN -->|CLI| KENJAKU
+    KENJAKU -->|embed| OAI
+    KENJAKU -->|generate| GEM
+    KENJAKU -->|contextualize| CLD
 
-    Rel(user, kenjaku, "Searches, provides feedback", "HTTPS/JSON + SSE")
-    Rel(admin, kenjaku, "Ingests documents", "CLI")
-    Rel(kenjaku, openai, "Generates embeddings", "HTTPS")
-    Rel(kenjaku, gemini, "Generates answers, translates, classifies", "HTTPS")
-    Rel(kenjaku, claude, "Contextualizes chunks", "HTTPS")
+    classDef person fill:#1c2538,stroke:#C7A04A,color:#F2E8D2,stroke-width:2px
+    classDef system fill:#2a3350,stroke:#FF7591,color:#F2E8D2,stroke-width:2.5px
+    classDef ext fill:#141c2e,stroke:#6FA265,color:#F2E8D2,stroke-width:1.5px,stroke-dasharray:4 3
+    class USER,ADMIN person
+    class KENJAKU system
+    class OAI,GEM,CLD ext
 ```
 
-### C4 Container Diagram
+### Container Diagram
 
 ```mermaid
-C4Container
-    title Container Diagram — Kenjaku
+flowchart TB
+    USER["End User"]
 
-    Person(user, "End User")
+    subgraph KJSYS["Kenjaku System"]
+        direction TB
+        GETO["geto-web<br/>nginx + vanilla JS<br/>phone-frame SPA · SSE"]
+        SERVER["kenjaku-server<br/>HTTP · DI · workers"]
+        API["kenjaku-api<br/>REST · SSE · middleware"]
+        SERVICE["kenjaku-service<br/>search · retrieval<br/>history · blending"]
+        INFRA["kenjaku-infra<br/>provider impls<br/>DB clients · telemetry"]
+        CORE["kenjaku-core<br/>domain types · traits<br/>config · errors"]
+        INGEST["kenjaku-ingest<br/>crawl · parse<br/>chunk · embed"]
+    end
 
-    Container_Boundary(kenjaku, "Kenjaku System") {
-        Container(geto, "geto-web", "nginx + vanilla JS", "Mobile phone-frame SPA. Same-origin reverse proxy to /api/, renders SSE start/delta/done events into a debug panel + streaming markdown answer")
-        Container(server, "kenjaku-server", "Rust/Axum", "HTTP server, graceful shutdown, worker orchestration")
-        Container(api, "kenjaku-api", "Rust/Axum", "REST endpoints, DTOs, middleware, SSE streaming")
-        Container(service, "kenjaku-service", "Rust", "Search orchestration, hybrid retrieval, reranking, trending, feedback, query quality guard, grounding source merge")
-        Container(core, "kenjaku-core", "Rust", "Domain types, traits, config, errors")
-        Container(infra, "kenjaku-infra", "Rust", "Provider implementations, DB clients, telemetry")
-        Container(ingest, "kenjaku-ingest", "Rust/Clap", "CLI for document crawling, parsing, chunking")
-    }
+    QD[("Qdrant<br/>vectors + BM25")]
+    PG[("PostgreSQL<br/>conversations · feedback<br/>trending · suggestions")]
+    RD[("Redis<br/>trending · locale memory<br/>title cache")]
 
-    ContainerDb(qdrant, "Qdrant", "Vector DB", "Embeddings + full-text index")
-    ContainerDb(postgres, "PostgreSQL", "RDBMS", "Conversations, feedback, trending")
-    ContainerDb(redis, "Redis", "Cache", "Real-time trending sorted sets + resolved Gemini grounding title cache")
+    USER -->|HTTPS| GETO
+    GETO -->|same-origin proxy| API
+    SERVER --> API
+    API --> SERVICE
+    SERVICE --> INFRA
+    SERVICE --> CORE
+    INFRA --> CORE
+    INGEST --> SERVICE
+    INGEST --> INFRA
 
-    Rel(user, geto, "HTTPS (browser)")
-    Rel(geto, api, "Reverse-proxy /api/, /health, /ready")
-    Rel(api, service, "Rust calls")
-    Rel(service, core, "Domain types")
-    Rel(service, infra, "Data access")
-    Rel(infra, core, "Implements traits")
-    Rel(infra, qdrant, "gRPC")
-    Rel(infra, postgres, "TCP/SQL")
-    Rel(infra, redis, "RESP")
-    Rel(server, api, "Builds router")
-    Rel(server, service, "Creates services")
-    Rel(server, infra, "Creates providers")
+    INFRA -->|gRPC| QD
+    INFRA -->|SQL| PG
+    INFRA -->|RESP| RD
+
+    classDef user fill:#1c2538,stroke:#C7A04A,color:#F2E8D2,stroke-width:2px
+    classDef web fill:#2a3350,stroke:#FF7591,color:#F2E8D2,stroke-width:2px
+    classDef rust fill:#1c2538,stroke:#B4A8F0,color:#F2E8D2,stroke-width:1.5px
+    classDef coreCls fill:#1c2538,stroke:#C7A04A,color:#F2E8D2,stroke-width:2.5px
+    classDef db fill:#141c2e,stroke:#6FA265,color:#F2E8D2,stroke-width:1.5px
+    class USER user
+    class GETO web
+    class SERVER,API,SERVICE,INFRA,INGEST rust
+    class CORE coreCls
+    class QD,PG,RD db
 ```
 
 ## 2. Crate Dependency Graph
