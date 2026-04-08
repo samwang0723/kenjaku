@@ -5,6 +5,7 @@ pub mod feedback;
 pub mod intent;
 pub mod locale_memory;
 pub mod quality;
+pub mod refresh_worker;
 pub mod reranker;
 pub mod retriever;
 pub mod search;
