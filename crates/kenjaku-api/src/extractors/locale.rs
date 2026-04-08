@@ -87,9 +87,14 @@ impl ResolvedLocale {
             return Self::new(l, ResolvedLocaleSource::QueryParam);
         }
 
-        // 2. Session memory.
-        if let (Some(id), Some(lk)) = (session_id.map(str::trim).filter(|s| !s.is_empty()), lookup)
-            && let Some(l) = lk.lookup(id).await
+        // 2. Session memory. Cap session id at 128 chars to prevent Redis
+        //    key-size amplification / abuse via arbitrarily long headers.
+        if let (Some(id), Some(lk)) = (
+            session_id
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && s.len() <= 128),
+            lookup,
+        ) && let Some(l) = lk.lookup(id).await
         {
             return Self::new(l, ResolvedLocaleSource::SessionMemory);
         }
@@ -222,6 +227,17 @@ mod tests {
         let r = ResolvedLocale::resolve(None, None, None, None).await;
         assert_eq!(r.locale, Locale::En);
         assert_eq!(r.source, ResolvedLocaleSource::Default);
+    }
+
+    #[tokio::test]
+    async fn overlong_session_id_is_ignored() {
+        // 200-char session id should be rejected by the 128-char cap
+        // and fall through to Accept-Language instead of hitting lookup.
+        let lk = lookup(Some(Locale::Ko));
+        let long = "a".repeat(200);
+        let r = ResolvedLocale::resolve(None, Some(&long), Some(&lk), Some("fr")).await;
+        assert_eq!(r.locale, Locale::Fr);
+        assert_eq!(r.source, ResolvedLocaleSource::AcceptLanguage);
     }
 
     #[tokio::test]
