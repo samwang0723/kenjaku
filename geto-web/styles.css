@@ -1424,7 +1424,7 @@ body {
 .send-btn {
   position: absolute;
   right: 6px;
-  bottom: 6px;
+  bottom: 10px;
   width: 28px;
   height: 28px;
   display: flex;
