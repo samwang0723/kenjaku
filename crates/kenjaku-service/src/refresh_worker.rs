@@ -205,6 +205,7 @@ impl SuggestionRefreshWorker {
             &safety_re,
             batch_id,
             self.config.default_weight,
+            Duration::from_millis(refresh_cfg.generation_timeout_ms),
         )
         .await?;
 
@@ -275,6 +276,7 @@ async fn generate_rows_for_clusters(
     safety_re: &Regex,
     batch_id: i64,
     default_weight: i32,
+    generation_timeout: Duration,
 ) -> Result<GeneratedRows> {
     let mut rows: Vec<NewDefaultSuggestion> = Vec::new();
     let mut llm_calls: usize = 0;
@@ -289,14 +291,25 @@ async fn generate_rows_for_clusters(
         }
 
         llm_calls += 1;
-        let cluster_questions = match llm.generate_cluster_questions(&excerpt).await {
-            Ok(q) => q,
-            Err(e) => {
-                cluster_errors += 1;
-                warn!(error = %e, cluster_id = cluster.id, "generate_cluster_questions failed; skipping cluster");
-                continue;
-            }
-        };
+        let cluster_questions =
+            match time::timeout(generation_timeout, llm.generate_cluster_questions(&excerpt)).await
+            {
+                Ok(Ok(q)) => q,
+                Ok(Err(e)) => {
+                    cluster_errors += 1;
+                    warn!(error = %e, cluster_id = cluster.id, "generate_cluster_questions failed; skipping cluster");
+                    continue;
+                }
+                Err(_) => {
+                    cluster_errors += 1;
+                    warn!(
+                        cluster_id = cluster.id,
+                        timeout_ms = generation_timeout.as_millis() as u64,
+                        "generate_cluster_questions timed out; skipping cluster"
+                    );
+                    continue;
+                }
+            };
 
         for (locale, questions) in &cluster_questions.questions {
             let (good, bad) = safety_filter(questions.clone(), safety_re);
@@ -666,7 +679,7 @@ mod tests {
         let clusters = dummy_clusters(3, sample.len());
         let re = safety_regex();
 
-        let err = generate_rows_for_clusters(&llm, &clusters, &sample, &re, 42, 10)
+        let err = generate_rows_for_clusters(&llm, &clusters, &sample, &re, 42, 10, Duration::from_secs(5))
             .await
             .expect_err("expected all-failed abort");
         let msg = err.to_string();
@@ -733,7 +746,7 @@ mod tests {
         let clusters = dummy_clusters(2, sample.len());
         let re = safety_regex();
 
-        let err = generate_rows_for_clusters(&llm, &clusters, &sample, &re, 99, 10)
+        let err = generate_rows_for_clusters(&llm, &clusters, &sample, &re, 99, 10, Duration::from_secs(5))
             .await
             .expect_err("expected empty-rows abort");
         let msg = err.to_string();
@@ -754,7 +767,7 @@ mod tests {
         let clusters = dummy_clusters(4, sample.len());
         let re = safety_regex();
 
-        let out = generate_rows_for_clusters(&llm, &clusters, &sample, &re, 7, 10)
+        let out = generate_rows_for_clusters(&llm, &clusters, &sample, &re, 7, 10, Duration::from_secs(5))
             .await
             .expect("partial failure should still return Ok");
         assert_eq!(out.llm_calls, 4);
@@ -764,6 +777,70 @@ mod tests {
             "expected non-empty rows for partial success"
         );
         assert!(out.rows.iter().all(|r| r.batch_id == 7));
+    }
+
+    /// Mock that sleeps far longer than any plausible timeout, used to
+    /// exercise the per-cluster `tokio::time::timeout` guard.
+    struct SleepingLlm;
+
+    #[async_trait]
+    impl LlmProvider for SleepingLlm {
+        async fn generate(
+            &self,
+            _q: &str,
+            _c: &[RetrievedChunk],
+            _l: Locale,
+        ) -> kenjaku_core::error::Result<LlmResponse> {
+            unimplemented!()
+        }
+        async fn generate_stream(
+            &self,
+            _q: &str,
+            _c: &[RetrievedChunk],
+            _l: Locale,
+        ) -> kenjaku_core::error::Result<
+            Pin<Box<dyn Stream<Item = kenjaku_core::error::Result<StreamChunk>> + Send>>,
+        > {
+            unimplemented!()
+        }
+        async fn translate(&self, _t: &str) -> kenjaku_core::error::Result<TranslationResult> {
+            unimplemented!()
+        }
+        async fn suggest(&self, _q: &str, _a: &str) -> kenjaku_core::error::Result<Vec<String>> {
+            unimplemented!()
+        }
+        async fn generate_cluster_questions(
+            &self,
+            _excerpt: &str,
+        ) -> kenjaku_core::error::Result<ClusterQuestions> {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok(ClusterQuestions::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn generate_rows_aborts_when_all_clusters_timeout() {
+        let llm = SleepingLlm;
+        let sample = dummy_sample(3);
+        let clusters = dummy_clusters(2, sample.len());
+        let re = safety_regex();
+
+        let err = generate_rows_for_clusters(
+            &llm,
+            &clusters,
+            &sample,
+            &re,
+            123,
+            10,
+            Duration::from_millis(20),
+        )
+        .await
+        .expect_err("expected timeout-induced abort");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("zero questions") && msg.contains("2 cluster errors"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]
