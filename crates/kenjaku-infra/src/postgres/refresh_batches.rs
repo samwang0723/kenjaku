@@ -132,6 +132,7 @@ impl RefreshBatchesRepository {
             DELETE FROM refresh_batches
              WHERE id IN (
                  SELECT id FROM refresh_batches
+                 WHERE status != 'running'
                  ORDER BY started_at DESC
                  OFFSET $1
              )
