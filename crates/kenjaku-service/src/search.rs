@@ -74,7 +74,11 @@ impl SearchService {
     #[instrument(skip(self), fields(
         request_id = %req.request_id,
     ))]
-    pub async fn search(&self, req: &SearchRequest) -> Result<SearchResponse> {
+    pub async fn search(
+        &self,
+        req: &SearchRequest,
+        device_session_id: Option<&str>,
+    ) -> Result<SearchResponse> {
         let start = Instant::now();
 
         // Step 1 + 2: Classify intent AND translate/normalize+detect-locale
@@ -117,9 +121,15 @@ impl SearchService {
         // Fire-and-forget: record the detected locale into LocaleMemory so
         // subsequent same-session reads (autocomplete, top-searches) can
         // honor it without requiring a client hint.
+        //
+        // PR9 #8: prefer the device id from `X-Session-Id` because that's
+        // what the read-path extractor keys on. Falls back to the body
+        // session_id if the client did not send the header.
         {
             let lm = self.locale_memory.clone();
-            let sid = req.session_id.clone();
+            let sid = device_session_id
+                .map(str::to_owned)
+                .unwrap_or_else(|| req.session_id.clone());
             tokio::spawn(async move {
                 lm.record(&sid, detected_locale).await;
             });
@@ -241,7 +251,11 @@ impl SearchService {
     #[instrument(skip(self), fields(
         request_id = %req.request_id,
     ))]
-    pub async fn search_stream(&self, req: &SearchRequest) -> Result<SearchStreamOutput> {
+    pub async fn search_stream(
+        &self,
+        req: &SearchRequest,
+        device_session_id: Option<&str>,
+    ) -> Result<SearchStreamOutput> {
         let start = Instant::now();
 
         // Step 1 + 2: Classify intent AND translate/normalize+detect-locale
@@ -265,10 +279,14 @@ impl SearchService {
             "Resolved answer locale (streaming)"
         );
 
-        // Fire-and-forget: record detected locale for the session.
+        // Fire-and-forget: record detected locale for the session. PR9 #8:
+        // prefer device id from `X-Session-Id` so the read path can hit
+        // the same key.
         {
             let lm = self.locale_memory.clone();
-            let sid = req.session_id.clone();
+            let sid = device_session_id
+                .map(str::to_owned)
+                .unwrap_or_else(|| req.session_id.clone());
             tokio::spawn(async move {
                 lm.record(&sid, detected_locale).await;
             });

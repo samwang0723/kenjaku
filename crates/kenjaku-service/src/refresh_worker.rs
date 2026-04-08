@@ -27,9 +27,9 @@ use std::time::Duration;
 use chrono::{Datelike, TimeZone, Utc};
 use cron::Schedule;
 use regex::Regex;
-use std::str::FromStr;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
+use std::str::FromStr;
 use tokio::time;
 use tracing::{error, info, warn};
 
@@ -321,25 +321,28 @@ async fn generate_rows_for_clusters(
         }
 
         llm_calls += 1;
-        let cluster_questions =
-            match time::timeout(generation_timeout, llm.generate_cluster_questions(&excerpt)).await
-            {
-                Ok(Ok(q)) => q,
-                Ok(Err(e)) => {
-                    cluster_errors += 1;
-                    warn!(error = %e, cluster_id = cluster.id, "generate_cluster_questions failed; skipping cluster");
-                    continue;
-                }
-                Err(_) => {
-                    cluster_errors += 1;
-                    warn!(
-                        cluster_id = cluster.id,
-                        timeout_ms = generation_timeout.as_millis() as u64,
-                        "generate_cluster_questions timed out; skipping cluster"
-                    );
-                    continue;
-                }
-            };
+        let cluster_questions = match time::timeout(
+            generation_timeout,
+            llm.generate_cluster_questions(&excerpt),
+        )
+        .await
+        {
+            Ok(Ok(q)) => q,
+            Ok(Err(e)) => {
+                cluster_errors += 1;
+                warn!(error = %e, cluster_id = cluster.id, "generate_cluster_questions failed; skipping cluster");
+                continue;
+            }
+            Err(_) => {
+                cluster_errors += 1;
+                warn!(
+                    cluster_id = cluster.id,
+                    timeout_ms = generation_timeout.as_millis() as u64,
+                    "generate_cluster_questions timed out; skipping cluster"
+                );
+                continue;
+            }
+        };
 
         for (locale, questions) in &cluster_questions.questions {
             let (good, bad) = safety_filter(questions.clone(), safety_re);
@@ -709,9 +712,17 @@ mod tests {
         let clusters = dummy_clusters(3, sample.len());
         let re = safety_regex();
 
-        let err = generate_rows_for_clusters(&llm, &clusters, &sample, &re, 42, 10, Duration::from_secs(5))
-            .await
-            .expect_err("expected all-failed abort");
+        let err = generate_rows_for_clusters(
+            &llm,
+            &clusters,
+            &sample,
+            &re,
+            42,
+            10,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect_err("expected all-failed abort");
         let msg = err.to_string();
         assert!(
             msg.contains("zero questions") && msg.contains("3 cluster errors"),
@@ -776,9 +787,17 @@ mod tests {
         let clusters = dummy_clusters(2, sample.len());
         let re = safety_regex();
 
-        let err = generate_rows_for_clusters(&llm, &clusters, &sample, &re, 99, 10, Duration::from_secs(5))
-            .await
-            .expect_err("expected empty-rows abort");
+        let err = generate_rows_for_clusters(
+            &llm,
+            &clusters,
+            &sample,
+            &re,
+            99,
+            10,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect_err("expected empty-rows abort");
         let msg = err.to_string();
         assert!(
             msg.contains("zero questions") && msg.contains("0 cluster errors"),
@@ -797,9 +816,17 @@ mod tests {
         let clusters = dummy_clusters(4, sample.len());
         let re = safety_regex();
 
-        let out = generate_rows_for_clusters(&llm, &clusters, &sample, &re, 7, 10, Duration::from_secs(5))
-            .await
-            .expect("partial failure should still return Ok");
+        let out = generate_rows_for_clusters(
+            &llm,
+            &clusters,
+            &sample,
+            &re,
+            7,
+            10,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("partial failure should still return Ok");
         assert_eq!(out.llm_calls, 4);
         assert!(out.kept > 0, "expected kept rows from successful clusters");
         assert!(

@@ -40,10 +40,7 @@ impl LocaleMemory {
     /// Sliding TTL — every record refreshes the expiry.
     #[instrument(skip(self))]
     pub async fn record(&self, session_id: &str, locale: Locale) {
-        if !self.config.enabled
-            || session_id.is_empty()
-            || session_id.len() > MAX_SESSION_ID_LEN
-        {
+        if !self.config.enabled || session_id.is_empty() || session_id.len() > MAX_SESSION_ID_LEN {
             return;
         }
         let key = self.key(session_id);
@@ -60,10 +57,7 @@ impl LocaleMemory {
     /// Errors degrade to `None` + a warn log.
     #[instrument(skip(self))]
     pub async fn lookup(&self, session_id: &str) -> Option<Locale> {
-        if !self.config.enabled
-            || session_id.is_empty()
-            || session_id.len() > MAX_SESSION_ID_LEN
-        {
+        if !self.config.enabled || session_id.is_empty() || session_id.len() > MAX_SESSION_ID_LEN {
             return None;
         }
         let key = self.key(session_id);
