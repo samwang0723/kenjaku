@@ -51,11 +51,19 @@ impl GeminiProvider {
             .join("\n---\n")
     }
 
-    /// Build the user-turn prompt — just the context dump and the
-    /// question. The behavior rules and answer-language constraint live
-    /// in `build_search_system_instruction` so the user turn stays clean.
-    fn build_search_prompt(query: &str, context: &str) -> String {
-        format!("Internal context:\n{context}\n\nQuestion: {query}\n\nAnswer:")
+    /// Build the user-turn prompt. Includes an explicit language
+    /// reminder because in-context multi-turn priors in another language
+    /// can override the systemInstruction — we want the model to see the
+    /// target language inside the current user turn as well.
+    fn build_search_prompt(query: &str, context: &str, answer_locale: Locale) -> String {
+        let display = answer_locale.display_name();
+        let tag = answer_locale.as_str();
+        format!(
+            "Internal context:\n{context}\n\n\
+             Question: {query}\n\n\
+             Respond in {display} (`{tag}`). If earlier turns were in a different language, ignore that — answer this question in {display}.\n\n\
+             Answer:"
+        )
     }
 
     /// Build a multi-turn `contents` list from prior conversation turns
@@ -98,19 +106,21 @@ impl GeminiProvider {
         let display = answer_locale.display_name();
         let tag = answer_locale.as_str();
         let text = format!(
-            "You are a helpful document search assistant.\n\
+            "You are a helpful search assistant with access to two information sources:\n\
              \n\
-             Sources of information:\n\
-             1. The internal context provided in the user turn — authoritative knowledge from the document corpus. Prefer it whenever it answers the question.\n\
-             2. The google_search tool — use it to fill gaps the internal context does not cover, or to add up-to-date facts.\n\
+             1. INTERNAL CONTEXT — numbered `[Source N]` entries in the user turn. These are authoritative product/domain knowledge from the document corpus. Prefer them when they answer the question.\n\
+             2. The `google_search` TOOL — for anything the internal context does not cover, or any fact that changes over time.\n\
              \n\
-             Rules:\n\
-             - Always try to answer. Do NOT refuse just because the internal context is incomplete; use google_search to fill the gap.\n\
-             - When you cite from the internal context, use [Source N] referring to the numbered entries in the user turn.\n\
-             - When you ground via google_search, the platform attaches the web sources separately — do not invent [Source N] numbers for them.\n\
-             - **Always write your final answer in {display} (BCP-47 `{tag}`)**, regardless of the language of the retrieved context or the question.\n\
+             CRITICAL BEHAVIOR RULES:\n\
+             - **You MUST call `google_search` whenever the question involves real-time, time-sensitive, or recent information**, including (but not limited to): current prices, today's news, market movements, weather, sports scores, recent events, \"today\", \"now\", \"current\", \"latest\". Do this even if the internal context is empty — the tool is always available to you on this turn.\n\
+             - **You MUST call `google_search` whenever the question is within the domain/topic of the internal corpus but retrieval did not return a matching chunk.** For example, if the corpus covers a product's help center and the user asks about a feature that is not in the retrieved chunks, search the web (ideally scoped to the product's official domain) rather than refusing.\n\
+             - **NEVER reply with \"I cannot access real-time information\", \"I don't have that in my documents\", or similar refusals.** You have the `google_search` tool. Use it.\n\
+             - When the internal context is empty OR does not answer the question, call `google_search` first, then answer from the results.\n\
+             - When you cite from the internal context, use the `[Source N]` marker referring to the numbered entries in the user turn.\n\
+             - When you ground via `google_search`, the platform attaches the web sources separately — do NOT invent `[Source N]` numbers for them.\n\
+             - **Always write your final answer in {display} (BCP-47 `{tag}`)**, regardless of the language of the retrieved context, the question, OR any earlier turns in this conversation. If previous turns were in a different language, IGNORE their language and respond ONLY in {display}. This rule overrides any continuity from prior turns.\n\
              - Preserve proper nouns, product names, ticker symbols, and code in their original form.\n\
-             - Only if neither source yields a confident answer, then (and only then) say so plainly in {display}."
+             - Only if BOTH the internal context AND `google_search` yield nothing confident, say so plainly in {display}."
         );
         GeminiContent {
             parts: vec![GeminiPart::Text { text }],
@@ -121,7 +131,7 @@ impl GeminiProvider {
 
 #[async_trait]
 impl LlmProvider for GeminiProvider {
-    #[instrument(skip(self, context, history), fields(model = %self.config.model, locale = %answer_locale, history_turns = history.len()))]
+    #[instrument(skip(self, context, history), fields(model = %self.config.model, locale = %answer_locale, history_turns = history.len(), context_chunks = context.len()))]
     async fn generate(
         &self,
         query: &str,
@@ -129,38 +139,26 @@ impl LlmProvider for GeminiProvider {
         history: &[ConversationTurn],
         answer_locale: Locale,
     ) -> Result<LlmResponse> {
-        // When context is empty (e.g., intent classification, simple completion),
-        // skip the google_search grounding tool — it adds 1-3s of latency we don't need.
-        // Also use a small max_tokens cap since these calls produce short outputs.
-        // The answer-language systemInstruction is also skipped in that case
-        // since callers (intent classifier etc.) want the raw English output.
-        // History is likewise ignored for stateless calls.
-        let no_context = context.is_empty();
-        let (prompt, tools, max_tokens, temperature, system_instruction, use_history) =
-            if no_context {
-                (query.to_string(), None, 256u32, 0.0_f32, None, false)
-            } else {
-                let context_str = Self::build_context(context);
-                (
-                    Self::build_search_prompt(query, &context_str),
-                    Some(vec![GeminiTool {
-                        google_search: Some(serde_json::json!({})),
-                    }]),
-                    self.config.max_tokens,
-                    self.config.temperature,
-                    Some(Self::build_search_system_instruction(answer_locale)),
-                    true,
-                )
-            };
-
-        let contents = if use_history {
-            Self::build_multi_turn_contents(history, prompt)
-        } else {
-            vec![GeminiContent {
-                parts: vec![GeminiPart::Text { text: prompt }],
-                role: Some("user".to_string()),
-            }]
-        };
+        // `generate` is the search-path entrypoint. It ALWAYS includes the
+        // google_search grounding tool and the locale-pinning system
+        // instruction — even when retrieval returned zero chunks — so the
+        // model can fall back to web search for real-time questions
+        // ("how is the market today", "current BTC price", etc.). The
+        // previous behavior of stripping the tool on empty context caused
+        // the model to refuse with "I cannot access real-time info".
+        //
+        // Stateless single-shot calls (intent classification, short utility
+        // completions) should call `generate_brief` instead — that path
+        // skips the tool to stay fast.
+        let context_str = Self::build_context(context);
+        let prompt = Self::build_search_prompt(query, &context_str, answer_locale);
+        let tools = Some(vec![GeminiTool {
+            google_search: Some(serde_json::json!({})),
+        }]);
+        let system_instruction = Some(Self::build_search_system_instruction(answer_locale));
+        let contents = Self::build_multi_turn_contents(history, prompt);
+        let max_tokens = self.config.max_tokens;
+        let temperature = self.config.temperature;
 
         let request = GeminiRequest {
             contents,
@@ -240,6 +238,70 @@ impl LlmProvider for GeminiProvider {
         })
     }
 
+    /// Fast stateless single-shot completion — no tools, no history, no
+    /// system instruction, capped tokens. Used by the intent classifier
+    /// and similar utility calls. Keeps intent classification at ~1s
+    /// instead of the ~5s that would apply if google_search was attached.
+    #[instrument(skip(self, prompt), fields(model = %self.config.model))]
+    async fn generate_brief(&self, prompt: &str) -> Result<LlmResponse> {
+        let request = GeminiRequest {
+            contents: vec![GeminiContent {
+                parts: vec![GeminiPart::Text {
+                    text: prompt.to_string(),
+                }],
+                role: Some("user".to_string()),
+            }],
+            system_instruction: None,
+            tools: None,
+            generation_config: Some(GeminiGenerationConfig {
+                max_output_tokens: Some(256),
+                temperature: Some(0.0),
+                response_mime_type: None,
+                response_schema: None,
+            }),
+        };
+
+        let url = format!(
+            "{}/models/{}:generateContent?key={}",
+            self.base_url, self.config.model, self.config.api_key
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| Error::Llm(format!("Gemini brief request failed: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(Error::Llm(format!("Gemini returned {status}: {body}")));
+        }
+
+        let result: GeminiResponse = response
+            .json()
+            .await
+            .map_err(|e| Error::Llm(format!("Failed to parse Gemini brief response: {e}")))?;
+
+        let answer = result
+            .candidates
+            .first()
+            .and_then(|c| c.content.parts.first())
+            .map(|p| match p {
+                GeminiPart::Text { text } => text.clone(),
+            })
+            .unwrap_or_default();
+
+        Ok(LlmResponse {
+            answer,
+            sources: Vec::new(),
+            model: self.config.model.clone(),
+            usage: None,
+        })
+    }
+
     async fn generate_stream(
         &self,
         query: &str,
@@ -248,7 +310,7 @@ impl LlmProvider for GeminiProvider {
         answer_locale: Locale,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>> {
         let context_str = Self::build_context(context);
-        let prompt = Self::build_search_prompt(query, &context_str);
+        let prompt = Self::build_search_prompt(query, &context_str, answer_locale);
 
         let request = GeminiRequest {
             contents: Self::build_multi_turn_contents(history, prompt),

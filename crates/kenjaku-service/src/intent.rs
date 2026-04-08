@@ -7,7 +7,7 @@ use kenjaku_core::error::Result;
 use kenjaku_core::traits::intent::IntentClassifier;
 use kenjaku_core::traits::llm::LlmProvider;
 use kenjaku_core::types::intent::{Intent, IntentClassification};
-use kenjaku_core::types::search::{LlmResponse, RetrievedChunk};
+use kenjaku_core::types::search::LlmResponse;
 
 const INTENT_CLASSIFICATION_PROMPT: &str = r#"You are an intent classifier. Your ONLY job is to output one category name.
 
@@ -50,15 +50,7 @@ impl IntentClassifier for LlmIntentClassifier {
         // Intent classifier doesn't care about answer language — pass `En`
         // as a no-op; the empty-context branch in `GeminiProvider::generate`
         // skips the systemInstruction entirely anyway.
-        let response: LlmResponse = self
-            .llm
-            .generate(
-                &prompt,
-                &[] as &[RetrievedChunk],
-                &[],
-                kenjaku_core::types::locale::Locale::En,
-            )
-            .await?;
+        let response: LlmResponse = self.llm.generate_brief(&prompt).await?;
 
         let raw = response.answer.trim().to_lowercase();
         let intent = parse_intent(&raw);
