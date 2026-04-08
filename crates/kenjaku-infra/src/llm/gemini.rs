@@ -619,13 +619,21 @@ impl LlmProvider for GeminiProvider {
             self.base_url, self.config.model, self.config.api_key
         );
 
-        let response = match self.client.post(&url).json(&request).send().await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(error = %e, "Gemini cluster-questions request failed; returning empty");
-                return Ok(ClusterQuestions::default());
-            }
-        };
+        // Transport, HTTP, and parse failures must surface as `Err` so the
+        // refresh worker counts them as cluster errors and can abort the
+        // batch when ALL clusters fail. Only the success-but-empty case
+        // (200 + valid JSON whose payload happens to be empty, e.g. server-
+        // side safety filtering) returns `Ok(ClusterQuestions::default())`.
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, "Gemini cluster-questions request failed");
+                Error::Llm(format!("gemini cluster-questions transport: {e}"))
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -633,18 +641,17 @@ impl LlmProvider for GeminiProvider {
             tracing::warn!(
                 %status,
                 body = %body,
-                "Gemini cluster-questions returned non-success; returning empty"
+                "Gemini cluster-questions returned non-success"
             );
-            return Ok(ClusterQuestions::default());
+            return Err(Error::Llm(format!(
+                "gemini cluster-questions http {status}: {body}"
+            )));
         }
 
-        let result: GeminiResponse = match response.json().await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(error = %e, "Gemini cluster-questions parse failed; returning empty");
-                return Ok(ClusterQuestions::default());
-            }
-        };
+        let result: GeminiResponse = response.json().await.map_err(|e| {
+            tracing::warn!(error = %e, "Gemini cluster-questions parse failed");
+            Error::Llm(format!("gemini cluster-questions envelope parse: {e}"))
+        })?;
 
         let raw_text = result
             .candidates
@@ -658,10 +665,15 @@ impl LlmProvider for GeminiProvider {
         match serde_json::from_str::<ClusterQuestionsJson>(&raw_text) {
             Ok(parsed) => Ok(parsed.into_domain()),
             Err(e) => {
+                // Success-but-empty inner payload: log and return empty so
+                // the worker treats it as a cluster that produced zero
+                // questions (counted in `kept`/`rejected`, NOT a hard
+                // error). Transport/HTTP/envelope-parse failures above
+                // already returned Err.
                 tracing::warn!(
                     error = %e,
                     raw = %raw_text,
-                    "Cluster-questions JSON malformed; returning empty"
+                    "Cluster-questions inner JSON malformed; treating as empty payload"
                 );
                 Ok(ClusterQuestions::default())
             }
