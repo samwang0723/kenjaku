@@ -17,32 +17,6 @@ impl RefreshBatchesRepository {
         Self { pool }
     }
 
-    /// Try to take the worker advisory lock for this run. Returns `true`
-    /// if we acquired it, `false` if another replica is already running.
-    /// The lock is session-scoped; the caller must hold a single
-    /// connection for the whole refresh and call `release_advisory_lock`
-    /// when done. For convenience this method takes a connection out of
-    /// the pool inline — for production we'll move the worker to a
-    /// dedicated connection so the lock survives across SQL calls.
-    pub async fn try_advisory_lock(&self, key: i64) -> Result<bool> {
-        let row = sqlx::query("SELECT pg_try_advisory_lock($1) AS locked")
-            .bind(key)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| Error::Database(format!("pg_try_advisory_lock failed: {e}")))?;
-        Ok(row.get::<bool, _>("locked"))
-    }
-
-    /// Release a previously-acquired advisory lock. Idempotent.
-    pub async fn release_advisory_lock(&self, key: i64) -> Result<()> {
-        sqlx::query("SELECT pg_advisory_unlock($1)")
-            .bind(key)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::Database(format!("pg_advisory_unlock failed: {e}")))?;
-        Ok(())
-    }
-
     /// Insert a new batch row in `running` status. Returns its id.
     pub async fn start_batch(&self, corpus_fingerprint: &str) -> Result<i64> {
         let row = sqlx::query(
