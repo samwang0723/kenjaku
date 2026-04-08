@@ -297,21 +297,29 @@ if (bearerTokenInput) {
   });
 }
 
-function getAuthHeaders() {
+function getAuthHeaders(extraHeaders) {
   var headers = { 'Content-Type': 'application/json' };
   if (currentEnv !== 'local') {
     var token = bearerTokenInput ? bearerTokenInput.value.trim() : '';
     if (token) headers['Authorization'] = 'Bearer ' + token;
   }
-  // Stable per-device id drives the server's session-locale memory lookup.
+  // Stable per-device id drives the server's session-locale memory lookup
+  // AND the per-session conversation history store. All API calls include it.
   if (typeof deviceId === 'string' && deviceId) {
     headers['X-Session-Id'] = deviceId;
+  }
+  if (extraHeaders) {
+    for (var k in extraHeaders) {
+      if (Object.prototype.hasOwnProperty.call(extraHeaders, k)) {
+        headers[k] = extraHeaders[k];
+      }
+    }
   }
   return headers;
 }
 
-function getAuthHeadersWithAccept() {
-  var headers = getAuthHeaders();
+function getAuthHeadersWithAccept(extraHeaders) {
+  var headers = getAuthHeaders(extraHeaders);
   headers['Accept'] = 'text/event-stream, application/json';
   return headers;
 }
@@ -817,19 +825,18 @@ async function doSearch(query, isFollowUp) {
   var requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
 
   try {
-    // No `locale` field — the backend translator auto-detects the source
-    // language from the query text and surfaces it in the SSE start event.
+    // session_id / request_id now travel as HTTP headers. The backend
+    // still accepts the body fields for backward compat, but header-first
+    // matches how the autocomplete/top-searches reads already work.
     var reqBody = {
       query: query,
-      session_id: sessionId,
-      request_id: requestId,
       streaming: true,
       top_k: 5,
     };
 
     var resp = await fetch(API_BASE + '/search', {
       method: 'POST',
-      headers: getAuthHeadersWithAccept(),
+      headers: getAuthHeadersWithAccept({ 'X-Request-Id': requestId }),
       body: JSON.stringify(reqBody),
       signal: currentAbortController.signal,
     });
@@ -1022,18 +1029,14 @@ function updateThumbButtons() {
 }
 
 async function submitFeedback(requestId, action, detail, isCancel) {
-  var body = {
-    session_id: sessionId,
-    request_id: requestId,
-    action: action,
-  };
+  var body = { action: action };
   if (detail && detail.reason_category_id) body.reason_category_id = detail.reason_category_id;
   if (detail && detail.description)        body.description = detail.description;
 
   try {
     var resp = await fetch(API_BASE + '/feedback', {
       method: 'POST',
-      headers: getAuthHeaders(),
+      headers: getAuthHeaders({ 'X-Request-Id': requestId }),
       body: JSON.stringify(body),
     });
     if (resp.ok) {

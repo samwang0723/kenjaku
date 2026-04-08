@@ -21,6 +21,19 @@ use kenjaku_service::search::SearchStreamOutput;
 const MAX_QUERY_LENGTH: usize = 2000;
 /// Maximum top_k value.
 const MAX_TOP_K: usize = 100;
+/// Cap header-supplied identifiers (session_id / request_id) at this length
+/// to avoid log/cache-key amplification via pathological clients.
+const MAX_ID_LEN: usize = 128;
+
+/// Look up a header by name, trim, and enforce [`MAX_ID_LEN`].
+pub(crate) fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && s.len() <= MAX_ID_LEN)
+        .map(str::to_owned)
+}
 
 /// POST /api/v1/search
 pub async fn search(
@@ -50,17 +63,24 @@ pub async fn search(
     // id from `X-Session-Id`. Capture the device id here so LocaleMemory
     // is recorded under the SAME id the read path will use, otherwise the
     // session_memory tier never hits.
-    let device_session_id = headers
-        .get("x-session-id")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
+    let device_session_id = header_str(&headers, "x-session-id");
 
-    // Locale is no longer carried on the request — the translator detects
-    // it from the query text and surfaces it in the response metadata.
+    // Session + request ids: headers win; body fields are the backward-
+    // compat fallback. If neither provides a request id, the server
+    // generates a UUID so downstream logging/tracing always has a key.
+    // Cap header values at 128 chars to match LocaleMemory's session bound.
+    let session_id = device_session_id
+        .clone()
+        .or(dto.session_id)
+        .unwrap_or_else(|| "anonymous".to_string());
+    let request_id = header_str(&headers, "x-request-id")
+        .or(dto.request_id)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
     let req = SearchRequest {
         query: dto.query,
-        session_id: dto.session_id,
-        request_id: dto.request_id,
+        session_id,
+        request_id,
         streaming: dto.streaming,
         top_k,
     };

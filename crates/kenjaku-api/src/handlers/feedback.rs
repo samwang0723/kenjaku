@@ -2,17 +2,20 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::HeaderMap;
 use tracing::error;
 
 use crate::AppState;
 use crate::dto::request::FeedbackRequestDto;
 use crate::dto::response::{ApiResponse, FeedbackResponseDto};
+use crate::handlers::search::header_str;
 
 use kenjaku_core::types::feedback::{CreateFeedbackRequest, FeedbackAction};
 
 /// POST /api/v1/feedback
 pub async fn create_feedback(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(dto): Json<FeedbackRequestDto>,
 ) -> Json<ApiResponse<FeedbackResponseDto>> {
     let action: FeedbackAction = match dto.action.parse() {
@@ -25,9 +28,22 @@ pub async fn create_feedback(
         }
     };
 
+    // Prefer X-Session-Id / X-Request-Id headers; fall back to body.
+    // Feedback must match an existing conversation, so we reject outright
+    // if neither source supplied a request id — no silent UUID generation
+    // here (unlike /search which can start a fresh conversation).
+    let session_id = match header_str(&headers, "x-session-id").or(dto.session_id) {
+        Some(s) => s,
+        None => return Json(ApiResponse::err("session_id is required".to_string())),
+    };
+    let request_id = match header_str(&headers, "x-request-id").or(dto.request_id) {
+        Some(r) => r,
+        None => return Json(ApiResponse::err("request_id is required".to_string())),
+    };
+
     let req = CreateFeedbackRequest {
-        session_id: dto.session_id,
-        request_id: dto.request_id,
+        session_id,
+        request_id,
         action,
         reason_category_id: dto.reason_category_id,
         description: dto.description,
