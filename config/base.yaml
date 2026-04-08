@@ -64,7 +64,7 @@ default_suggestions:
     retention_batches: 3
     generation_timeout_ms: 8000
     advisory_lock_id: 427318
-  safety_regex: '(?i)(price|should i (buy|sell)|will .* hit|prediction|forecast)'
+  safety_regex: '(?i)(price|should[\s\-]?i[\s\-]?(buy|sell|invest)|will[\s\w]+hit|prediction|forecast|predicted|purchase|buying|invest(ing)?|where[\s\w]+buy)'
   default_weight: 10
   pool_cap: 50
 

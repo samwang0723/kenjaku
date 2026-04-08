@@ -402,7 +402,25 @@ mod tests {
     use super::*;
 
     fn safety_regex() -> Regex {
-        Regex::new(r"(?i)(price|should i (buy|sell)|will .* hit|prediction|forecast)").unwrap()
+        Regex::new(
+            r"(?i)(price|should[\s\-]?i[\s\-]?(buy|sell|invest)|will[\s\w]+hit|prediction|forecast|predicted|purchase|buying|invest(ing)?|where[\s\w]+buy)",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn safety_filter_catches_bypass_vectors() {
+        let re = safety_regex();
+        let input = vec![
+            "How does buying Bitcoin actually work?".to_string(),
+            "How to invest in DeFi safely?".to_string(),
+            "What is the predicted outcome for ETH?".to_string(),
+            "Where can I buy Bitcoin in Europe?".to_string(),
+            "How does proof of stake work?".to_string(),
+        ];
+        let (kept, rejected) = safety_filter(input, &re);
+        assert_eq!(kept, vec!["How does proof of stake work?".to_string()]);
+        assert_eq!(rejected, 4);
     }
 
     #[test]
