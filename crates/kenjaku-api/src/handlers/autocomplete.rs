@@ -35,9 +35,7 @@ fn default_limit() -> usize {
 /// GET /api/v1/autocomplete
 ///
 /// Uses the `ResolvedLocale` extractor for locale resolution, then delegates
-/// to the existing autocomplete service. Dev-1 swaps the backing call to
-/// `SuggestionService::autocomplete` during peer review without changing the
-/// DTO shape.
+/// to `SuggestionService::autocomplete` without changing the DTO shape.
 pub async fn autocomplete(
     State(state): State<Arc<AppState>>,
     resolved: ResolvedLocale,

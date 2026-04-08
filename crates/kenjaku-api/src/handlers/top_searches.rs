@@ -42,9 +42,8 @@ fn default_limit() -> usize {
 ///
 /// Locale is resolved via the `ResolvedLocale` extractor (chain:
 /// `?locale=` → session memory → `Accept-Language` → `en`). The handler
-/// currently delegates to `TrendingService`; dev-1's `SuggestionService` takes
-/// over the blending path during peer-review merge (per architect.md sync
-/// contract — the DTO shape does not change).
+/// delegates to `SuggestionService` for the blended top-searches path (per
+/// architect.md sync contract — the DTO shape does not change).
 pub async fn top_searches(
     State(state): State<Arc<AppState>>,
     resolved: ResolvedLocale,
