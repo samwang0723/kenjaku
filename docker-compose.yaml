@@ -84,6 +84,16 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    volumes:
+      - ./cloudflared:/etc/cloudflared:ro
+    depends_on:
+      geto-web:
+        condition: service_started
+
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.120.0
     ports:

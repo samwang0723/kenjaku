@@ -249,21 +249,15 @@ function applyI18n() {
 // ====== Environment Switcher ======
 // When running behind Nginx (Docker Compose on localhost:3000) we use relative
 // proxy paths to avoid CORS. Otherwise we call the backend directly.
-var IS_DOCKER = window.location.hostname === 'localhost' && window.location.port === '3000';
-
+// geto-web is always served through nginx (localhost:3000 in dev, or any
+// public hostname like kenjaku.org via Cloudflare Tunnel). In both cases
+// the /api/v1, /proxy/staging/*, /proxy/production/* paths are reverse-
+// proxied to the right backend. The only case where JS would need an
+// absolute URL is opening app.js directly via file:// — not a supported mode.
 var ENV_CONFIGS = {
-  local: {
-    label: 'Local',
-    base: IS_DOCKER ? '/api/v1' : 'http://localhost:18080/api/v1'
-  },
-  staging: {
-    label: 'Staging',
-    base: IS_DOCKER ? '/proxy/staging/api/v1' : ''
-  },
-  production: {
-    label: 'Production',
-    base: IS_DOCKER ? '/proxy/production/api/v1' : ''
-  }
+  local:      { label: 'Local',      base: '/api/v1' },
+  staging:    { label: 'Staging',    base: '/proxy/staging/api/v1' },
+  production: { label: 'Production', base: '/proxy/production/api/v1' }
 };
 
 var currentEnv = localStorage.getItem('env') || 'local';

@@ -1,0 +1,30 @@
+# Cloudflare Tunnel config for geto-web.
+#
+# - `tunnel` is pinned to the TunnelID from credentials.json so the file is
+#   unambiguous regardless of what name you chose at `cloudflared tunnel create`.
+# - `service: http://geto-web:80` talks to the geto-web container over the
+#   compose network (container port 80, NOT the 3000 host port mapping).
+# - geto-web's own nginx reverse-proxies /api/* to the kenjaku container, so
+#   one ingress rule covers both the frontend and the API.
+# - TODO: replace `kenjaku.org` with the hostname you passed to
+#   `cloudflared tunnel route dns kenjaku-geto ...`.
+
+tunnel: afd0eaa1-e0d8-4ffd-923c-a40309645333
+credentials-file: /etc/cloudflared/credentials.json
+
+# Stream-friendly: keep connections open for SSE, don't buffer.
+originRequest:
+  noHappyEyeballs: true
+  connectTimeout: 30s
+  tlsTimeout: 10s
+  keepAliveConnections: 10
+  keepAliveTimeout: 90s
+  disableChunkedEncoding: false
+
+ingress:
+  - hostname: kenjaku.org
+    service: http://geto-web:80
+    originRequest:
+      httpHostHeader: kenjaku.org
+  # Catch-all fallback — required by cloudflared.
+  - service: http_status:404
