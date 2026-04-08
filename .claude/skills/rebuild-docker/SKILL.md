@@ -80,7 +80,12 @@ Print "Nothing to rebuild" and exit.
    rebuilt (kenjaku build is slow). For geto-web alone, just go.
 
 6. **Run the minimal rebuild**:
-   - geto-web only: `docker compose up -d --build geto-web`
+   - geto-web only: `docker compose build geto-web && docker compose up -d --no-deps geto-web`
+     **Critical**: `--no-deps` is required. Without it, compose walks the
+     `depends_on: kenjaku` chain on `up` and rebuilds the entire Rust
+     workspace (~4 minutes) for a static-asset change that should take
+     ~5 seconds. `make geto-web-up` has the same bug — do NOT use it
+     for incremental frontend rebuilds.
    - kenjaku only: `docker compose up -d --build kenjaku`
    - both: `docker compose up -d --build kenjaku geto-web`
    - config-only: `docker compose restart kenjaku`
@@ -95,8 +100,10 @@ Print "Nothing to rebuild" and exit.
 
 ## Notes
 
-- Use the existing Makefile targets where they exist:
-  `make geto-web-up` → `docker compose up -d --build geto-web` (same thing)
+- Do NOT use `make geto-web-up` for incremental frontend rebuilds — it
+  expands to `docker compose up -d --build geto-web` which (because of
+  `depends_on: kenjaku`) drags the entire Rust workspace into the rebuild.
+  Use the explicit `build` + `up --no-deps` two-step instead.
 - The skill should be a no-op if the project hasn't been started at least
   once — bail with `make docker-up` instructions instead.
 - Never `docker compose down` followed by `up` — that drops Qdrant data.

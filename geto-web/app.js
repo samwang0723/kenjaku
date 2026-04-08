@@ -93,8 +93,16 @@ var scrollArea = document.getElementById('scrollArea');
 // the server resolve via session memory / Accept-Language / default.
 var userLocale = localStorage.getItem('kenjaku_locale') || '';
 var localeSwitcher = document.getElementById('localeSwitcher');
+var localeLabel = document.getElementById('localeLabel');
+function renderLocaleLabel() {
+  if (!localeLabel) return;
+  if (!userLocale) { localeLabel.textContent = 'Auto'; return; }
+  var opt = localeSwitcher && localeSwitcher.querySelector('option[value="' + userLocale + '"]');
+  localeLabel.textContent = opt ? opt.textContent : userLocale;
+}
 if (localeSwitcher) {
   localeSwitcher.value = userLocale;
+  renderLocaleLabel();
   localeSwitcher.addEventListener('change', function() {
     userLocale = this.value || '';
     if (userLocale) {
@@ -102,6 +110,7 @@ if (localeSwitcher) {
     } else {
       localStorage.removeItem('kenjaku_locale');
     }
+    renderLocaleLabel();
     loadPills();
   });
 }
