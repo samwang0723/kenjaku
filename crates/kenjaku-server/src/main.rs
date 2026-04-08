@@ -10,7 +10,7 @@ use kenjaku_infra::postgres::{
     ConversationRepository, FeedbackRepository, TrendingRepository, create_pool, run_migrations,
 };
 use kenjaku_infra::qdrant::QdrantClient;
-use kenjaku_infra::redis::RedisClient;
+use kenjaku_infra::redis::{LocaleMemoryRedis, RedisClient};
 use kenjaku_infra::telemetry::init_telemetry;
 use kenjaku_infra::title_resolver::TitleResolver;
 
@@ -19,6 +19,7 @@ use kenjaku_service::component::ComponentService;
 use kenjaku_service::conversation::ConversationService;
 use kenjaku_service::feedback::FeedbackService;
 use kenjaku_service::intent::LlmIntentClassifier;
+use kenjaku_service::locale_memory::LocaleMemory;
 use kenjaku_service::retriever::HybridRetriever;
 use kenjaku_service::search::SearchService;
 use kenjaku_service::translation::TranslationService;
@@ -94,6 +95,15 @@ async fn main() -> anyhow::Result<()> {
     // real page titles, with Redis-backed caching.
     let title_resolver = Arc::new(TitleResolver::new(Some(redis.connection_manager())));
 
+    // LocaleMemory: per-session sticky locale stored in Redis. Recorded
+    // by SearchService on every query, read by suggestion read paths
+    // (see TODO at the top of this fn re: SessionLocaleLookup adapter).
+    let locale_memory_redis = LocaleMemoryRedis::new(redis.connection_manager());
+    let locale_memory = Arc::new(LocaleMemory::new(
+        locale_memory_redis,
+        config.locale_memory.clone(),
+    ));
+
     let search_service = SearchService::new(
         retriever,
         llm_provider,
@@ -103,6 +113,7 @@ async fn main() -> anyhow::Result<()> {
         trending_service.clone(),
         conversation_service,
         Some(title_resolver),
+        locale_memory,
         config.qdrant.collection_name.clone(),
         config.search.suggestion_count,
     );
