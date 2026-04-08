@@ -12,6 +12,12 @@ use kenjaku_core::config::LocaleMemoryConfig;
 use kenjaku_core::types::locale::Locale;
 use kenjaku_infra::redis::LocaleMemoryRedis;
 
+/// Mirror of the API extractor's session_id cap so the write path can't
+/// be used as an unbounded-key Redis amplifier even if a future caller
+/// forgets to validate. Centralized here so both record and lookup share
+/// the bound. (PR #9 review MED)
+const MAX_SESSION_ID_LEN: usize = 128;
+
 /// Public service-layer handle. Both methods are async only because the
 /// underlying Redis client is — callers do NOT need to handle errors.
 #[derive(Clone)]
@@ -34,7 +40,10 @@ impl LocaleMemory {
     /// Sliding TTL — every record refreshes the expiry.
     #[instrument(skip(self))]
     pub async fn record(&self, session_id: &str, locale: Locale) {
-        if !self.config.enabled || session_id.is_empty() {
+        if !self.config.enabled
+            || session_id.is_empty()
+            || session_id.len() > MAX_SESSION_ID_LEN
+        {
             return;
         }
         let key = self.key(session_id);
@@ -51,7 +60,10 @@ impl LocaleMemory {
     /// Errors degrade to `None` + a warn log.
     #[instrument(skip(self))]
     pub async fn lookup(&self, session_id: &str) -> Option<Locale> {
-        if !self.config.enabled || session_id.is_empty() {
+        if !self.config.enabled
+            || session_id.is_empty()
+            || session_id.len() > MAX_SESSION_ID_LEN
+        {
             return None;
         }
         let key = self.key(session_id);
@@ -108,5 +120,23 @@ mod tests {
     fn key_prefix_format() {
         let config = cfg(true);
         assert_eq!(format!("{}abc", config.key_prefix), "sl:abc");
+    }
+
+    /// Pure check of the bounds the centralized guard enforces. Mirrors
+    /// `record`/`lookup` short-circuit conditions so we can assert the
+    /// 200-char case is rejected without needing a live Redis.
+    fn passes_session_id_guard(enabled: bool, session_id: &str) -> bool {
+        enabled && !session_id.is_empty() && session_id.len() <= MAX_SESSION_ID_LEN
+    }
+
+    #[test]
+    fn session_id_length_cap_rejects_oversize() {
+        let oversize = "x".repeat(200);
+        assert!(!passes_session_id_guard(true, &oversize));
+        assert!(!passes_session_id_guard(true, ""));
+        let exactly_max = "x".repeat(MAX_SESSION_ID_LEN);
+        assert!(passes_session_id_guard(true, &exactly_max));
+        let just_over = "x".repeat(MAX_SESSION_ID_LEN + 1);
+        assert!(!passes_session_id_guard(true, &just_over));
     }
 }
