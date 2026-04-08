@@ -55,6 +55,7 @@ impl IntentClassifier for LlmIntentClassifier {
             .generate(
                 &prompt,
                 &[] as &[RetrievedChunk],
+                &[],
                 kenjaku_core::types::locale::Locale::En,
             )
             .await?;

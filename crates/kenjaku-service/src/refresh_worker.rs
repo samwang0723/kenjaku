@@ -639,6 +639,7 @@ mod tests {
             &self,
             _q: &str,
             _c: &[RetrievedChunk],
+            _h: &[kenjaku_core::types::conversation::ConversationTurn],
             _l: Locale,
         ) -> kenjaku_core::error::Result<LlmResponse> {
             unimplemented!()
@@ -647,6 +648,7 @@ mod tests {
             &self,
             _q: &str,
             _c: &[RetrievedChunk],
+            _h: &[kenjaku_core::types::conversation::ConversationTurn],
             _l: Locale,
         ) -> kenjaku_core::error::Result<
             Pin<Box<dyn Stream<Item = kenjaku_core::error::Result<StreamChunk>> + Send>>,
@@ -741,6 +743,7 @@ mod tests {
             &self,
             _q: &str,
             _c: &[RetrievedChunk],
+            _h: &[kenjaku_core::types::conversation::ConversationTurn],
             _l: Locale,
         ) -> kenjaku_core::error::Result<LlmResponse> {
             unimplemented!()
@@ -749,6 +752,7 @@ mod tests {
             &self,
             _q: &str,
             _c: &[RetrievedChunk],
+            _h: &[kenjaku_core::types::conversation::ConversationTurn],
             _l: Locale,
         ) -> kenjaku_core::error::Result<
             Pin<Box<dyn Stream<Item = kenjaku_core::error::Result<StreamChunk>> + Send>>,
@@ -846,6 +850,7 @@ mod tests {
             &self,
             _q: &str,
             _c: &[RetrievedChunk],
+            _h: &[kenjaku_core::types::conversation::ConversationTurn],
             _l: Locale,
         ) -> kenjaku_core::error::Result<LlmResponse> {
             unimplemented!()
@@ -854,6 +859,7 @@ mod tests {
             &self,
             _q: &str,
             _c: &[RetrievedChunk],
+            _h: &[kenjaku_core::types::conversation::ConversationTurn],
             _l: Locale,
         ) -> kenjaku_core::error::Result<
             Pin<Box<dyn Stream<Item = kenjaku_core::error::Result<StreamChunk>> + Send>>,

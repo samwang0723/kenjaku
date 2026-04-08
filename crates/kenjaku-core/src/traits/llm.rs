@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use futures::Stream;
 
 use crate::error::{Error, Result};
+use crate::types::conversation::ConversationTurn;
 use crate::types::locale::Locale;
 use crate::types::search::{LlmResponse, RetrievedChunk, StreamChunk, TranslationResult};
 use crate::types::suggestion::ClusterQuestions;
@@ -16,18 +17,28 @@ pub trait LlmProvider: Send + Sync {
     /// `answer_locale` is the locale the model must respond in — used to
     /// build the per-request `systemInstruction` so the answer is rendered
     /// in the user's source language regardless of the context language.
+    ///
+    /// `history` is a chronological list of prior turns in the same session
+    /// (oldest first). Implementations should map each turn into a pair of
+    /// user/model `Content` entries so Gemini's multi-turn handling carries
+    /// follow-up context. An empty slice means stateless call (e.g. intent
+    /// classifier, suggestion call) — implementations MUST treat it as
+    /// "no history" and not fabricate turns.
     async fn generate(
         &self,
         query: &str,
         context: &[RetrievedChunk],
+        history: &[ConversationTurn],
         answer_locale: Locale,
     ) -> Result<LlmResponse>;
 
-    /// Generate a streaming response. See `generate` for `answer_locale`.
+    /// Generate a streaming response. See `generate` for `answer_locale`
+    /// and `history` semantics.
     async fn generate_stream(
         &self,
         query: &str,
         context: &[RetrievedChunk],
+        history: &[ConversationTurn],
         answer_locale: Locale,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>>;
 

@@ -2,6 +2,7 @@ pub mod autocomplete;
 pub mod component;
 pub mod conversation;
 pub mod feedback;
+pub mod history;
 pub mod intent;
 pub mod locale_memory;
 pub mod quality;

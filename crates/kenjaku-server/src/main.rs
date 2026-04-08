@@ -121,6 +121,14 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(ServiceRng::from_entropy()),
     ));
 
+    // In-memory per-session conversation history — supplies follow-up
+    // context to the LLM call. NOT a replacement for the durable
+    // `conversations` table. Janitor evicts idle sessions so abandoned
+    // clients don't leak memory.
+    let history_store =
+        kenjaku_service::history::SessionHistoryStore::new(config.search.history.clone());
+    history_store.clone().spawn_janitor();
+
     let search_service = SearchService::new(
         retriever,
         llm_provider.clone(),
@@ -131,6 +139,7 @@ async fn main() -> anyhow::Result<()> {
         conversation_service,
         Some(title_resolver),
         locale_memory.clone(),
+        history_store,
         config.qdrant.collection_name.clone(),
         config.search.suggestion_count,
     );

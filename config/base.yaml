@@ -53,6 +53,11 @@ search:
       - llm_answer
       - sources
       - suggestions
+  history:
+    enabled: true
+    max_turns_per_session: 10
+    inject_max_turns: 6
+    session_idle_ttl_seconds: 3600
 
 default_suggestions:
   enabled: true

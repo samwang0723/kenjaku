@@ -10,7 +10,7 @@ use kenjaku_core::traits::intent::IntentClassifier;
 use kenjaku_core::traits::llm::LlmProvider;
 use kenjaku_core::traits::retriever::Retriever;
 use kenjaku_core::types::component::SuggestionSource;
-use kenjaku_core::types::conversation::CreateConversation;
+use kenjaku_core::types::conversation::{ConversationTurn, CreateConversation};
 use kenjaku_core::types::intent::Intent;
 use kenjaku_core::types::locale::{DetectedLocale, Locale};
 use kenjaku_core::types::search::{
@@ -20,6 +20,7 @@ use kenjaku_core::types::search::{
 
 use crate::component::ComponentService;
 use crate::conversation::ConversationService;
+use crate::history::SessionHistoryStore;
 use crate::locale_memory::LocaleMemory;
 use crate::quality::prettify_title;
 use crate::translation::TranslationService;
@@ -36,6 +37,7 @@ pub struct SearchService {
     conversation_service: ConversationService,
     title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
     locale_memory: Arc<LocaleMemory>,
+    history_store: SessionHistoryStore,
     collection_name: String,
     suggestion_count: usize,
 }
@@ -52,6 +54,7 @@ impl SearchService {
         conversation_service: ConversationService,
         title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
         locale_memory: Arc<LocaleMemory>,
+        history_store: SessionHistoryStore,
         collection_name: String,
         suggestion_count: usize,
     ) -> Self {
@@ -65,6 +68,7 @@ impl SearchService {
             conversation_service,
             title_resolver,
             locale_memory,
+            history_store,
             collection_name,
             suggestion_count,
         }
@@ -142,10 +146,16 @@ impl SearchService {
             .retrieve(&search_query, &self.collection_name, req.top_k)
             .await?;
 
+        // Session-scoped conversation history for follow-up context.
+        // Keyed by device_session_id (X-Session-Id header) with fallback
+        // to body session_id — same keying as LocaleMemory.
+        let history_key = device_session_id.unwrap_or(&req.session_id);
+        let history = self.history_store.snapshot_for_llm(history_key);
+
         // Step 4: Generate LLM response in the detected locale.
         let llm_response = self
             .llm
-            .generate(&search_query, &chunks, detected_locale)
+            .generate(&search_query, &chunks, &history, detected_locale)
             .await?;
 
         // Step 5: Get suggestions (LLM first, fallback to Qdrant titles)
@@ -202,33 +212,52 @@ impl SearchService {
                 serde_json::json!({ "serialization_error": e.to_string() })
             }
         };
+        let answer_text = response
+            .components
+            .iter()
+            .find_map(|c| {
+                if let kenjaku_core::types::component::Component::LlmAnswer(a) = c {
+                    Some(a.answer.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+
         self.conversation_service
             .record(CreateConversation {
                 session_id: req.session_id.clone(),
                 request_id: req.request_id.clone(),
                 query: req.query.clone(),
-                response_text: response
-                    .components
-                    .iter()
-                    .find_map(|c| {
-                        if let kenjaku_core::types::component::Component::LlmAnswer(a) = c {
-                            Some(a.answer.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_default(),
+                response_text: answer_text.clone(),
                 locale: detected_locale,
                 intent,
                 meta,
             })
             .await;
 
+        // Append to in-memory session history so the next turn from the
+        // same device can see this exchange. Done AFTER the successful
+        // response so failed calls don't pollute follow-up context.
+        // We store the ORIGINAL user query (not the English-normalized
+        // form) so model-side attention matches what the user actually
+        // said, preserving tone and proper nouns.
+        if !answer_text.is_empty() {
+            self.history_store.append(
+                history_key,
+                ConversationTurn {
+                    user: req.query.clone(),
+                    assistant: answer_text,
+                },
+            );
+        }
+
         info!(
             request_id = %req.request_id,
             latency_ms = latency_ms,
             intent = %intent,
             chunks_retrieved = chunks.len(),
+            history_turns = history.len(),
             "Search completed"
         );
 
@@ -317,10 +346,14 @@ impl SearchService {
             })
             .collect();
 
+        // Pull session history for follow-up context (streaming path).
+        let history_key = device_session_id.unwrap_or(&req.session_id);
+        let history = self.history_store.snapshot_for_llm(history_key);
+
         // Step 4: Open the LLM stream pinned to the detected locale.
         let stream = self
             .llm
-            .generate_stream(&search_query, &chunks, detected_locale)
+            .generate_stream(&search_query, &chunks, &history, detected_locale)
             .await?;
 
         // Step 5: Record trending (fire-and-forget) under the DETECTED
@@ -354,6 +387,7 @@ impl SearchService {
                 start_instant: start,
                 request_id: req.request_id.clone(),
                 session_id: req.session_id.clone(),
+                history_key: history_key.to_string(),
                 query: req.query.clone(),
                 locale: detected_locale,
                 intent,
@@ -427,6 +461,18 @@ impl SearchService {
                 }),
             })
             .await;
+
+        // Append to in-memory session history (streaming path). Guard on
+        // non-empty answer so cancelled/errored streams don't pollute.
+        if !accumulated_answer.is_empty() {
+            self.history_store.append(
+                &ctx.history_key,
+                ConversationTurn {
+                    user: ctx.query.clone(),
+                    assistant: accumulated_answer.to_string(),
+                },
+            );
+        }
 
         StreamDoneMetadata {
             latency_ms,
@@ -505,6 +551,9 @@ pub struct StreamContext {
     pub start_instant: Instant,
     pub request_id: String,
     pub session_id: String,
+    /// Stable device/session key used for in-memory history and locale
+    /// memory. Prefer `X-Session-Id` header; falls back to body session_id.
+    pub history_key: String,
     pub query: String,
     pub locale: kenjaku_core::types::locale::Locale,
     pub intent: Intent,

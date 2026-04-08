@@ -2033,6 +2033,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "cron",
+ "dashmap",
  "futures",
  "kenjaku-core",
  "kenjaku-infra",

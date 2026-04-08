@@ -9,6 +9,7 @@ use tracing::{info, instrument};
 use kenjaku_core::config::LlmConfig;
 use kenjaku_core::error::{Error, Result};
 use kenjaku_core::traits::llm::LlmProvider;
+use kenjaku_core::types::conversation::ConversationTurn;
 use kenjaku_core::types::locale::{DetectedLocale, Locale};
 use kenjaku_core::types::search::{
     LlmResponse, LlmSource, LlmUsage, RetrievedChunk, StreamChunk, StreamChunkType,
@@ -57,6 +58,39 @@ impl GeminiProvider {
         format!("Internal context:\n{context}\n\nQuestion: {query}\n\nAnswer:")
     }
 
+    /// Build a multi-turn `contents` list from prior conversation turns
+    /// plus the current prompt. The history is mapped into alternating
+    /// user/model Content entries so Gemini can attend over it natively.
+    /// The final entry is always the current user turn containing the
+    /// retrieved-context dump and the new question.
+    fn build_multi_turn_contents(
+        history: &[ConversationTurn],
+        current_user_prompt: String,
+    ) -> Vec<GeminiContent> {
+        let mut contents = Vec::with_capacity(history.len() * 2 + 1);
+        for turn in history {
+            contents.push(GeminiContent {
+                parts: vec![GeminiPart::Text {
+                    text: turn.user.clone(),
+                }],
+                role: Some("user".to_string()),
+            });
+            contents.push(GeminiContent {
+                parts: vec![GeminiPart::Text {
+                    text: turn.assistant.clone(),
+                }],
+                role: Some("model".to_string()),
+            });
+        }
+        contents.push(GeminiContent {
+            parts: vec![GeminiPart::Text {
+                text: current_user_prompt,
+            }],
+            role: Some("user".to_string()),
+        });
+        contents
+    }
+
     /// Build the per-request `systemInstruction` for the answer call.
     /// This pins the answer language to `answer_locale` and encodes the
     /// "prefer internal context, fall back to google_search" policy.
@@ -87,11 +121,12 @@ impl GeminiProvider {
 
 #[async_trait]
 impl LlmProvider for GeminiProvider {
-    #[instrument(skip(self, context), fields(model = %self.config.model, locale = %answer_locale))]
+    #[instrument(skip(self, context, history), fields(model = %self.config.model, locale = %answer_locale, history_turns = history.len()))]
     async fn generate(
         &self,
         query: &str,
         context: &[RetrievedChunk],
+        history: &[ConversationTurn],
         answer_locale: Locale,
     ) -> Result<LlmResponse> {
         // When context is empty (e.g., intent classification, simple completion),
@@ -99,9 +134,11 @@ impl LlmProvider for GeminiProvider {
         // Also use a small max_tokens cap since these calls produce short outputs.
         // The answer-language systemInstruction is also skipped in that case
         // since callers (intent classifier etc.) want the raw English output.
+        // History is likewise ignored for stateless calls.
         let no_context = context.is_empty();
-        let (prompt, tools, max_tokens, temperature, system_instruction) = if no_context {
-            (query.to_string(), None, 256u32, 0.0_f32, None)
+        let (prompt, tools, max_tokens, temperature, system_instruction, use_history) = if no_context
+        {
+            (query.to_string(), None, 256u32, 0.0_f32, None, false)
         } else {
             let context_str = Self::build_context(context);
             (
@@ -112,14 +149,21 @@ impl LlmProvider for GeminiProvider {
                 self.config.max_tokens,
                 self.config.temperature,
                 Some(Self::build_search_system_instruction(answer_locale)),
+                true,
             )
         };
 
-        let request = GeminiRequest {
-            contents: vec![GeminiContent {
+        let contents = if use_history {
+            Self::build_multi_turn_contents(history, prompt)
+        } else {
+            vec![GeminiContent {
                 parts: vec![GeminiPart::Text { text: prompt }],
                 role: Some("user".to_string()),
-            }],
+            }]
+        };
+
+        let request = GeminiRequest {
+            contents,
             system_instruction,
             tools,
             generation_config: Some(GeminiGenerationConfig {
@@ -200,16 +244,14 @@ impl LlmProvider for GeminiProvider {
         &self,
         query: &str,
         context: &[RetrievedChunk],
+        history: &[ConversationTurn],
         answer_locale: Locale,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>> {
         let context_str = Self::build_context(context);
         let prompt = Self::build_search_prompt(query, &context_str);
 
         let request = GeminiRequest {
-            contents: vec![GeminiContent {
-                parts: vec![GeminiPart::Text { text: prompt }],
-                role: Some("user".to_string()),
-            }],
+            contents: Self::build_multi_turn_contents(history, prompt),
             system_instruction: Some(Self::build_search_system_instruction(answer_locale)),
             tools: Some(vec![GeminiTool {
                 google_search: Some(serde_json::json!({})),

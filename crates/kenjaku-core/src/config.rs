@@ -214,6 +214,51 @@ pub struct SearchConfig {
     pub component_layout: ComponentLayout,
     #[serde(default = "default_suggestion_count")]
     pub suggestion_count: usize,
+    #[serde(default)]
+    pub history: HistoryConfig,
+}
+
+/// In-memory session conversation history knobs. Follow-up context for
+/// the LLM call; NOT a replacement for the durable `conversations` table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryConfig {
+    #[serde(default = "default_history_enabled")]
+    pub enabled: bool,
+    /// Max turns kept per session. Older turns are evicted FIFO.
+    #[serde(default = "default_history_max_turns_per_session")]
+    pub max_turns_per_session: usize,
+    /// Upper bound of turns actually injected into the LLM prompt per
+    /// request. Lets us hold more context in memory for debugging while
+    /// keeping the prompt budget predictable.
+    #[serde(default = "default_history_inject_max_turns")]
+    pub inject_max_turns: usize,
+    /// Sessions idle longer than this are evicted by the background janitor.
+    #[serde(default = "default_history_session_idle_ttl_seconds")]
+    pub session_idle_ttl_seconds: u64,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_history_enabled(),
+            max_turns_per_session: default_history_max_turns_per_session(),
+            inject_max_turns: default_history_inject_max_turns(),
+            session_idle_ttl_seconds: default_history_session_idle_ttl_seconds(),
+        }
+    }
+}
+
+fn default_history_enabled() -> bool {
+    true
+}
+fn default_history_max_turns_per_session() -> usize {
+    10
+}
+fn default_history_inject_max_turns() -> usize {
+    6
+}
+fn default_history_session_idle_ttl_seconds() -> u64 {
+    3600
 }
 
 fn default_semantic_weight() -> f32 {
@@ -564,6 +609,7 @@ contextualizer:
                 over_retrieve_factor: 10,
                 component_layout: ComponentLayout::default(),
                 suggestion_count: 3,
+                history: HistoryConfig::default(),
             },
             telemetry: TelemetryConfig {
                 service_name: "kenjaku".into(),
@@ -639,6 +685,7 @@ contextualizer:
                 over_retrieve_factor: 10,
                 component_layout: ComponentLayout::default(),
                 suggestion_count: 3,
+                history: HistoryConfig::default(),
             },
             telemetry: TelemetryConfig {
                 service_name: "kenjaku".into(),

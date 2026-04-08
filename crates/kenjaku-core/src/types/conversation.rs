@@ -19,6 +19,17 @@ pub struct Conversation {
     pub created_at: DateTime<Utc>,
 }
 
+/// A single user↔assistant exchange held in the in-memory
+/// `SessionHistoryStore` to give the LLM follow-up context. This is NOT
+/// the durable record — the Postgres `conversations` table is still the
+/// source of truth for analytics; this struct only lives for the lifetime
+/// of a session's runtime memory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationTurn {
+    pub user: String,
+    pub assistant: String,
+}
+
 /// Request to create a conversation record (used by the flush pipeline).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateConversation {
