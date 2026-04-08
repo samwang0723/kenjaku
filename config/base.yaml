@@ -54,6 +54,25 @@ search:
       - sources
       - suggestions
 
+default_suggestions:
+  enabled: true
+  refresh:
+    schedule_cron: "0 3 * * *"
+    sample_cap: 2000
+    cluster_count: 20
+    per_cluster: 5
+    retention_batches: 3
+    generation_timeout_ms: 8000
+    advisory_lock_id: 427318
+  safety_regex: '(?i)(\bprice\b|should[\s\-]?i[\s\-]?(buy|sell|invest)|will[\s\w]+hit|\bprediction\b|\bforecast\b|\bpredicted\b|\bpurchase\b|\binvesting\b|\bbuying\b|where[\s\w]+buy)'
+  default_weight: 10
+  pool_cap: 50
+
+locale_memory:
+  enabled: true
+  ttl_seconds: 7200
+  key_prefix: "sl:"
+
 telemetry:
   service_name: "kenjaku"
   log_level: "info"

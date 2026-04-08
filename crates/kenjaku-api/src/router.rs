@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use axum::extract::Extension;
 use axum::routing::{get, post};
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
@@ -12,11 +13,16 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::AppState;
+use crate::extractors::SessionLocaleLookup;
 use crate::handlers;
 
 /// Build the API router with all routes, rate limiting, and security layers.
+///
+/// `locale_lookup` is injected as a request `Extension` so the
+/// `ResolvedLocale` extractor can resolve session-stickied locales without
+/// the api crate depending on the concrete service-layer `LocaleMemory`.
 #[allow(deprecated)] // TimeoutLayer::new deprecated in tower-http 0.6, replacement API differs
-pub fn build_router(state: Arc<AppState>) -> Router {
+pub fn build_router(state: Arc<AppState>, locale_lookup: Arc<dyn SessionLocaleLookup>) -> Router {
     // Rate limiter: 60 requests per minute per IP
     // SmartIpKeyExtractor checks X-Forwarded-For, X-Real-Ip, then peer addr
     let governor_conf = Arc::new(
@@ -61,7 +67,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                     http::header::CONTENT_TYPE,
                     http::header::AUTHORIZATION,
                     http::header::ACCEPT,
+                    http::header::ACCEPT_LANGUAGE,
+                    http::HeaderName::from_static("x-session-id"),
                 ])),
         )
+        .layer(Extension(locale_lookup))
         .with_state(state)
 }

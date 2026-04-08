@@ -78,22 +78,57 @@ pub struct SearchMetadataDto {
     /// Provenance of `locale`: `llm_detected` (happy path) or `fallback_en`
     /// (translator failed or returned an unsupported BCP-47 tag).
     pub detected_locale_source: String,
+    /// Resolved hot-path locale (post-resolution chain: query_param /
+    /// session_memory / accept_language / default). Additive, non-breaking.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_locale: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_locale_source: Option<String>,
     pub intent: String,
     pub retrieval_count: usize,
     pub latency_ms: u64,
 }
 
-/// Top searches response.
+/// A single blended suggestion row — matches the domain `BlendedSuggestion`
+/// produced by dev-1's `SuggestionService`. Crowdsourced rows carry a `score`
+/// (search_count); default rows carry a `weight`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct BlendedItemDto {
+    pub query: String,
+    /// `"crowdsourced"` or `"default"`.
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weight: Option<i32>,
+}
+
+/// Top searches response — gains `resolved_locale` / `resolved_locale_source`
+/// per the locked DTO contract in `architect.md`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TopSearchesResponse {
+    pub items: Vec<BlendedItemDto>,
+    pub resolved_locale: String,
+    pub resolved_locale_source: String,
+}
+
+/// Legacy per-item shape still used internally by some callers; retained for
+/// backwards compatibility with the existing SSE / client contract. New code
+/// should prefer [`BlendedItemDto`].
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TopSearchDto {
     pub query: String,
     pub count: i64,
 }
 
-/// Autocomplete response.
+/// Autocomplete response — now carries blended items and the resolved locale
+/// fields so the client can mirror the server's resolution decision.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AutocompleteResponseDto {
     pub suggestions: Vec<String>,
+    pub items: Vec<BlendedItemDto>,
+    pub resolved_locale: String,
+    pub resolved_locale_source: String,
 }
 
 /// Feedback response.
@@ -147,6 +182,8 @@ impl From<SearchResponse> for SearchResponseDto {
                     .ok()
                     .and_then(|v| v.as_str().map(str::to_string))
                     .unwrap_or_default(),
+                resolved_locale: None,
+                resolved_locale_source: None,
                 intent: resp.metadata.intent.to_string(),
                 retrieval_count: resp.metadata.retrieval_count,
                 latency_ms: resp.metadata.latency_ms,
@@ -178,5 +215,88 @@ impl From<Component> for ComponentDto {
                 source: format!("{:?}", s.source).to_lowercase(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_metadata_serializes_with_resolved_locale_fields() {
+        let meta = SearchMetadataDto {
+            original_query: "hi".into(),
+            translated_query: None,
+            locale: "ja".into(),
+            detected_locale_source: "llm_detected".into(),
+            resolved_locale: Some("ja".into()),
+            resolved_locale_source: Some("session_memory".into()),
+            intent: "unknown".into(),
+            retrieval_count: 3,
+            latency_ms: 120,
+        };
+        let v = serde_json::to_value(&meta).unwrap();
+        assert_eq!(v.get("resolved_locale").unwrap(), "ja");
+        assert_eq!(v.get("resolved_locale_source").unwrap(), "session_memory");
+        assert_eq!(v.get("locale").unwrap(), "ja");
+    }
+
+    #[test]
+    fn search_metadata_omits_resolved_fields_when_none() {
+        let meta = SearchMetadataDto {
+            original_query: "hi".into(),
+            translated_query: None,
+            locale: "en".into(),
+            detected_locale_source: "llm_detected".into(),
+            resolved_locale: None,
+            resolved_locale_source: None,
+            intent: "unknown".into(),
+            retrieval_count: 0,
+            latency_ms: 10,
+        };
+        let v = serde_json::to_value(&meta).unwrap();
+        assert!(v.get("resolved_locale").is_none());
+        assert!(v.get("resolved_locale_source").is_none());
+    }
+
+    #[test]
+    fn blended_item_dto_round_trips() {
+        let crowd = BlendedItemDto {
+            query: "why is btc valuable".into(),
+            source: "crowdsourced".into(),
+            score: Some(42.0),
+            weight: None,
+        };
+        let v = serde_json::to_value(&crowd).unwrap();
+        assert_eq!(v.get("score").unwrap(), 42.0);
+        assert!(v.get("weight").is_none());
+
+        let default_row = BlendedItemDto {
+            query: "How does Level Up work?".into(),
+            source: "default".into(),
+            score: None,
+            weight: Some(10),
+        };
+        let v = serde_json::to_value(&default_row).unwrap();
+        assert_eq!(v.get("weight").unwrap(), 10);
+        assert!(v.get("score").is_none());
+    }
+
+    #[test]
+    fn top_searches_response_shape() {
+        let r = TopSearchesResponse {
+            items: vec![BlendedItemDto {
+                query: "q".into(),
+                source: "default".into(),
+                score: None,
+                weight: Some(10),
+            }],
+            resolved_locale: "ja".into(),
+            resolved_locale_source: "query_param".into(),
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v.get("resolved_locale").unwrap(), "ja");
+        assert_eq!(v.get("resolved_locale_source").unwrap(), "query_param");
+        assert_eq!(v.get("items").unwrap().as_array().unwrap().len(), 1);
     }
 }
