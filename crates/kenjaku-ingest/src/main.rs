@@ -86,14 +86,14 @@ enum Commands {
     ///
     /// Used for ops/manual rebuilds outside the daily 03:00 UTC schedule.
     /// `--force` rebuilds even if the corpus fingerprint is unchanged.
-    /// `--dry-run` computes the corpus fingerprint and compares it to the
-    /// latest active batch without writing anything.
+    /// `--dry-run` reports current refresh state without writing anything;
+    /// it does not rebuild or recompute the corpus fingerprint.
     SeedRefreshNow {
         /// Force rebuild even if the corpus fingerprint is unchanged.
         #[arg(long)]
         force: bool,
 
-        /// Compute fingerprint and report drift only — no writes.
+        /// Report current refresh state only — no writes or rebuild.
         #[arg(long)]
         dry_run: bool,
     },
