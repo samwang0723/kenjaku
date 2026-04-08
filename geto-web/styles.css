@@ -1368,12 +1368,12 @@ body {
 
 .search-input-wrap {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 8px;
   background: var(--bg-input);
   border: 1.5px solid rgba(255, 117, 145, 0.4);
-  border-radius: 9999px;
-  padding: 4px 6px 4px 16px;
+  border-radius: 20px;
+  padding: 6px 6px 6px 16px;
   box-shadow: 0 0 14px rgba(255, 117, 145, 0.12);
   transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
@@ -1382,20 +1382,42 @@ body {
   box-shadow: 0 0 24px rgba(255, 117, 145, 0.35);
 }
 
-.search-input-wrap input {
+.search-input-wrap textarea {
   flex: 1;
-  padding: 8px 0;
+  padding: 6px 0;
   background: transparent;
   border: none;
   color: var(--text-primary);
   font-size: 14px;
   font-weight: 400;
+  font-family: inherit;
   outline: none;
+  resize: none;
+  line-height: 20px;
+  /* 1 line ≈ 20px; max 3 lines = 60px. JS grows height dynamically
+     between 20 and 60 px based on scrollHeight. */
+  min-height: 20px;
+  max-height: 60px;
+  overflow-y: auto;
 }
-.search-input-wrap input::placeholder {
+.search-input-wrap textarea::placeholder {
   color: #7B849B;
   font-weight: 400;
 }
+
+.input-meta {
+  display: flex;
+  justify-content: flex-end;
+  padding: 2px 14px 0;
+  pointer-events: none;
+}
+.char-counter {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.char-counter.near-limit { color: var(--accent-orange); }
+.char-counter.at-limit { color: var(--accent-red); }
 
 .send-btn {
   width: 28px;

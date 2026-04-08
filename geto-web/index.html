@@ -77,13 +77,16 @@
       <!-- Fixed bottom bar -->
       <div class="bottom-bar">
         <div class="search-input-wrap">
-          <input type="text" id="searchInput" data-i18n-placeholder="ask_followup" placeholder="Ask a follow-up" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="autoCompleteDropdown" aria-autocomplete="list">
+          <textarea id="searchInput" rows="1" maxlength="500" data-i18n-placeholder="ask_followup" placeholder="Ask a follow-up" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="autoCompleteDropdown" aria-autocomplete="list"></textarea>
           <button id="searchBtn" type="button" class="send-btn">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
               stroke-linecap="round" stroke-linejoin="round">
               <path d="M12 19V5M5 12l7-7 7 7" />
             </svg>
           </button>
+        </div>
+        <div class="input-meta">
+          <span id="charCounter" class="char-counter">0 / 500</span>
         </div>
         <div id="autoCompleteDropdown" class="autocomplete-dropdown" role="listbox" aria-label="Search suggestions"></div>
       </div>

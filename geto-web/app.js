@@ -453,6 +453,8 @@ function showSearchView() {
   resultsView.style.display = 'none';
   searchInput.value = '';
   searchInput.placeholder = t('ask_followup');
+  searchInput.style.height = 'auto';
+  if (typeof updateCharCounter === 'function') updateCharCounter();
 }
 
 // ====== Raw JSON helper ======
@@ -818,6 +820,8 @@ async function doSearch(query, isFollowUp) {
   showResultsView(query);
   searchInput.value = '';
   searchInput.placeholder = t('ask_followup');
+  searchInput.style.height = 'auto';
+  if (typeof updateCharCounter === 'function') updateCharCounter();
 
   if (currentAbortController) currentAbortController.abort();
   currentAbortController = new AbortController();
@@ -1389,15 +1393,56 @@ pillsDiv.addEventListener('click', function(e) {
 // ====== Event Handlers ======
 searchBtn.addEventListener('click', function() {
   if (currentAbortController) { abortCurrentSearch(); return; }
-  var val = searchInput.value.trim();
-  if (val) {
-    acHide();
-    var isFollowUp = resultsView.style.display !== 'none';
-    doSearch(val, isFollowUp);
-  }
+  submitFromInput();
 });
 
+// ====== Input composition (IME) + auto-grow + char counter ======
+// imeComposing tracks whether an IME session is in progress (CJK, etc.).
+// While true, Enter MUST NOT submit — the user is still selecting
+// candidates. We also check `e.isComposing` on the keydown event as a
+// belt-and-braces guard, since some browsers still fire a keydown with
+// keyCode 229 before compositionend.
+var imeComposing = false;
+searchInput.addEventListener('compositionstart', function() { imeComposing = true; });
+searchInput.addEventListener('compositionend',   function() { imeComposing = false; });
+
+var MAX_INPUT_CHARS = 500;
+var charCounter = document.getElementById('charCounter');
+function updateCharCounter() {
+  if (!charCounter) return;
+  var len = searchInput.value.length;
+  charCounter.textContent = len + ' / ' + MAX_INPUT_CHARS;
+  charCounter.classList.toggle('near-limit', len >= MAX_INPUT_CHARS * 0.9 && len < MAX_INPUT_CHARS);
+  charCounter.classList.toggle('at-limit',   len >= MAX_INPUT_CHARS);
+}
+
+// Auto-grow textarea between 1 and 3 lines. CSS caps height at 60px so
+// anything beyond spills into the scrollbar.
+function autoGrowInput() {
+  searchInput.style.height = 'auto';
+  var newH = Math.min(searchInput.scrollHeight, 60);
+  searchInput.style.height = newH + 'px';
+}
+
+searchInput.addEventListener('input', function() {
+  updateCharCounter();
+  autoGrowInput();
+});
+
+function submitFromInput() {
+  var val = searchInput.value.trim();
+  if (!val) return;
+  acHide();
+  var isFollowUp = resultsView.style.display !== 'none';
+  doSearch(val, isFollowUp);
+}
+
 searchInput.addEventListener('keydown', function(e) {
+  // Never intercept keys while an IME is composing. The `229` keyCode
+  // fallback catches browsers that set `isComposing` to false but still
+  // route the keydown through the IME.
+  if (imeComposing || e.isComposing || e.keyCode === 229) return;
+
   if (acDropdown.classList.contains('visible')) {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
@@ -1414,21 +1459,26 @@ searchInput.addEventListener('keydown', function(e) {
       return;
     }
     if (e.key === 'Escape') { e.preventDefault(); acHide(); return; }
-    if (e.key === 'Enter' && acActiveIndex >= 0) {
+    if (e.key === 'Enter' && !e.shiftKey && acActiveIndex >= 0) {
       e.preventDefault();
       acSelect(acActiveIndex);
       return;
     }
   }
   if (e.key === 'Enter') {
-    var val = this.value.trim();
-    if (val) {
-      acHide();
-      var isFollowUp = resultsView.style.display !== 'none';
-      doSearch(val, isFollowUp);
+    // Shift+Enter inserts a newline — let the default textarea behavior
+    // handle it, then resize.
+    if (e.shiftKey) {
+      setTimeout(autoGrowInput, 0);
+      return;
     }
+    e.preventDefault();
+    submitFromInput();
   }
 });
+
+// Initial counter state
+updateCharCounter();
 
 document.getElementById('backBtn').addEventListener('click', function() {
   showSearchView();
