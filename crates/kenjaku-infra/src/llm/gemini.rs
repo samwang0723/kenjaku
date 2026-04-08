@@ -136,22 +136,22 @@ impl LlmProvider for GeminiProvider {
         // since callers (intent classifier etc.) want the raw English output.
         // History is likewise ignored for stateless calls.
         let no_context = context.is_empty();
-        let (prompt, tools, max_tokens, temperature, system_instruction, use_history) = if no_context
-        {
-            (query.to_string(), None, 256u32, 0.0_f32, None, false)
-        } else {
-            let context_str = Self::build_context(context);
-            (
-                Self::build_search_prompt(query, &context_str),
-                Some(vec![GeminiTool {
-                    google_search: Some(serde_json::json!({})),
-                }]),
-                self.config.max_tokens,
-                self.config.temperature,
-                Some(Self::build_search_system_instruction(answer_locale)),
-                true,
-            )
-        };
+        let (prompt, tools, max_tokens, temperature, system_instruction, use_history) =
+            if no_context {
+                (query.to_string(), None, 256u32, 0.0_f32, None, false)
+            } else {
+                let context_str = Self::build_context(context);
+                (
+                    Self::build_search_prompt(query, &context_str),
+                    Some(vec![GeminiTool {
+                        google_search: Some(serde_json::json!({})),
+                    }]),
+                    self.config.max_tokens,
+                    self.config.temperature,
+                    Some(Self::build_search_system_instruction(answer_locale)),
+                    true,
+                )
+            };
 
         let contents = if use_history {
             Self::build_multi_turn_contents(history, prompt)
