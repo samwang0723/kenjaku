@@ -82,8 +82,9 @@ pub enum DetectedLocale {
     /// One of the 8 supported `Locale` enum variants.
     Supported(Locale),
     /// A valid BCP-47 tag we don't support yet (e.g. `pt`, `it`, `ru`).
-    /// SearchService falls back to English and emits a metric so we can
-    /// prioritize which tag to add to the enum next.
+    /// SearchService falls back to English for these tags and logs a
+    /// WARN with the offending tag so operators can see which locale
+    /// to prioritize adding to the enum next.
     Unsupported { tag: String },
 }
 

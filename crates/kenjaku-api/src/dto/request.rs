@@ -56,10 +56,11 @@ mod tests {
     }
 
     #[test]
-    fn test_search_dto_unknown_field_is_rejected_by_default() {
-        // serde is lenient — extra fields like a stale `locale` are silently
-        // ignored, so legacy clients won't break. Verify the parser still
-        // succeeds when one is present.
+    fn test_search_dto_ignores_legacy_locale_field() {
+        // serde is lenient by default — unknown fields like a stale
+        // `locale` are silently ignored rather than rejected. This keeps
+        // legacy clients (still sending the field after its removal from
+        // the API) parsing cleanly instead of 4xx-ing.
         let json = r#"{"query":"test","locale":"en","session_id":"s","request_id":"r"}"#;
         let dto: SearchRequestDto = serde_json::from_str(json).unwrap();
         assert_eq!(dto.query, "test");

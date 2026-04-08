@@ -405,9 +405,17 @@ impl SearchService {
 /// values the search pipeline needs: the English-normalized search query,
 /// the resolved `Locale` to answer in, and the provenance of that locale.
 ///
-/// Failure modes (translator error / unsupported BCP-47 tag) collapse to
-/// `(raw_query, Locale::En, FallbackEn)` so the search hot path never
-/// blocks.
+/// Failure modes:
+/// - Translator error → `(raw_query, Locale::En, FallbackEn)` — we have
+///   no normalized form to fall back to, so the raw query goes to
+///   retrieval as-is.
+/// - Unsupported BCP-47 tag (e.g. `pt`, `it`) → `(tr.normalized,
+///   Locale::En, FallbackEn)`. We keep the translator's English-normalized
+///   form because it was successfully produced and is better for
+///   retrieval than the raw non-English input; only the *answer language*
+///   falls back to English.
+///
+/// Either way the search hot path never blocks.
 fn resolve_translation(
     raw_query: &str,
     result: Result<TranslationResult>,
