@@ -15,7 +15,16 @@ impl TrendingRepository {
         Self { pool }
     }
 
-    /// Upsert a popular query (increment count or insert new).
+    /// Upsert a popular query — overwrite the stored count with the
+    /// caller-supplied value (do NOT add).
+    ///
+    /// The flush worker passes `entry.score` (Redis's current ZSCORE)
+    /// every cycle. If we added to the existing row we'd double-count
+    /// every flush — a query with Redis score 5 and a 5-minute flush
+    /// interval would balloon to 1,440/day in Postgres. Overwriting
+    /// keeps Postgres mirrored to Redis while active keys live, and
+    /// preserves the last-flushed score as the historical snapshot
+    /// once the Redis key TTL-expires.
     pub async fn upsert(
         &self,
         locale: &str,
@@ -31,7 +40,7 @@ impl TrendingRepository {
             INSERT INTO popular_queries (locale, query, search_count, period, period_date)
             VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (locale, query, period, period_date)
-            DO UPDATE SET search_count = popular_queries.search_count + $3,
+            DO UPDATE SET search_count = EXCLUDED.search_count,
                           updated_at = NOW()
             "#,
         )
