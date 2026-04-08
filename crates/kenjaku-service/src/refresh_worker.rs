@@ -193,42 +193,20 @@ impl SuggestionRefreshWorker {
         let safety_re = Regex::new(&self.config.safety_regex)
             .map_err(|e| Error::Internal(format!("invalid suggestions.safety_regex: {e}")))?;
 
-        let mut rows: Vec<NewDefaultSuggestion> = Vec::new();
-        let mut llm_calls: usize = 0;
-        let mut kept: usize = 0;
-        let mut rejected: usize = 0;
-
-        for cluster in &clusters {
-            let excerpt = build_cluster_excerpt(cluster, sample, 5, 2000);
-            if excerpt.is_empty() {
-                continue;
-            }
-
-            llm_calls += 1;
-            let cluster_questions = match self.llm.generate_cluster_questions(&excerpt).await {
-                Ok(q) => q,
-                Err(e) => {
-                    warn!(error = %e, cluster_id = cluster.id, "generate_cluster_questions failed; skipping cluster");
-                    continue;
-                }
-            };
-
-            for (locale, questions) in &cluster_questions.questions {
-                let (good, bad) = safety_filter(questions.clone(), &safety_re);
-                kept += good.len();
-                rejected += bad;
-                for q in good {
-                    rows.push(NewDefaultSuggestion {
-                        batch_id,
-                        locale: *locale,
-                        question: q,
-                        topic_cluster_id: cluster.id as i32,
-                        topic_label: cluster_questions.label.clone(),
-                        weight: self.config.default_weight,
-                    });
-                }
-            }
-        }
+        let GeneratedRows {
+            rows,
+            llm_calls,
+            kept,
+            rejected,
+        } = generate_rows_for_clusters(
+            self.llm.as_ref(),
+            &clusters,
+            sample,
+            &safety_re,
+            batch_id,
+            self.config.default_weight,
+        )
+        .await?;
 
         let inserted = self.default_repo.insert_bulk(&rows).await?;
         info!(
@@ -274,6 +252,82 @@ impl SuggestionRefreshWorker {
 }
 
 // -------- helpers --------------------------------------------------------
+
+/// Result of `generate_rows_for_clusters`: the surviving rows plus tallies.
+#[derive(Debug)]
+struct GeneratedRows {
+    rows: Vec<NewDefaultSuggestion>,
+    llm_calls: usize,
+    kept: usize,
+    rejected: usize,
+}
+
+/// Run the per-cluster LLM + safety-filter loop. Per-cluster LLM errors
+/// are logged and skipped (degraded-but-non-empty refresh is acceptable),
+/// but if **every** attempted cluster errors and no rows are produced,
+/// this returns `Err` so the caller can mark the batch `failed` and
+/// leave the previously-active batch untouched (spec §4.4 step 5,
+/// §10.3, QA HIGH fix).
+async fn generate_rows_for_clusters(
+    llm: &dyn LlmProvider,
+    clusters: &[Cluster],
+    sample: &[ScrolledPoint],
+    safety_re: &Regex,
+    batch_id: i64,
+    default_weight: i32,
+) -> Result<GeneratedRows> {
+    let mut rows: Vec<NewDefaultSuggestion> = Vec::new();
+    let mut llm_calls: usize = 0;
+    let mut cluster_errors: usize = 0;
+    let mut kept: usize = 0;
+    let mut rejected: usize = 0;
+
+    for cluster in clusters {
+        let excerpt = build_cluster_excerpt(cluster, sample, 5, 2000);
+        if excerpt.is_empty() {
+            continue;
+        }
+
+        llm_calls += 1;
+        let cluster_questions = match llm.generate_cluster_questions(&excerpt).await {
+            Ok(q) => q,
+            Err(e) => {
+                cluster_errors += 1;
+                warn!(error = %e, cluster_id = cluster.id, "generate_cluster_questions failed; skipping cluster");
+                continue;
+            }
+        };
+
+        for (locale, questions) in &cluster_questions.questions {
+            let (good, bad) = safety_filter(questions.clone(), safety_re);
+            kept += good.len();
+            rejected += bad;
+            for q in good {
+                rows.push(NewDefaultSuggestion {
+                    batch_id,
+                    locale: *locale,
+                    question: q,
+                    topic_cluster_id: cluster.id as i32,
+                    topic_label: cluster_questions.label.clone(),
+                    weight: default_weight,
+                });
+            }
+        }
+    }
+
+    if cluster_errors > 0 && rows.is_empty() {
+        return Err(Error::Internal(format!(
+            "all {cluster_errors} clusters failed LLM generation; aborting batch to preserve previous active state"
+        )));
+    }
+
+    Ok(GeneratedRows {
+        rows,
+        llm_calls,
+        kept,
+        rejected,
+    })
+}
 
 /// Build a compact excerpt for the LLM prompt: concatenate the top-N
 /// members closest to the centroid (in insertion order of the cluster),
@@ -403,7 +457,7 @@ mod tests {
 
     fn safety_regex() -> Regex {
         Regex::new(
-            r"(?i)(price|should[\s\-]?i[\s\-]?(buy|sell|invest)|will[\s\w]+hit|prediction|forecast|predicted|purchase|buying|invest(ing)?|where[\s\w]+buy)",
+            r"(?i)(\bprice\b|should[\s\-]?i[\s\-]?(buy|sell|invest)|will[\s\w]+hit|\bprediction\b|\bforecast\b|\bpredicted\b|\bpurchase\b|\binvesting\b|\bbuying\b|where[\s\w]+buy)",
         )
         .unwrap()
     }
@@ -413,7 +467,7 @@ mod tests {
         let re = safety_regex();
         let input = vec![
             "How does buying Bitcoin actually work?".to_string(),
-            "How to invest in DeFi safely?".to_string(),
+            "Investing in DeFi safely".to_string(),
             "What is the predicted outcome for ETH?".to_string(),
             "Where can I buy Bitcoin in Europe?".to_string(),
             "How does proof of stake work?".to_string(),
@@ -482,6 +536,167 @@ mod tests {
         let fp1 = compute_fingerprint("docs", 1000, &["a".to_string()]);
         let fp2 = compute_fingerprint("docs", 1000, &["b".to_string()]);
         assert_ne!(fp1, fp2);
+    }
+
+    #[test]
+    fn safety_filter_does_not_reject_investigate() {
+        // Word-boundary tightening: "investigate" must NOT be caught by the
+        // `\binvesting\b` / `should i invest` patterns.
+        let re = safety_regex();
+        let input = vec![
+            "How to investigate a memory leak?".to_string(),
+            "How do I investigate slow SQL queries?".to_string(),
+        ];
+        let (kept, rejected) = safety_filter(input, &re);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(rejected, 0);
+    }
+
+    #[test]
+    fn safety_filter_still_catches_investing_and_price() {
+        // Prove the word-boundary regex still traps the real targets.
+        let re = safety_regex();
+        let input = vec![
+            "Investing in DeFi in 2026".to_string(),
+            "What is the current BTC price today?".to_string(),
+            "How does proof of stake work?".to_string(),
+        ];
+        let (kept, rejected) = safety_filter(input, &re);
+        assert_eq!(kept, vec!["How does proof of stake work?".to_string()]);
+        assert_eq!(rejected, 2);
+    }
+
+    // -------- mock LlmProvider for generate_rows_for_clusters tests --------
+
+    use async_trait::async_trait;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use futures::Stream;
+    use kenjaku_core::error::Error as CoreError;
+    use kenjaku_core::traits::llm::LlmProvider;
+    use kenjaku_core::types::locale::Locale;
+    use kenjaku_core::types::search::{
+        LlmResponse, RetrievedChunk, StreamChunk, TranslationResult,
+    };
+    use kenjaku_core::types::suggestion::ClusterQuestions;
+
+    /// Mock that errors on the first `fail_first` calls then succeeds.
+    struct MockLlm {
+        calls: AtomicUsize,
+        fail_first: usize,
+    }
+
+    #[async_trait]
+    impl LlmProvider for MockLlm {
+        async fn generate(
+            &self,
+            _q: &str,
+            _c: &[RetrievedChunk],
+            _l: Locale,
+        ) -> kenjaku_core::error::Result<LlmResponse> {
+            unimplemented!()
+        }
+        async fn generate_stream(
+            &self,
+            _q: &str,
+            _c: &[RetrievedChunk],
+            _l: Locale,
+        ) -> kenjaku_core::error::Result<
+            Pin<Box<dyn Stream<Item = kenjaku_core::error::Result<StreamChunk>> + Send>>,
+        > {
+            unimplemented!()
+        }
+        async fn translate(&self, _t: &str) -> kenjaku_core::error::Result<TranslationResult> {
+            unimplemented!()
+        }
+        async fn suggest(&self, _q: &str, _a: &str) -> kenjaku_core::error::Result<Vec<String>> {
+            unimplemented!()
+        }
+        async fn generate_cluster_questions(
+            &self,
+            _excerpt: &str,
+        ) -> kenjaku_core::error::Result<ClusterQuestions> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n < self.fail_first {
+                return Err(CoreError::Internal("mock llm boom".to_string()));
+            }
+            let mut questions = std::collections::HashMap::new();
+            questions.insert(
+                Locale::En,
+                vec![
+                    "How does proof of stake work?".to_string(),
+                    "What is a blockchain finality guarantee?".to_string(),
+                ],
+            );
+            Ok(ClusterQuestions {
+                label: "staking".to_string(),
+                questions,
+            })
+        }
+    }
+
+    fn dummy_sample(n: usize) -> Vec<ScrolledPoint> {
+        (0..n)
+            .map(|i| ScrolledPoint {
+                id: format!("p{i}"),
+                vector: vec![0.0; 4],
+                text: format!("document text {i} about staking rewards"),
+            })
+            .collect()
+    }
+
+    fn dummy_clusters(n: usize, sample_len: usize) -> Vec<Cluster> {
+        (0..n)
+            .map(|i| Cluster {
+                id: i,
+                member_indices: (0..sample_len).collect(),
+                centroid: vec![0.0; 4],
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn generate_rows_aborts_when_all_clusters_fail() {
+        let llm = MockLlm {
+            calls: AtomicUsize::new(0),
+            fail_first: usize::MAX, // always fail
+        };
+        let sample = dummy_sample(3);
+        let clusters = dummy_clusters(3, sample.len());
+        let re = safety_regex();
+
+        let err = generate_rows_for_clusters(&llm, &clusters, &sample, &re, 42, 10)
+            .await
+            .expect_err("expected all-failed abort");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("all 3 clusters failed"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_rows_completes_with_partial_failures() {
+        // 4 clusters, first 2 LLM calls fail, last 2 succeed.
+        let llm = MockLlm {
+            calls: AtomicUsize::new(0),
+            fail_first: 2,
+        };
+        let sample = dummy_sample(3);
+        let clusters = dummy_clusters(4, sample.len());
+        let re = safety_regex();
+
+        let out = generate_rows_for_clusters(&llm, &clusters, &sample, &re, 7, 10)
+            .await
+            .expect("partial failure should still return Ok");
+        assert_eq!(out.llm_calls, 4);
+        assert!(out.kept > 0, "expected kept rows from successful clusters");
+        assert!(
+            !out.rows.is_empty(),
+            "expected non-empty rows for partial success"
+        );
+        assert!(out.rows.iter().all(|r| r.batch_id == 7));
     }
 
     #[test]
