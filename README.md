@@ -48,7 +48,9 @@ make docker-up
 
 - Backend API: `http://localhost:18080`
 - Visual frontend (geto-web): `http://localhost:3000` — mobile phone-frame
-  SPA that streams answers and renders source citations
+  SPA that streams answers, renders source citations, and exposes an
+  8-locale language switcher (sets explicit `?locale=` override + sticky
+  `X-Session-Id`)
 
 Internal ports (exposed only for local debugging):
 
@@ -88,8 +90,8 @@ make lint
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/v1/search` | RAG search with optional SSE streaming |
-| `GET` | `/api/v1/top-searches` | Popular queries by locale and period |
-| `GET` | `/api/v1/autocomplete` | Query suggestions from trending (gated by `crowd_sourcing_min_count`) + prettified document titles |
+| `GET` | `/api/v1/top-searches` | Blended default suggestions + crowdsourced popular queries (locale resolved via `?locale=` → session memory → `Accept-Language` → `en`) |
+| `GET` | `/api/v1/autocomplete` | Prefix-matched blend of default suggestions + trending (gated by `crowd_sourcing_min_count`) + prettified document titles |
 | `POST` | `/api/v1/feedback` | User feedback (like/dislike/cancel) on responses |
 | `GET` | `/health` | Liveness check |
 | `GET` | `/ready` | Readiness check (qdrant + postgres + redis) |
@@ -97,12 +99,12 @@ make lint
 ### Search Example
 
 ```bash
-# Non-streaming
+# Non-streaming — locale is auto-detected by the translator from the query text
 curl -X POST http://localhost:18080/api/v1/search \
   -H "Content-Type: application/json" \
+  -H "X-Session-Id: sess-001" \
   -d '{
     "query": "How do I reset my password?",
-    "locale": "en",
     "session_id": "sess-001",
     "request_id": "req-001",
     "streaming": false,
@@ -112,7 +114,8 @@ curl -X POST http://localhost:18080/api/v1/search \
 # Streaming (SSE) — set streaming: true
 curl -N -X POST http://localhost:18080/api/v1/search \
   -H "Content-Type: application/json" \
-  -d '{"query":"How do I reset my password?","locale":"en","session_id":"s","request_id":"r","streaming":true,"top_k":5}'
+  -H "X-Session-Id: s" \
+  -d '{"query":"How do I reset my password?","session_id":"s","request_id":"r","streaming":true,"top_k":5}'
 ```
 
 ### Supported Locales
@@ -133,6 +136,24 @@ make ingest-folder FOLDER=./my-docs
 # Run ingestion inside the running docker stack (uses secrets.docker.yaml)
 make docker-ingest-url URL=https://docs.example.com
 make docker-ingest-folder FOLDER=./my-docs
+```
+
+### Default Suggestions Refresh
+
+A daily background worker (`SuggestionRefreshWorker`, default `03:00 UTC`)
+clusters the Qdrant corpus via mini-batch k-means and asks Gemini to
+generate ≥10 native-language seed questions per cluster across all 8
+locales in a single multi-locale call. Results are atomically swapped
+into `default_suggestions` via the `refresh_batches.status` enum and
+blended at read time with crowdsourced trending via
+Efraimidis-Spirakis weighted random sampling. A SHA-256 corpus
+fingerprint short-circuits unchanged runs to zero LLM calls.
+
+To force a refresh on demand (inside the running container):
+
+```bash
+docker compose exec kenjaku kenjaku-ingest seed-refresh-now --force
+docker compose exec kenjaku kenjaku-ingest seed-refresh-now --dry-run
 ```
 
 ## Configuration

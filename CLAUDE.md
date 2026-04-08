@@ -66,7 +66,7 @@ Plus a sibling static-site frontend (not a Cargo crate):
 
 ## Type Conventions
 
-- `Locale` enum (en/zh/zh-TW/ja/ko/de/fr/es) — validated at API boundary via `FromStr`, used throughout as typed enum, serialized as BCP-47 tags. Note: the translator ignores `locale` and auto-detects the source language instead.
+- `Locale` enum (en/zh/zh-TW/ja/ko/de/fr/es) — used throughout as typed enum, serialized as BCP-47 tags. **`/search` no longer accepts `locale` in the request body** (PR #7) — the translator detects it from the query text and the LLM answer is pinned to that locale via Gemini `systemInstruction`. **`/top-searches` and `/autocomplete`** resolve locale via the `ResolvedLocale` Axum extractor: `?locale=` override → session memory (Redis, 2h TTL, keyed by `X-Session-Id` header or `?session_id=`) → `Accept-Language` header → `en` default. The `/search` handler writes the detected locale into session memory fire-and-forget so subsequent GETs from the same device inherit it.
 - `Intent` enum — classified per query, stored in metadata and conversations, serialized as snake_case.
 - `Component` enum (tagged `#[serde(tag = "type")]`) — response layout order configured via `search.component_layout.order` in YAML.
 
@@ -86,6 +86,12 @@ Two fire-and-forget pipelines decouple the search hot path from persistence:
 - **Trending**: `TrendingService::record_query(locale, raw, normalized)` first runs `quality::is_gibberish(raw)` (length caps, no-space Latin, single-char dominance) and drops obviously bad queries; then stores via `quality::normalize_for_trending` (English: translator-normalized, capitalized; other locales: raw, capitalized). Errors swallowed. `TrendingFlushWorker` periodically SCAN+flushes entries above `popularity_threshold` to PostgreSQL. The read paths (autocomplete + top-searches) additionally enforce `crowd_sourcing_min_count` (default 2) so anything that slips past the record-time guard still needs independent repeated searches before surfacing.
 - **Conversations**: `ConversationService::record()` sends via bounded `mpsc::channel(1024)` with `try_send` (never blocks). `ConversationFlushWorker` batch-inserts up to 64 records per flush.
 - **Feedback**: Now upserts on `(session_id, request_id)` (unique index added in migration `20260407000001_feedback_unique`) — repeated like/dislike clicks update the existing row in place instead of duplicating.
+- **Locale memory**: `LocaleMemory::record(session_id, locale)` writes a sticky per-device locale to Redis (key prefix `sl:`, 2h TTL). Bounded at 128 chars on both write and read. Errors swallowed.
+- **Default suggestions refresh**: `SuggestionRefreshWorker::run_scheduled` runs on a cron schedule (default `0 0 3 * * *`) and is also exposed via `kenjaku-ingest seed-refresh-now [--force] [--dry-run]`. Holds a PG advisory lock on a pinned `PoolConnection`, computes a SHA-256 corpus fingerprint over `(collection_name, points_count, sorted first 32 point ids)`, short-circuits if unchanged. Otherwise: scrolls Qdrant points-with-vectors → mini-batch k-means via `linfa-clustering` (deterministic seeded `StdRng`) → one multi-locale Gemini call per cluster (`responseMimeType=application/json` + 8-locale `responseSchema`, wrapped in `tokio::time::timeout`) → safety regex filter (price/forecast/buy-sell prompts dropped) → atomic swap via `refresh_batches.status` enum (`running`/`active`/`superseded`/`failed`, single-active partial unique index) → retain last N batches via FK `ON DELETE CASCADE` (excluding `running` rows). Steady-state: ~0 LLM calls/day; on corpus change: ~20 calls.
+
+## Suggestion Blending
+
+`SuggestionService::get_top` and `autocomplete` load active `default_suggestions` for the resolved locale plus crowdsourced `popular_queries`, then run **Efraimidis-Spirakis weighted random sampling without replacement**: each item's key is `-ln(U) / weight`, sort ascending, take first K. The injectable `ServiceRng` uses `from_entropy` in production and `from_seed` in tests. Returned `BlendedItemDto` carries `{query, source, score}` so the frontend debug panel can show provenance (`default` vs `crowdsourced`).
 
 ## Input Validation Bounds
 
