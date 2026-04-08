@@ -1,16 +1,15 @@
 use serde::Deserialize;
 use utoipa::ToSchema;
 
-use kenjaku_core::types::locale::Locale;
-
 /// Search request body.
+///
+/// **Note**: There is intentionally no `locale` field. Source language is
+/// auto-detected by the LLM translator from the query text and surfaced in
+/// the response (`metadata.locale`) and the SSE `start` event.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SearchRequestDto {
     /// The search query text.
     pub query: String,
-    /// Locale/language code. Supported: en, zh, zh-TW, ja, ko, de, fr, es.
-    #[serde(default = "default_locale")]
-    pub locale: String,
     /// Client session identifier.
     pub session_id: String,
     /// Unique request identifier.
@@ -23,19 +22,8 @@ pub struct SearchRequestDto {
     pub top_k: Option<usize>,
 }
 
-fn default_locale() -> String {
-    "en".to_string()
-}
-
 fn default_top_k() -> Option<usize> {
     Some(10)
-}
-
-impl SearchRequestDto {
-    /// Parse and validate the locale string into a typed `Locale`.
-    pub fn parse_locale(&self) -> Result<Locale, kenjaku_core::error::Error> {
-        self.locale.parse()
-    }
 }
 
 /// Feedback request body.
@@ -58,41 +46,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_locale_valid() {
-        let dto = SearchRequestDto {
-            query: "test".into(),
-            locale: "ja".into(),
-            session_id: "s".into(),
-            request_id: "r".into(),
-            streaming: false,
-            top_k: None,
-        };
-        assert_eq!(dto.parse_locale().unwrap(), Locale::Ja);
+    fn test_search_dto_parses_without_locale() {
+        let json = r#"{"query":"test","session_id":"s","request_id":"r","streaming":false}"#;
+        let dto: SearchRequestDto = serde_json::from_str(json).unwrap();
+        assert_eq!(dto.query, "test");
+        assert_eq!(dto.session_id, "s");
+        assert_eq!(dto.request_id, "r");
+        assert!(!dto.streaming);
     }
 
     #[test]
-    fn test_parse_locale_zh_tw() {
-        let dto = SearchRequestDto {
-            query: "test".into(),
-            locale: "zh-TW".into(),
-            session_id: "s".into(),
-            request_id: "r".into(),
-            streaming: false,
-            top_k: None,
-        };
-        assert_eq!(dto.parse_locale().unwrap(), Locale::ZhTw);
-    }
-
-    #[test]
-    fn test_parse_locale_invalid() {
-        let dto = SearchRequestDto {
-            query: "test".into(),
-            locale: "pt".into(),
-            session_id: "s".into(),
-            request_id: "r".into(),
-            streaming: false,
-            top_k: None,
-        };
-        assert!(dto.parse_locale().is_err());
+    fn test_search_dto_ignores_legacy_locale_field() {
+        // serde is lenient by default — unknown fields like a stale
+        // `locale` are silently ignored rather than rejected. This keeps
+        // legacy clients (still sending the field after its removal from
+        // the API) parsing cleanly instead of 4xx-ing.
+        let json = r#"{"query":"test","locale":"en","session_id":"s","request_id":"r"}"#;
+        let dto: SearchRequestDto = serde_json::from_str(json).unwrap();
+        assert_eq!(dto.query, "test");
     }
 }

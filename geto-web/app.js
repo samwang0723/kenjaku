@@ -83,37 +83,12 @@ var progressBar = document.getElementById('progressBar');
 var debugInfo = document.getElementById('debugInfo');
 var scrollArea = document.getElementById('scrollArea');
 
-// ====== User Context (only preferred_locale) ======
-var ctx = {
-  locale: document.getElementById('ctxLocale'),
-};
-
-var ctxFields = [
-  { el: ctx.locale, key: 'ctx.locale', event: 'change', reloadPills: true },
-];
-ctxFields.forEach(function(f) {
-  if (!f.el) return;
-  var saved = localStorage.getItem(f.key);
-  if (saved !== null && saved !== '') f.el.value = saved;
-  f.el.addEventListener(f.event, function() {
-    localStorage.setItem(f.key, this.value);
-    if (f.reloadPills) loadPills();
-  });
-});
-
+// `/search` auto-detects the query language via the LLM translator.
+// `/autocomplete` and `/top-searches` still take an explicit locale
+// query param but we default to `en` — they're visual pill helpers,
+// not user-facing search. Hardcoding avoids an otherwise-empty UI panel.
 function getLocale() {
-  return (ctx.locale && ctx.locale.value) || 'en';
-}
-
-var resetBtn = document.getElementById('resetContextBtn');
-if (resetBtn) {
-  resetBtn.addEventListener('click', function(e) {
-    e.stopPropagation();
-    e.preventDefault();
-    ctx.locale.value = 'en';
-    localStorage.removeItem('ctx.locale');
-    loadPills();
-  });
+  return 'en';
 }
 
 // ====== Session / Feedback State ======
@@ -513,7 +488,11 @@ function renderDebug(data) {
   var tags = [];
 
   if (m.intent)                        tags.push('<span class="tag tag-intent">' + escapeHtml(m.intent) + '</span>');
-  if (m.locale)                        tags.push('<span class="tag tag-lang">' + escapeHtml(String(m.locale).toUpperCase()) + '</span>');
+  if (m.locale) {
+    // detected_locale_source = 'llm_detected' (happy path) | 'fallback_en'
+    var localeSuffix = m.detected_locale_source === 'fallback_en' ? ' (fb)' : '';
+    tags.push('<span class="tag tag-lang">' + escapeHtml(String(m.locale).toUpperCase() + localeSuffix) + '</span>');
+  }
   if (m.retrieval_count !== undefined) tags.push('<span class="tag tag-tier">retrieved ' + m.retrieval_count + '</span>');
   if (m.latency_ms !== undefined)      tags.push('<span class="tag tag-time">' + m.latency_ms + 'ms</span>');
   if (m.preamble_latency_ms !== undefined) tags.push('<span class="tag tag-ttft">preamble ' + m.preamble_latency_ms + 'ms</span>');
@@ -547,9 +526,10 @@ async function doSearch(query, isFollowUp) {
   var requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
 
   try {
+    // No `locale` field — the backend translator auto-detects the source
+    // language from the query text and surfaces it in the SSE start event.
     var reqBody = {
       query: query,
-      locale: getLocale(),
       session_id: sessionId,
       request_id: requestId,
       streaming: true,
@@ -673,6 +653,7 @@ async function handleStreamResponse(resp, requestId) {
             original_query:   m.original_query || '',
             translated_query: m.translated_query || null,
             locale:           m.locale || '',
+            detected_locale_source: m.detected_locale_source || '',
             intent:           m.intent || 'unknown',
             retrieval_count:  m.retrieval_count || 0,
             latency_ms:       done.latency_ms || (Date.now() - streamStartTs),

@@ -47,7 +47,17 @@ impl IntentClassifier for LlmIntentClassifier {
             INTENT_CLASSIFICATION_PROMPT, query
         );
 
-        let response: LlmResponse = self.llm.generate(&prompt, &[] as &[RetrievedChunk]).await?;
+        // Intent classifier doesn't care about answer language — pass `En`
+        // as a no-op; the empty-context branch in `GeminiProvider::generate`
+        // skips the systemInstruction entirely anyway.
+        let response: LlmResponse = self
+            .llm
+            .generate(
+                &prompt,
+                &[] as &[RetrievedChunk],
+                kenjaku_core::types::locale::Locale::En,
+            )
+            .await?;
 
         let raw = response.answer.trim().to_lowercase();
         let intent = parse_intent(&raw);

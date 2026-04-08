@@ -12,9 +12,10 @@ use kenjaku_core::traits::retriever::Retriever;
 use kenjaku_core::types::component::SuggestionSource;
 use kenjaku_core::types::conversation::CreateConversation;
 use kenjaku_core::types::intent::Intent;
+use kenjaku_core::types::locale::{DetectedLocale, Locale};
 use kenjaku_core::types::search::{
-    LlmSource, SearchMetadata, SearchRequest, SearchResponse, StreamChunk, StreamDoneMetadata,
-    StreamStartMetadata,
+    DetectedLocaleSource, LlmSource, SearchMetadata, SearchRequest, SearchResponse, StreamChunk,
+    StreamDoneMetadata, StreamStartMetadata, TranslationResult,
 };
 
 use crate::component::ComponentService;
@@ -68,13 +69,13 @@ impl SearchService {
     /// Execute a non-streaming search.
     #[instrument(skip(self), fields(
         request_id = %req.request_id,
-        locale = %req.locale,
     ))]
     pub async fn search(&self, req: &SearchRequest) -> Result<SearchResponse> {
         let start = Instant::now();
 
-        // Step 1 + 2: Classify intent AND translate/normalize query in parallel.
-        // Both are independent LLM calls, so we save ~1s by issuing them together.
+        // Step 1 + 2: Classify intent AND translate/normalize+detect-locale
+        // in parallel. Both are independent LLM calls, so we save ~1s by
+        // issuing them together.
         let (intent_result, translate_result) = tokio::join!(
             self.intent_classifier.classify(&req.query),
             self.translation_service.translate(&req.query),
@@ -95,27 +96,32 @@ impl SearchService {
             }
         };
 
-        let search_query = match translate_result {
-            Ok(normalized) => normalized,
-            Err(e) => {
-                warn!(error = %e, "Query normalization failed, falling back to raw query");
-                req.query.clone()
-            }
-        };
+        let (search_query, detected_locale, locale_source) =
+            resolve_translation(&req.query, translate_result);
         let translated = if search_query != req.query {
             Some(search_query.clone())
         } else {
             None
         };
 
-        // Step 3: Retrieve with hybrid search
+        info!(
+            detected_locale = %detected_locale,
+            source = ?locale_source,
+            "Resolved answer locale"
+        );
+
+        // Step 3: Retrieve with hybrid search (uses the English-normalized
+        // query, regardless of detected locale).
         let chunks = self
             .retriever
             .retrieve(&search_query, &self.collection_name, req.top_k)
             .await?;
 
-        // Step 4: Generate LLM response
-        let llm_response = self.llm.generate(&search_query, &chunks).await?;
+        // Step 4: Generate LLM response in the detected locale.
+        let llm_response = self
+            .llm
+            .generate(&search_query, &chunks, detected_locale)
+            .await?;
 
         // Step 5: Get suggestions (LLM first, fallback to Qdrant titles)
         let suggestions = match self.llm.suggest(&search_query, &llm_response.answer).await {
@@ -138,11 +144,12 @@ impl SearchService {
             self.component_service
                 .assemble(&llm_response, suggestions, suggestion_source);
 
-        // Step 7: Record trending (fire-and-forget). The trending service
-        // applies a gibberish guard and normalizes the stored form.
+        // Step 7: Record trending (fire-and-forget) under the DETECTED
+        // locale, not a client hint. The trending service applies a
+        // gibberish guard and normalizes the stored form.
         let _ = self
             .trending_service
-            .record_query(req.locale, &req.query, &search_query)
+            .record_query(detected_locale, &req.query, &search_query)
             .await;
 
         let latency_ms = start.elapsed().as_millis() as u64;
@@ -154,7 +161,8 @@ impl SearchService {
             metadata: SearchMetadata {
                 original_query: req.query.clone(),
                 translated_query: translated,
-                locale: req.locale,
+                locale: detected_locale,
+                detected_locale_source: locale_source,
                 intent,
                 retrieval_count: chunks.len(),
                 latency_ms,
@@ -185,7 +193,7 @@ impl SearchService {
                         }
                     })
                     .unwrap_or_default(),
-                locale: req.locale,
+                locale: detected_locale,
                 intent,
                 meta,
             })
@@ -217,23 +225,30 @@ impl SearchService {
     /// `done` metadata and queue the conversation record.
     #[instrument(skip(self), fields(
         request_id = %req.request_id,
-        locale = %req.locale,
     ))]
     pub async fn search_stream(&self, req: &SearchRequest) -> Result<SearchStreamOutput> {
         let start = Instant::now();
 
-        // Step 1 + 2: Classify intent AND translate/normalize in parallel.
+        // Step 1 + 2: Classify intent AND translate/normalize+detect-locale
+        // in parallel.
         let (intent_result, translate_result) = tokio::join!(
             self.intent_classifier.classify(&req.query),
             self.translation_service.translate(&req.query),
         );
         let intent = intent_result.map(|c| c.intent).unwrap_or(Intent::Unknown);
-        let search_query = translate_result.unwrap_or_else(|_| req.query.clone());
+        let (search_query, detected_locale, locale_source) =
+            resolve_translation(&req.query, translate_result);
         let translated_query = if search_query != req.query {
             Some(search_query.clone())
         } else {
             None
         };
+
+        info!(
+            detected_locale = %detected_locale,
+            source = ?locale_source,
+            "Resolved answer locale (streaming)"
+        );
 
         // Step 3: Retrieve
         let chunks = self
@@ -260,14 +275,18 @@ impl SearchService {
             })
             .collect();
 
-        // Step 4: Open the LLM stream
-        let stream = self.llm.generate_stream(&search_query, &chunks).await?;
+        // Step 4: Open the LLM stream pinned to the detected locale.
+        let stream = self
+            .llm
+            .generate_stream(&search_query, &chunks, detected_locale)
+            .await?;
 
-        // Step 5: Record trending (fire-and-forget). The trending service
-        // applies a gibberish guard and normalizes the stored form.
+        // Step 5: Record trending (fire-and-forget) under the DETECTED
+        // locale. The trending service applies a gibberish guard and
+        // normalizes the stored form.
         let _ = self
             .trending_service
-            .record_query(req.locale, &req.query, &search_query)
+            .record_query(detected_locale, &req.query, &search_query)
             .await;
 
         let preamble_latency_ms = start.elapsed().as_millis() as u64;
@@ -277,7 +296,8 @@ impl SearchService {
             session_id: req.session_id.clone(),
             original_query: req.query.clone(),
             translated_query,
-            locale: req.locale,
+            locale: detected_locale,
+            detected_locale_source: locale_source,
             intent,
             retrieval_count: chunks.len(),
             preamble_latency_ms,
@@ -293,7 +313,7 @@ impl SearchService {
                 request_id: req.request_id.clone(),
                 session_id: req.session_id.clone(),
                 query: req.query.clone(),
-                locale: req.locale,
+                locale: detected_locale,
                 intent,
             },
         })
@@ -378,6 +398,50 @@ impl SearchService {
         // Trait doesn't expose model name directly; use a placeholder.
         // Providers encode the actual model into LlmResponse.model on non-stream.
         "gemini".to_string()
+    }
+}
+
+/// Reconcile the translator's `Result<TranslationResult>` into the three
+/// values the search pipeline needs: the English-normalized search query,
+/// the resolved `Locale` to answer in, and the provenance of that locale.
+///
+/// Failure modes:
+/// - Translator error → `(raw_query, Locale::En, FallbackEn)` — we have
+///   no normalized form to fall back to, so the raw query goes to
+///   retrieval as-is.
+/// - Unsupported BCP-47 tag (e.g. `pt`, `it`) → `(tr.normalized,
+///   Locale::En, FallbackEn)`. We keep the translator's English-normalized
+///   form because it was successfully produced and is better for
+///   retrieval than the raw non-English input; only the *answer language*
+///   falls back to English.
+///
+/// Either way the search hot path never blocks.
+fn resolve_translation(
+    raw_query: &str,
+    result: Result<TranslationResult>,
+) -> (String, Locale, DetectedLocaleSource) {
+    match result {
+        Ok(tr) => match tr.detected_locale {
+            DetectedLocale::Supported(l) => (tr.normalized, l, DetectedLocaleSource::LlmDetected),
+            DetectedLocale::Unsupported { tag } => {
+                warn!(
+                    detected_tag = %tag,
+                    "Translator detected an unsupported locale; falling back to English"
+                );
+                (tr.normalized, Locale::En, DetectedLocaleSource::FallbackEn)
+            }
+        },
+        Err(e) => {
+            warn!(
+                error = %e,
+                "Translator failed; falling back to raw query + en"
+            );
+            (
+                raw_query.to_string(),
+                Locale::En,
+                DetectedLocaleSource::FallbackEn,
+            )
+        }
     }
 }
 

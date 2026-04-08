@@ -3,13 +3,16 @@ use serde::{Deserialize, Serialize};
 
 use super::component::Component;
 use super::intent::Intent;
-use super::locale::Locale;
+use super::locale::{DetectedLocale, Locale};
 
 /// Incoming search request from the API layer.
+///
+/// The locale is no longer carried on the request — it's detected by the
+/// translator from the query text itself and surfaced in
+/// `SearchMetadata.locale` / `StreamStartMetadata.locale`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchRequest {
     pub query: String,
-    pub locale: Locale,
     pub session_id: String,
     pub request_id: String,
     #[serde(default)]
@@ -20,6 +23,32 @@ pub struct SearchRequest {
 
 fn default_top_k() -> usize {
     10
+}
+
+/// Output of the LLM-based translator/normalizer.
+///
+/// The translator runs on every query and returns both the canonical
+/// English form (used for retrieval) AND the detected source locale
+/// (used to drive the answer-language `systemInstruction`).
+#[derive(Debug, Clone)]
+pub struct TranslationResult {
+    /// Canonical English form of the user's query, ready for retrieval.
+    pub normalized: String,
+    /// Source language the translator detected.
+    pub detected_locale: DetectedLocale,
+}
+
+/// Provenance of the locale we ended up using for an answer. Surfaced
+/// in `SearchMetadata` / `StreamStartMetadata` so the frontend can show
+/// "detected: zh-TW (llm)" vs "(fallback)" and pick the right font/RTL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DetectedLocaleSource {
+    /// Translator returned a supported locale (the happy path).
+    LlmDetected,
+    /// Translator failed, returned an unsupported tag, or never ran —
+    /// we fell back to English.
+    FallbackEn,
 }
 
 /// Final search response returned to the client.
@@ -36,7 +65,11 @@ pub struct SearchResponse {
 pub struct SearchMetadata {
     pub original_query: String,
     pub translated_query: Option<String>,
+    /// Detected source locale (the translator's output, or `en` on fallback).
     pub locale: Locale,
+    /// Provenance of the locale: `llm_detected` on the happy path,
+    /// `fallback_en` if the translator failed or returned an unsupported tag.
+    pub detected_locale_source: DetectedLocaleSource,
     pub intent: Intent,
     pub retrieval_count: usize,
     pub latency_ms: u64,
@@ -112,7 +145,11 @@ pub struct StreamStartMetadata {
     pub session_id: String,
     pub original_query: String,
     pub translated_query: Option<String>,
+    /// Detected source locale (translator output, or `en` on fallback).
     pub locale: super::locale::Locale,
+    /// Provenance of the locale: `llm_detected` on the happy path,
+    /// `fallback_en` if the translator failed or returned an unsupported tag.
+    pub detected_locale_source: DetectedLocaleSource,
     pub intent: super::intent::Intent,
     pub retrieval_count: usize,
     pub preamble_latency_ms: u64,

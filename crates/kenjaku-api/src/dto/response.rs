@@ -73,7 +73,11 @@ pub struct SearchMetadataDto {
     pub original_query: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub translated_query: Option<String>,
+    /// Detected source locale (LLM auto-detected from the query text).
     pub locale: String,
+    /// Provenance of `locale`: `llm_detected` (happy path) or `fallback_en`
+    /// (translator failed or returned an unsupported BCP-47 tag).
+    pub detected_locale_source: String,
     pub intent: String,
     pub retrieval_count: usize,
     pub latency_ms: u64,
@@ -139,6 +143,10 @@ impl From<SearchResponse> for SearchResponseDto {
                 original_query: resp.metadata.original_query,
                 translated_query: resp.metadata.translated_query,
                 locale: resp.metadata.locale.to_string(),
+                detected_locale_source: serde_json::to_value(resp.metadata.detected_locale_source)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_default(),
                 intent: resp.metadata.intent.to_string(),
                 retrieval_count: resp.metadata.retrieval_count,
                 latency_ms: resp.metadata.latency_ms,
