@@ -61,6 +61,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                     http::header::CONTENT_TYPE,
                     http::header::AUTHORIZATION,
                     http::header::ACCEPT,
+                    http::header::ACCEPT_LANGUAGE,
+                    http::HeaderName::from_static("x-session-id"),
                 ])),
         )
         .with_state(state)
