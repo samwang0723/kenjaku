@@ -315,9 +315,9 @@ async fn generate_rows_for_clusters(
         }
     }
 
-    if cluster_errors > 0 && rows.is_empty() {
+    if rows.is_empty() {
         return Err(Error::Internal(format!(
-            "all {cluster_errors} clusters failed LLM generation; aborting batch to preserve previous active state"
+            "refresh produced zero questions ({cluster_errors} cluster errors); aborting batch to preserve previous active state"
         )));
     }
 
@@ -671,7 +671,74 @@ mod tests {
             .expect_err("expected all-failed abort");
         let msg = err.to_string();
         assert!(
-            msg.contains("all 3 clusters failed"),
+            msg.contains("zero questions") && msg.contains("3 cluster errors"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Mock that always succeeds but returns only questions that the
+    /// safety regex will reject. Exercises the "no errors but empty
+    /// rows" path that was previously letting empty batches through.
+    struct DenyOnlyLlm;
+
+    #[async_trait]
+    impl LlmProvider for DenyOnlyLlm {
+        async fn generate(
+            &self,
+            _q: &str,
+            _c: &[RetrievedChunk],
+            _l: Locale,
+        ) -> kenjaku_core::error::Result<LlmResponse> {
+            unimplemented!()
+        }
+        async fn generate_stream(
+            &self,
+            _q: &str,
+            _c: &[RetrievedChunk],
+            _l: Locale,
+        ) -> kenjaku_core::error::Result<
+            Pin<Box<dyn Stream<Item = kenjaku_core::error::Result<StreamChunk>> + Send>>,
+        > {
+            unimplemented!()
+        }
+        async fn translate(&self, _t: &str) -> kenjaku_core::error::Result<TranslationResult> {
+            unimplemented!()
+        }
+        async fn suggest(&self, _q: &str, _a: &str) -> kenjaku_core::error::Result<Vec<String>> {
+            unimplemented!()
+        }
+        async fn generate_cluster_questions(
+            &self,
+            _excerpt: &str,
+        ) -> kenjaku_core::error::Result<ClusterQuestions> {
+            let mut questions = std::collections::HashMap::new();
+            questions.insert(
+                Locale::En,
+                vec![
+                    "What is the BTC price prediction for next year?".to_string(),
+                    "Should I buy ETH right now?".to_string(),
+                ],
+            );
+            Ok(ClusterQuestions {
+                label: "advice".to_string(),
+                questions,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn generate_rows_aborts_when_safety_filter_rejects_everything() {
+        let llm = DenyOnlyLlm;
+        let sample = dummy_sample(3);
+        let clusters = dummy_clusters(2, sample.len());
+        let re = safety_regex();
+
+        let err = generate_rows_for_clusters(&llm, &clusters, &sample, &re, 99, 10)
+            .await
+            .expect_err("expected empty-rows abort");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("zero questions") && msg.contains("0 cluster errors"),
             "unexpected error: {msg}"
         );
     }
