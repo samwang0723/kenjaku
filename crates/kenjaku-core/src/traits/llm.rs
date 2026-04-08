@@ -3,9 +3,10 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use futures::Stream;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::types::locale::Locale;
 use crate::types::search::{LlmResponse, RetrievedChunk, StreamChunk, TranslationResult};
+use crate::types::suggestion::ClusterQuestions;
 
 /// Trait for LLM providers. Implementations can use Gemini, OpenAI, Claude, etc.
 #[async_trait]
@@ -37,6 +38,20 @@ pub trait LlmProvider: Send + Sync {
 
     /// Generate follow-up query suggestions based on the query and answer.
     async fn suggest(&self, query: &str, answer: &str) -> Result<Vec<String>>;
+
+    /// Generate a topic label + 3-5 native-phrased questions for every
+    /// supported locale, given a representative excerpt of clustered
+    /// document content. Used by `SuggestionRefreshWorker` — one call
+    /// per cluster, all 8 locales in one response.
+    ///
+    /// Default impl returns `Error::Internal("not implemented")` so
+    /// providers that don't supply default suggestions (e.g. Claude
+    /// contextualizer) compile without rewrites.
+    async fn generate_cluster_questions(&self, _excerpt: &str) -> Result<ClusterQuestions> {
+        Err(Error::Internal(
+            "generate_cluster_questions not implemented for this LlmProvider".to_string(),
+        ))
+    }
 }
 
 /// Trait for chunk contextualization (typically using Claude).

@@ -1,6 +1,7 @@
 //! Domain types for dynamic default suggestions + the refresh batch state
 //! machine. See `.claude/tasks/default-suggestions-locale/tech-spec.md` §4.2.
 
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
@@ -8,6 +9,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::types::locale::Locale;
+
+/// Multi-locale cluster question payload returned by
+/// `LlmProvider::generate_cluster_questions`. One of these is produced
+/// per topic cluster per refresh batch — the `questions` map carries
+/// 3-5 native-phrased questions per supported locale.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClusterQuestions {
+    pub label: String,
+    pub questions: HashMap<Locale, Vec<String>>,
+}
 
 /// Whether a blended suggestion came from real crowdsourced trending data
 /// or from the pre-materialized default pool.

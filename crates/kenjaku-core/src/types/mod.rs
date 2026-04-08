@@ -9,5 +9,6 @@ pub mod trending;
 
 pub use locale::{DetectedLocale, Locale};
 pub use suggestion::{
-    BlendedSuggestion, DefaultSuggestion, RefreshBatch, RefreshStatus, SuggestionSource,
+    BlendedSuggestion, ClusterQuestions, DefaultSuggestion, RefreshBatch, RefreshStatus,
+    SuggestionSource,
 };
