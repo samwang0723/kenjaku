@@ -100,12 +100,14 @@ graph TD
     INGEST --> INFRA
     INGEST --> CORE
 
-    style CORE fill:#e1f5fe
-    style INFRA fill:#fff3e0
-    style SERVICE fill:#e8f5e9
-    style API fill:#f3e5f5
-    style SERVER fill:#fce4ec
-    style INGEST fill:#fff9c4
+    classDef leaf fill:#1c2538,stroke:#C7A04A,color:#F2E8D2,stroke-width:2.5px
+    classDef infra fill:#1c2538,stroke:#6FA265,color:#F2E8D2,stroke-width:1.5px
+    classDef service fill:#1c2538,stroke:#B4A8F0,color:#F2E8D2,stroke-width:1.5px
+    classDef api fill:#2a3350,stroke:#FF7591,color:#F2E8D2,stroke-width:2px
+    class CORE leaf
+    class INFRA infra
+    class SERVICE service
+    class API,SERVER,INGEST api
 ```
 
 | Crate | Depends On | Depended By |
