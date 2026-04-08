@@ -20,6 +20,7 @@ use kenjaku_core::types::search::{
 
 use crate::component::ComponentService;
 use crate::conversation::ConversationService;
+use crate::locale_memory::LocaleMemory;
 use crate::quality::prettify_title;
 use crate::translation::TranslationService;
 use crate::trending::TrendingService;
@@ -34,6 +35,7 @@ pub struct SearchService {
     trending_service: TrendingService,
     conversation_service: ConversationService,
     title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
+    locale_memory: Arc<LocaleMemory>,
     collection_name: String,
     suggestion_count: usize,
 }
@@ -49,6 +51,7 @@ impl SearchService {
         trending_service: TrendingService,
         conversation_service: ConversationService,
         title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
+        locale_memory: Arc<LocaleMemory>,
         collection_name: String,
         suggestion_count: usize,
     ) -> Self {
@@ -61,6 +64,7 @@ impl SearchService {
             trending_service,
             conversation_service,
             title_resolver,
+            locale_memory,
             collection_name,
             suggestion_count,
         }
@@ -70,7 +74,11 @@ impl SearchService {
     #[instrument(skip(self), fields(
         request_id = %req.request_id,
     ))]
-    pub async fn search(&self, req: &SearchRequest) -> Result<SearchResponse> {
+    pub async fn search(
+        &self,
+        req: &SearchRequest,
+        device_session_id: Option<&str>,
+    ) -> Result<SearchResponse> {
         let start = Instant::now();
 
         // Step 1 + 2: Classify intent AND translate/normalize+detect-locale
@@ -109,6 +117,23 @@ impl SearchService {
             source = ?locale_source,
             "Resolved answer locale"
         );
+
+        // Fire-and-forget: record the detected locale into LocaleMemory so
+        // subsequent same-session reads (autocomplete, top-searches) can
+        // honor it without requiring a client hint.
+        //
+        // PR9 #8: prefer the device id from `X-Session-Id` because that's
+        // what the read-path extractor keys on. Falls back to the body
+        // session_id if the client did not send the header.
+        {
+            let lm = self.locale_memory.clone();
+            let sid = device_session_id
+                .map(str::to_owned)
+                .unwrap_or_else(|| req.session_id.clone());
+            tokio::spawn(async move {
+                lm.record(&sid, detected_locale).await;
+            });
+        }
 
         // Step 3: Retrieve with hybrid search (uses the English-normalized
         // query, regardless of detected locale).
@@ -226,7 +251,11 @@ impl SearchService {
     #[instrument(skip(self), fields(
         request_id = %req.request_id,
     ))]
-    pub async fn search_stream(&self, req: &SearchRequest) -> Result<SearchStreamOutput> {
+    pub async fn search_stream(
+        &self,
+        req: &SearchRequest,
+        device_session_id: Option<&str>,
+    ) -> Result<SearchStreamOutput> {
         let start = Instant::now();
 
         // Step 1 + 2: Classify intent AND translate/normalize+detect-locale
@@ -249,6 +278,19 @@ impl SearchService {
             source = ?locale_source,
             "Resolved answer locale (streaming)"
         );
+
+        // Fire-and-forget: record detected locale for the session. PR9 #8:
+        // prefer device id from `X-Session-Id` so the read path can hit
+        // the same key.
+        {
+            let lm = self.locale_memory.clone();
+            let sid = device_session_id
+                .map(str::to_owned)
+                .unwrap_or_else(|| req.session_id.clone());
+            tokio::spawn(async move {
+                lm.record(&sid, detected_locale).await;
+            });
+        }
 
         // Step 3: Retrieve
         let chunks = self

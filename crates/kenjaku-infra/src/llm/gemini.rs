@@ -14,6 +14,8 @@ use kenjaku_core::types::search::{
     LlmResponse, LlmSource, LlmUsage, RetrievedChunk, StreamChunk, StreamChunkType,
     TranslationResult,
 };
+use kenjaku_core::types::suggestion::ClusterQuestions;
+use std::collections::HashMap;
 
 /// Gemini LLM provider implementation.
 pub struct GeminiProvider {
@@ -536,6 +538,179 @@ impl LlmProvider for GeminiProvider {
                 .map_err(|e| Error::Llm(format!("Failed to parse suggestions JSON: {e}")))
         })
     }
+
+    #[instrument(skip(self, excerpt))]
+    async fn generate_cluster_questions(&self, excerpt: &str) -> Result<ClusterQuestions> {
+        // One call, all 8 locales. The model is constrained via
+        // responseMimeType + responseSchema so a plain serde parse is
+        // reliable. On any failure we degrade gracefully to an empty
+        // ClusterQuestions instead of crashing the refresh worker.
+        let prompt = format!(
+            "You generate search suggestion questions for a document search engine, for a\n\
+             cluster of related document excerpts.\n\
+             \n\
+             Excerpts:\n\
+             {excerpt}\n\
+             \n\
+             Task:\n\
+             1. Produce a 3-5 word English topic label for this cluster.\n\
+             2. For EACH of the 8 locales below, produce 3-5 natural questions a curious\n\
+                reader would plausibly ask and that the documents in this cluster could\n\
+                answer.\n\
+             \n\
+             Locales: en (English), zh (\u{7b80}\u{4f53}\u{4e2d}\u{6587}), zh-TW (\u{7e41}\u{9ad4}\u{4e2d}\u{6587}), ja (\u{65e5}\u{672c}\u{8a9e}),\n\
+                      ko (\u{d55c}\u{ad6d}\u{c5b4}), de (Deutsch), fr (Fran\u{e7}ais), es (Espa\u{f1}ol)\n\
+             \n\
+             Rules (apply to ALL locales):\n\
+             - Native, natural phrasing - not translated-sounding.\n\
+             - Preserve product names, tickers, and proper nouns verbatim across locales.\n\
+             - No financial advice, no price predictions, no \"should I buy / sell\" framing.\n\
+             - No yes/no questions - prefer \"what / how / why / when\".\n\
+             - Keep each question under 80 characters.\n\
+             \n\
+             Output strict JSON matching the response schema."
+        );
+
+        // responseSchema requires every locale key. The model fills each
+        // with a 3-5 element array of plain strings.
+        let locale_prop = serde_json::json!({
+            "type": "ARRAY",
+            "items": { "type": "STRING" }
+        });
+        let schema = serde_json::json!({
+            "type": "OBJECT",
+            "properties": {
+                "label": { "type": "STRING" },
+                "questions": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "en":    locale_prop,
+                        "zh":    locale_prop,
+                        "zh-TW": locale_prop,
+                        "ja":    locale_prop,
+                        "ko":    locale_prop,
+                        "de":    locale_prop,
+                        "fr":    locale_prop,
+                        "es":    locale_prop,
+                    },
+                    "required": ["en", "zh", "zh-TW", "ja", "ko", "de", "fr", "es"]
+                }
+            },
+            "required": ["label", "questions"]
+        });
+
+        let request = GeminiRequest {
+            contents: vec![GeminiContent {
+                parts: vec![GeminiPart::Text { text: prompt }],
+                role: Some("user".to_string()),
+            }],
+            system_instruction: None,
+            tools: None,
+            generation_config: Some(GeminiGenerationConfig {
+                max_output_tokens: Some(2048),
+                temperature: Some(0.4),
+                response_mime_type: Some("application/json".to_string()),
+                response_schema: Some(schema),
+            }),
+        };
+
+        let url = format!(
+            "{}/models/{}:generateContent?key={}",
+            self.base_url, self.config.model, self.config.api_key
+        );
+
+        // Transport, HTTP, and parse failures must surface as `Err` so the
+        // refresh worker counts them as cluster errors and can abort the
+        // batch when ALL clusters fail. Only the success-but-empty case
+        // (200 + valid JSON whose payload happens to be empty, e.g. server-
+        // side safety filtering) returns `Ok(ClusterQuestions::default())`.
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, "Gemini cluster-questions request failed");
+                Error::Llm(format!("gemini cluster-questions transport: {e}"))
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::warn!(
+                %status,
+                body = %body,
+                "Gemini cluster-questions returned non-success"
+            );
+            return Err(Error::Llm(format!(
+                "gemini cluster-questions http {status}: {body}"
+            )));
+        }
+
+        let result: GeminiResponse = response.json().await.map_err(|e| {
+            tracing::warn!(error = %e, "Gemini cluster-questions parse failed");
+            Error::Llm(format!("gemini cluster-questions envelope parse: {e}"))
+        })?;
+
+        let raw_text = result
+            .candidates
+            .first()
+            .and_then(|c| c.content.parts.first())
+            .map(|p| match p {
+                GeminiPart::Text { text } => text.clone(),
+            })
+            .unwrap_or_default();
+
+        match serde_json::from_str::<ClusterQuestionsJson>(&raw_text) {
+            Ok(parsed) => Ok(parsed.into_domain()),
+            Err(e) => {
+                // Success-but-empty inner payload: log and return empty so
+                // the worker treats it as a cluster that produced zero
+                // questions (counted in `kept`/`rejected`, NOT a hard
+                // error). Transport/HTTP/envelope-parse failures above
+                // already returned Err.
+                tracing::warn!(
+                    error = %e,
+                    raw = %raw_text,
+                    "Cluster-questions inner JSON malformed; treating as empty payload"
+                );
+                Ok(ClusterQuestions::default())
+            }
+        }
+    }
+}
+
+/// Wire-shape mirror for the cluster-questions response. Gemini emits the
+/// JSON we asked for via responseSchema. Locale keys arrive as strings
+/// (`"en"`, `"zh-TW"`, ...) which we map to the typed `Locale` enum.
+///
+/// NOTE: this struct intentionally does NOT use `#[serde(rename_all =
+/// "camelCase")]` because the field names here come from OUR prompt /
+/// schema, not from Gemini's API envelope. The camelCase trap applies
+/// only to Gemini's wrapper types (`GeminiResponse`, `GeminiCandidate`,
+/// etc.) which are unchanged.
+#[derive(Deserialize)]
+struct ClusterQuestionsJson {
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    questions: HashMap<String, Vec<String>>,
+}
+
+impl ClusterQuestionsJson {
+    fn into_domain(self) -> ClusterQuestions {
+        let mut typed: HashMap<Locale, Vec<String>> = HashMap::new();
+        for (tag, qs) in self.questions {
+            if let Ok(locale) = tag.parse::<Locale>() {
+                typed.insert(locale, qs);
+            }
+        }
+        ClusterQuestions {
+            label: self.label,
+            questions: typed,
+        }
+    }
 }
 
 // --- Gemini API types ---
@@ -644,4 +819,61 @@ struct GeminiUsageMetadata {
     prompt_token_count: Option<u32>,
     candidates_token_count: Option<u32>,
     total_token_count: Option<u32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cluster_questions_json_parses_all_locales() {
+        let raw = r#"{
+            "label": "Staking Basics",
+            "questions": {
+                "en":    ["What is staking?", "How does staking work?"],
+                "zh":    ["什么是质押？", "质押如何工作？"],
+                "zh-TW": ["什麼是質押？", "質押如何運作？"],
+                "ja":    ["ステーキングとは？", "ステーキングの仕組みは？"],
+                "ko":    ["스테이킹이란?", "스테이킹은 어떻게 작동합니까?"],
+                "de":    ["Was ist Staking?", "Wie funktioniert Staking?"],
+                "fr":    ["Qu'est-ce que le staking?", "Comment fonctionne le staking?"],
+                "es":    ["¿Qué es el staking?", "¿Cómo funciona el staking?"]
+            }
+        }"#;
+        let parsed: ClusterQuestionsJson = serde_json::from_str(raw).unwrap();
+        let domain = parsed.into_domain();
+        assert_eq!(domain.label, "Staking Basics");
+        assert_eq!(domain.questions.len(), 8);
+        for locale in Locale::ALL {
+            let qs = domain
+                .questions
+                .get(locale)
+                .unwrap_or_else(|| panic!("missing locale {locale}"));
+            assert!(!qs.is_empty(), "locale {locale} has no questions");
+        }
+    }
+
+    #[test]
+    fn cluster_questions_json_drops_unknown_locales() {
+        let raw = r#"{
+            "label": "Test",
+            "questions": {
+                "en": ["q1"],
+                "pt": ["q2"]
+            }
+        }"#;
+        let parsed: ClusterQuestionsJson = serde_json::from_str(raw).unwrap();
+        let domain = parsed.into_domain();
+        assert_eq!(domain.questions.len(), 1);
+        assert!(domain.questions.contains_key(&Locale::En));
+    }
+
+    #[test]
+    fn cluster_questions_json_handles_missing_fields() {
+        let raw = r#"{}"#;
+        let parsed: ClusterQuestionsJson = serde_json::from_str(raw).unwrap();
+        let domain = parsed.into_domain();
+        assert_eq!(domain.label, "");
+        assert!(domain.questions.is_empty());
+    }
 }

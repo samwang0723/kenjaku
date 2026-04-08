@@ -21,6 +21,16 @@ config = { workspace = true }
 futures = { workspace = true }
 eventsource-stream = { workspace = true }
 
+# Clustering for the SuggestionRefreshWorker. Pinned versions to keep
+# linfa <-> ndarray ABI aligned (linfa-clustering 0.7 requires ndarray
+# 0.15.x; mixing 0.16 breaks compilation).
+linfa = "0.7"
+linfa-clustering = "0.7"
+ndarray = "0.15"
+# linfa 0.7 internally uses rand 0.8; pin to match the StdRng/SeedableRng
+# the LinfaClusterer passes via `KMeans::params_with_rng`.
+rand = "0.8"
+
 # Telemetry
 tracing-subscriber = { workspace = true }
 opentelemetry = { workspace = true }

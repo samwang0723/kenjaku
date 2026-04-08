@@ -1,9 +1,20 @@
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
     Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, Distance, FieldType,
-    Filter, PointStruct, SearchPointsBuilder, TextIndexParamsBuilder, TokenizerType,
-    UpsertPointsBuilder, Value, VectorParamsBuilder,
+    Filter, PointStruct, ScrollPointsBuilder, SearchPointsBuilder, TextIndexParamsBuilder,
+    TokenizerType, UpsertPointsBuilder, Value, VectorParamsBuilder, point_id::PointIdOptions,
+    vectors_output::VectorsOptions,
 };
+
+/// Lightweight projection of a Qdrant point returned by
+/// [`QdrantClient::scroll_with_vectors`] for the suggestion refresh
+/// worker. Only the fields the clusterer needs are surfaced.
+#[derive(Debug, Clone)]
+pub struct ScrolledPoint {
+    pub id: String,
+    pub vector: Vec<f32>,
+    pub text: String,
+}
 use tracing::info;
 
 use kenjaku_core::config::QdrantConfig;
@@ -242,6 +253,73 @@ impl QdrantClient {
             .collect();
 
         Ok(titles)
+    }
+
+    /// Return the approximate `points_count` of the configured
+    /// collection. Used by the suggestion refresh worker to build a
+    /// fingerprint. Returns 0 when Qdrant reports no count.
+    pub async fn collection_info(&self, collection_name: &str) -> Result<u64> {
+        let response = self
+            .client
+            .collection_info(collection_name.to_string())
+            .await
+            .map_err(|e| Error::VectorStore(format!("collection_info failed: {e}")))?;
+        Ok(response
+            .result
+            .and_then(|info| info.points_count)
+            .unwrap_or(0))
+    }
+
+    /// Scroll up to `limit` points returning their id, dense vector,
+    /// and contextualized text. Used by the suggestion refresh worker
+    /// to build clusters over the whole corpus.
+    pub async fn scroll_with_vectors(
+        &self,
+        collection_name: &str,
+        limit: u32,
+    ) -> Result<Vec<ScrolledPoint>> {
+        let response = self
+            .client
+            .scroll(
+                ScrollPointsBuilder::new(collection_name.to_string())
+                    .limit(limit)
+                    .with_payload(true)
+                    .with_vectors(true),
+            )
+            .await
+            .map_err(|e| Error::VectorStore(format!("scroll failed: {e}")))?;
+
+        let mut out = Vec::with_capacity(response.result.len());
+        for point in response.result {
+            let id = match point.id.and_then(|p| p.point_id_options) {
+                Some(PointIdOptions::Num(n)) => n.to_string(),
+                Some(PointIdOptions::Uuid(u)) => u,
+                None => continue,
+            };
+
+            let vector: Vec<f32> = match point.vectors.and_then(|v| v.vectors_options) {
+                Some(VectorsOptions::Vector(v)) => {
+                    #[allow(deprecated)]
+                    {
+                        v.data
+                    }
+                }
+                // Named/multi vectors are not used by kenjaku's collection.
+                _ => continue,
+            };
+
+            if vector.is_empty() {
+                continue;
+            }
+
+            let text = extract_string(&point.payload, "contextualized_content")
+                .or_else(|| extract_string(&point.payload, "original_content"))
+                .or_else(|| extract_string(&point.payload, "title"))
+                .unwrap_or_default();
+
+            out.push(ScrolledPoint { id, vector, text });
+        }
+        Ok(out)
     }
 
     /// Check if Qdrant is healthy.

@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, Sse};
 use futures::stream::StreamExt;
@@ -24,6 +25,7 @@ const MAX_TOP_K: usize = 100;
 /// POST /api/v1/search
 pub async fn search(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(dto): Json<SearchRequestDto>,
 ) -> impl IntoResponse {
     // Validate query length
@@ -43,6 +45,16 @@ pub async fn search(
     // Clamp top_k
     let top_k = dto.top_k.unwrap_or(10).min(MAX_TOP_K);
 
+    // PR9 #8: the body's `session_id` is a per-conversation rotating id,
+    // while the read-path extractors (`ResolvedLocale`) key off the device
+    // id from `X-Session-Id`. Capture the device id here so LocaleMemory
+    // is recorded under the SAME id the read path will use, otherwise the
+    // session_memory tier never hits.
+    let device_session_id = headers
+        .get("x-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     // Locale is no longer carried on the request — the translator detects
     // it from the query text and surfaces it in the response metadata.
     let req = SearchRequest {
@@ -54,10 +66,16 @@ pub async fn search(
     };
 
     if req.streaming {
-        return search_streaming(state, req).await.into_response();
+        return search_streaming(state, req, device_session_id)
+            .await
+            .into_response();
     }
 
-    match state.search_service.search(&req).await {
+    match state
+        .search_service
+        .search(&req, device_session_id.as_deref())
+        .await
+    {
         Ok(response) => {
             let dto: SearchResponseDto = response.into();
             Json(ApiResponse::ok(dto)).into_response()
@@ -83,6 +101,7 @@ pub async fn search(
 async fn search_streaming(
     state: Arc<AppState>,
     req: SearchRequest,
+    device_session_id: Option<String>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
     info!(request_id = %req.request_id, "SSE streaming handler started");
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(100);
@@ -90,7 +109,11 @@ async fn search_streaming(
 
     tokio::spawn(async move {
         // Open the stream — this runs intent classify + translate + retrieve.
-        let out = match state.search_service.search_stream(&req).await {
+        let out = match state
+            .search_service
+            .search_stream(&req, device_session_id.as_deref())
+            .await
+        {
             Ok(out) => out,
             Err(e) => {
                 error!(request_id = %request_id, error = %e, "SSE search_stream failed");

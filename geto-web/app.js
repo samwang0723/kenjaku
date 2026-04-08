@@ -60,6 +60,10 @@ function getAuthHeaders() {
     var token = bearerTokenInput ? bearerTokenInput.value.trim() : '';
     if (token) headers['Authorization'] = 'Bearer ' + token;
   }
+  // Stable per-device id drives the server's session-locale memory lookup.
+  if (typeof deviceId === 'string' && deviceId) {
+    headers['X-Session-Id'] = deviceId;
+  }
   return headers;
 }
 
@@ -83,12 +87,37 @@ var progressBar = document.getElementById('progressBar');
 var debugInfo = document.getElementById('debugInfo');
 var scrollArea = document.getElementById('scrollArea');
 
-// `/search` auto-detects the query language via the LLM translator.
-// `/autocomplete` and `/top-searches` still take an explicit locale
-// query param but we default to `en` — they're visual pill helpers,
-// not user-facing search. Hardcoding avoids an otherwise-empty UI panel.
-function getLocale() {
-  return 'en';
+// ====== Locale Switcher ======
+// `userLocale` is the explicit user choice, persisted across sessions. When
+// set we send `?locale=` on all GETs; when empty we omit the param and let
+// the server resolve via session memory / Accept-Language / default.
+var userLocale = localStorage.getItem('kenjaku_locale') || '';
+var localeSwitcher = document.getElementById('localeSwitcher');
+if (localeSwitcher) {
+  localeSwitcher.value = userLocale;
+  localeSwitcher.addEventListener('change', function() {
+    userLocale = this.value || '';
+    if (userLocale) {
+      localStorage.setItem('kenjaku_locale', userLocale);
+    } else {
+      localStorage.removeItem('kenjaku_locale');
+    }
+    loadPills();
+  });
+}
+
+// Stable per-device identifier used for the server's session-locale memory.
+// Distinct from `sessionId`, which rotates on every fresh conversation.
+var deviceId = localStorage.getItem('kenjaku_device_id');
+if (!deviceId) {
+  deviceId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : 'dev-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+  localStorage.setItem('kenjaku_device_id', deviceId);
+}
+
+function localeQueryString() {
+  return userLocale ? ('&locale=' + encodeURIComponent(userLocale)) : '';
 }
 
 // ====== Session / Feedback State ======
@@ -493,6 +522,14 @@ function renderDebug(data) {
     var localeSuffix = m.detected_locale_source === 'fallback_en' ? ' (fb)' : '';
     tags.push('<span class="tag tag-lang">' + escapeHtml(String(m.locale).toUpperCase() + localeSuffix) + '</span>');
   }
+  if (m.resolved_locale) {
+    // resolved_locale_source: query_param | session_memory | accept_language | default | fallback
+    var src = m.resolved_locale_source || '';
+    var suffix = src === 'fallback' ? ' (fb)' : '';
+    var label = 'resolved ' + String(m.resolved_locale).toUpperCase() + suffix +
+      (src ? ' · ' + src : '');
+    tags.push('<span class="tag tag-lang">' + escapeHtml(label) + '</span>');
+  }
   if (m.retrieval_count !== undefined) tags.push('<span class="tag tag-tier">retrieved ' + m.retrieval_count + '</span>');
   if (m.latency_ms !== undefined)      tags.push('<span class="tag tag-time">' + m.latency_ms + 'ms</span>');
   if (m.preamble_latency_ms !== undefined) tags.push('<span class="tag tag-ttft">preamble ' + m.preamble_latency_ms + 'ms</span>');
@@ -654,6 +691,8 @@ async function handleStreamResponse(resp, requestId) {
             translated_query: m.translated_query || null,
             locale:           m.locale || '',
             detected_locale_source: m.detected_locale_source || '',
+            resolved_locale:        m.resolved_locale || '',
+            resolved_locale_source: m.resolved_locale_source || '',
             intent:           m.intent || 'unknown',
             retrieval_count:  m.retrieval_count || 0,
             latency_ms:       done.latency_ms || (Date.now() - streamStartTs),
@@ -1032,7 +1071,7 @@ var acFetchSuggestions = debounce(function() {
   acAbortController = new AbortController();
 
   var url = API_BASE + '/autocomplete?q=' + encodeURIComponent(query) +
-    '&locale=' + encodeURIComponent(getLocale()) + '&limit=5';
+    '&limit=5' + localeQueryString();
 
   fetch(url, { headers: getAuthHeaders(), signal: acAbortController.signal })
     .then(function(resp) { return resp.ok ? resp.json() : null; })
@@ -1063,12 +1102,14 @@ var PILL_COUNT = 6;
 async function loadPills() {
   try {
     var url = API_BASE + '/top-searches?limit=' + PILL_COUNT +
-      '&locale=' + encodeURIComponent(getLocale()) + '&period=daily';
+      '&period=daily' + localeQueryString();
     var resp = await fetch(url, { headers: getAuthHeaders() });
     if (!resp.ok) return;
     var envelope = await resp.json();
-    var items = (envelope.data || envelope) || [];
-    // Kenjaku returns an array directly: [{query, count}, ...]
+    var data = envelope.data || envelope || {};
+    // New shape: { items: BlendedItemDto[], resolved_locale, resolved_locale_source }.
+    // Legacy shape (pre default-suggestions-locale): a bare array.
+    var items = Array.isArray(data) ? data : (data.items || []);
     while (pillsDiv.firstChild) pillsDiv.removeChild(pillsDiv.firstChild);
     for (var i = 0; i < items.length && i < PILL_COUNT; i++) {
       var it = items[i];

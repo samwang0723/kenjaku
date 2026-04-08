@@ -4,13 +4,15 @@ use tokio::signal;
 use tracing::info;
 
 use kenjaku_core::config::load_config;
+use kenjaku_infra::clustering::LinfaClusterer;
 use kenjaku_infra::embedding::create_embedding_provider;
 use kenjaku_infra::llm::GeminiProvider;
 use kenjaku_infra::postgres::{
-    ConversationRepository, FeedbackRepository, TrendingRepository, create_pool, run_migrations,
+    ConversationRepository, DefaultSuggestionsRepository, FeedbackRepository,
+    RefreshBatchesRepository, TrendingRepository, create_pool, run_migrations,
 };
 use kenjaku_infra::qdrant::QdrantClient;
-use kenjaku_infra::redis::RedisClient;
+use kenjaku_infra::redis::{LocaleMemoryRedis, RedisClient};
 use kenjaku_infra::telemetry::init_telemetry;
 use kenjaku_infra::title_resolver::TitleResolver;
 
@@ -19,8 +21,11 @@ use kenjaku_service::component::ComponentService;
 use kenjaku_service::conversation::ConversationService;
 use kenjaku_service::feedback::FeedbackService;
 use kenjaku_service::intent::LlmIntentClassifier;
+use kenjaku_service::locale_memory::LocaleMemory;
+use kenjaku_service::refresh_worker::SuggestionRefreshWorker;
 use kenjaku_service::retriever::HybridRetriever;
 use kenjaku_service::search::SearchService;
+use kenjaku_service::suggestion::{ServiceRng, SuggestionService};
 use kenjaku_service::translation::TranslationService;
 use kenjaku_service::trending::TrendingService;
 use kenjaku_service::worker::TrendingFlushWorker;
@@ -60,6 +65,8 @@ async fn main() -> anyhow::Result<()> {
     let feedback_repo = FeedbackRepository::new(pg_pool.clone());
     let trending_repo = TrendingRepository::new(pg_pool.clone());
     let conversation_repo = ConversationRepository::new(pg_pool.clone());
+    let default_suggestions_repo = DefaultSuggestionsRepository::new(pg_pool.clone());
+    let refresh_batches_repo = RefreshBatchesRepository::new(pg_pool.clone());
 
     // Create services
     let retriever = Arc::new(HybridRetriever::new(
@@ -94,30 +101,81 @@ async fn main() -> anyhow::Result<()> {
     // real page titles, with Redis-backed caching.
     let title_resolver = Arc::new(TitleResolver::new(Some(redis.connection_manager())));
 
+    // LocaleMemory: per-session sticky locale stored in Redis. Recorded
+    // by SearchService on every query, read by suggestion read paths
+    // (see TODO at the top of this fn re: SessionLocaleLookup adapter).
+    let locale_memory_redis = LocaleMemoryRedis::new(redis.connection_manager());
+    let locale_memory = Arc::new(LocaleMemory::new(
+        locale_memory_redis,
+        config.locale_memory.clone(),
+    ));
+
+    // SuggestionService: blends crowdsourced trending with materialized
+    // default suggestions. Read-only, hot-path safe. Wired into AppState
+    // and consumed by the `top_searches` / `autocomplete` handlers.
+    let suggestion_service = Arc::new(SuggestionService::new(
+        trending_repo.clone(),
+        default_suggestions_repo.clone(),
+        config.default_suggestions.pool_cap,
+        config.trending.crowd_sourcing_min_count,
+        Arc::new(ServiceRng::from_entropy()),
+    ));
+
     let search_service = SearchService::new(
         retriever,
-        llm_provider,
+        llm_provider.clone(),
         intent_classifier,
         component_service,
         translation_service,
         trending_service.clone(),
         conversation_service,
         Some(title_resolver),
+        locale_memory.clone(),
         config.qdrant.collection_name.clone(),
         config.search.suggestion_count,
     );
 
     // Spawn background workers
-    let flush_worker =
-        TrendingFlushWorker::new(redis.clone(), trending_repo, config.trending.clone());
+    let flush_worker = TrendingFlushWorker::new(
+        redis.clone(),
+        trending_repo.clone(),
+        config.trending.clone(),
+    );
     tokio::spawn(flush_worker.run());
     tokio::spawn(conversation_worker.run());
+
+    // SuggestionRefreshWorker: daily 03:00 UTC rebuild of default
+    // suggestion pool. Gated by `default_suggestions.enabled`. Same
+    // fire-and-spawn pattern as TrendingFlushWorker — graceful
+    // shutdown happens implicitly when the runtime drops the task at
+    // server exit.
+    if config.default_suggestions.enabled {
+        let refresh_worker = SuggestionRefreshWorker::new(
+            pg_pool.clone(),
+            Arc::new(qdrant.clone()),
+            Arc::new(LinfaClusterer::new()),
+            llm_provider.clone(),
+            default_suggestions_repo.clone(),
+            refresh_batches_repo.clone(),
+            config.default_suggestions.clone(),
+            config.qdrant.collection_name.clone(),
+        );
+        tokio::spawn(refresh_worker.run_scheduled());
+    }
+
+    // Adapter so the api crate's `ResolvedLocale` extractor can resolve
+    // session-stickied locales without taking a direct dependency on the
+    // service-layer `LocaleMemory`. Injected as a request `Extension` by
+    // `build_router` below.
+    let locale_lookup: Arc<dyn kenjaku_api::extractors::SessionLocaleLookup> =
+        Arc::new(LocaleMemoryAdapter(locale_memory.clone()));
 
     // Build app state
     let state = Arc::new(AppState {
         search_service,
         trending_service,
         autocomplete_service,
+        suggestion_service,
         feedback_service,
         qdrant,
         redis,
@@ -125,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Build router
-    let app = build_router(state);
+    let app = build_router(state, locale_lookup);
 
     // Bind and serve
     let addr = format!("{}:{}", config.server.host, config.server.port);
@@ -143,6 +201,18 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Server shut down gracefully");
     Ok(())
+}
+
+/// Newtype wrapping the service-layer `LocaleMemory` so it can be exposed
+/// to the api crate's `SessionLocaleLookup` trait without leaking the
+/// concrete type across the layer boundary.
+struct LocaleMemoryAdapter(Arc<LocaleMemory>);
+
+#[async_trait::async_trait]
+impl kenjaku_api::extractors::SessionLocaleLookup for LocaleMemoryAdapter {
+    async fn lookup(&self, session_id: &str) -> Option<kenjaku_core::types::locale::Locale> {
+        self.0.lookup(session_id).await
+    }
 }
 
 async fn shutdown_signal() {

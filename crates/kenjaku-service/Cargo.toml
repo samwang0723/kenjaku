@@ -16,6 +16,11 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
 tokio-stream = { workspace = true }
+rand = "0.8"
+sha2 = "0.10"
+regex = "1"
+cron = "0.12"
+sqlx = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

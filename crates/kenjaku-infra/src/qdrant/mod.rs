@@ -1,3 +1,3 @@
 pub mod client;
 
-pub use client::{PointData, QdrantClient};
+pub use client::{PointData, QdrantClient, ScrolledPoint};
