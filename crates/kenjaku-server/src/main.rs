@@ -111,19 +111,15 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // SuggestionService: blends crowdsourced trending with materialized
-    // default suggestions. Read-only, hot-path safe.
-    //
-    // TODO(merge): wire this into AppState at integrate time and swap
-    // the `top_searches` / `autocomplete` handlers from `trending_service`
-    // over to `suggestion_service`. Until then it's constructed but
-    // unused (silenced via `_`).
-    let _suggestion_service = SuggestionService::new(
+    // default suggestions. Read-only, hot-path safe. Wired into AppState
+    // and consumed by the `top_searches` / `autocomplete` handlers.
+    let suggestion_service = Arc::new(SuggestionService::new(
         trending_repo.clone(),
         default_suggestions_repo.clone(),
         config.default_suggestions.pool_cap,
         config.trending.crowd_sourcing_min_count,
         Arc::new(ServiceRng::from_entropy()),
-    );
+    ));
 
     let search_service = SearchService::new(
         retriever,
@@ -167,31 +163,19 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(refresh_worker.run_scheduled());
     }
 
-    // TODO(merge): at integrate time, after dev-2's branch lands the
-    // SessionLocaleLookup extractor in kenjaku_api::extractors, add an
-    // adapter and inject it into the router via Extension:
-    //
-    //   struct LocaleMemoryAdapter(Arc<LocaleMemory>);
-    //   #[async_trait::async_trait]
-    //   impl kenjaku_api::extractors::SessionLocaleLookup for LocaleMemoryAdapter {
-    //       async fn lookup(&self, session_id: &str) -> Option<Locale> {
-    //           self.0.lookup(session_id).await
-    //       }
-    //   }
-    //   .layer(Extension(
-    //       Arc::new(LocaleMemoryAdapter(locale_memory.clone()))
-    //           as Arc<dyn kenjaku_api::extractors::SessionLocaleLookup>,
-    //   ))
-    //
-    // Also at merge time: swap `top_searches` / `autocomplete` handlers
-    // from `trending_service` to `suggestion_service`, and add
-    // `suggestion_service` to `AppState`.
+    // Adapter so the api crate's `ResolvedLocale` extractor can resolve
+    // session-stickied locales without taking a direct dependency on the
+    // service-layer `LocaleMemory`. Injected as a request `Extension` by
+    // `build_router` below.
+    let locale_lookup: Arc<dyn kenjaku_api::extractors::SessionLocaleLookup> =
+        Arc::new(LocaleMemoryAdapter(locale_memory.clone()));
 
     // Build app state
     let state = Arc::new(AppState {
         search_service,
         trending_service,
         autocomplete_service,
+        suggestion_service,
         feedback_service,
         qdrant,
         redis,
@@ -199,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Build router
-    let app = build_router(state);
+    let app = build_router(state, locale_lookup);
 
     // Bind and serve
     let addr = format!("{}:{}", config.server.host, config.server.port);
@@ -217,6 +201,18 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Server shut down gracefully");
     Ok(())
+}
+
+/// Newtype wrapping the service-layer `LocaleMemory` so it can be exposed
+/// to the api crate's `SessionLocaleLookup` trait without leaking the
+/// concrete type across the layer boundary.
+struct LocaleMemoryAdapter(Arc<LocaleMemory>);
+
+#[async_trait::async_trait]
+impl kenjaku_api::extractors::SessionLocaleLookup for LocaleMemoryAdapter {
+    async fn lookup(&self, session_id: &str) -> Option<kenjaku_core::types::locale::Locale> {
+        self.0.lookup(session_id).await
+    }
 }
 
 async fn shutdown_signal() {

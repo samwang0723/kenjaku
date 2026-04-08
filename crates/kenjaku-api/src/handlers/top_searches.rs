@@ -9,7 +9,7 @@ use crate::AppState;
 use crate::dto::response::{ApiResponse, BlendedItemDto, TopSearchesResponse};
 use crate::extractors::ResolvedLocale;
 
-use kenjaku_core::types::trending::TrendingPeriod;
+use kenjaku_core::types::suggestion::SuggestionSource;
 
 /// Maximum result limit for top searches.
 const MAX_LIMIT: usize = 100;
@@ -50,15 +50,9 @@ pub async fn top_searches(
     resolved: ResolvedLocale,
     Query(params): Query<TopSearchesQuery>,
 ) -> Json<ApiResponse<TopSearchesResponse>> {
-    let period: TrendingPeriod = match params.period.parse() {
-        Ok(p) => p,
-        Err(_) => {
-            return Json(ApiResponse::err(format!(
-                "Invalid period '{}'. Supported: daily, weekly",
-                params.period
-            )));
-        }
-    };
+    // `period` accepted for backwards compat / future use; SuggestionService
+    // currently always blends against daily trending.
+    let _ = &params.period;
 
     let limit = params.limit.min(MAX_LIMIT);
     let locale_str = resolved.locale_str();
@@ -69,20 +63,12 @@ pub async fn top_searches(
     );
 
     match state
-        .trending_service
-        .get_top_searches(&locale_str, &period, limit)
+        .suggestion_service
+        .get_top(resolved.locale, limit)
         .await
     {
-        Ok(queries) => {
-            let items: Vec<BlendedItemDto> = queries
-                .into_iter()
-                .map(|q| BlendedItemDto {
-                    query: q.query,
-                    source: "crowdsourced".to_string(),
-                    score: Some(q.search_count as f64),
-                    weight: None,
-                })
-                .collect();
+        Ok(blended) => {
+            let items: Vec<BlendedItemDto> = blended.into_iter().map(blended_to_dto).collect();
             Json(ApiResponse::ok(TopSearchesResponse {
                 items,
                 resolved_locale: locale_str,
@@ -93,5 +79,22 @@ pub async fn top_searches(
             error!(error = %e, "Top searches failed");
             Json(ApiResponse::err(e.user_message().to_string()))
         }
+    }
+}
+
+fn blended_to_dto(b: kenjaku_core::types::suggestion::BlendedSuggestion) -> BlendedItemDto {
+    match b.source {
+        SuggestionSource::Crowdsourced => BlendedItemDto {
+            query: b.query,
+            source: "crowdsourced".to_string(),
+            score: Some(b.score),
+            weight: None,
+        },
+        SuggestionSource::Default => BlendedItemDto {
+            query: b.query,
+            source: "default".to_string(),
+            score: None,
+            weight: Some(b.score as i32),
+        },
     }
 }

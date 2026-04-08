@@ -9,6 +9,8 @@ use crate::AppState;
 use crate::dto::response::{ApiResponse, AutocompleteResponseDto, BlendedItemDto};
 use crate::extractors::ResolvedLocale;
 
+use kenjaku_core::types::suggestion::SuggestionSource;
+
 /// Maximum autocomplete limit.
 const MAX_LIMIT: usize = 50;
 
@@ -56,20 +58,13 @@ pub async fn autocomplete(
     );
 
     match state
-        .autocomplete_service
-        .suggest(&params.q, &locale_str, limit)
+        .suggestion_service
+        .autocomplete(resolved.locale, &params.q, limit)
         .await
     {
-        Ok(suggestions) => {
-            let items: Vec<BlendedItemDto> = suggestions
-                .iter()
-                .map(|q| BlendedItemDto {
-                    query: q.clone(),
-                    source: "crowdsourced".to_string(),
-                    score: None,
-                    weight: None,
-                })
-                .collect();
+        Ok(blended) => {
+            let suggestions: Vec<String> = blended.iter().map(|b| b.query.clone()).collect();
+            let items: Vec<BlendedItemDto> = blended.into_iter().map(blended_to_dto).collect();
             Json(ApiResponse::ok(AutocompleteResponseDto {
                 suggestions,
                 items,
@@ -81,5 +76,22 @@ pub async fn autocomplete(
             error!(error = %e, "Autocomplete failed");
             Json(ApiResponse::err(e.user_message().to_string()))
         }
+    }
+}
+
+fn blended_to_dto(b: kenjaku_core::types::suggestion::BlendedSuggestion) -> BlendedItemDto {
+    match b.source {
+        SuggestionSource::Crowdsourced => BlendedItemDto {
+            query: b.query,
+            source: "crowdsourced".to_string(),
+            score: Some(b.score),
+            weight: None,
+        },
+        SuggestionSource::Default => BlendedItemDto {
+            query: b.query,
+            source: "default".to_string(),
+            score: None,
+            weight: Some(b.score as i32),
+        },
     }
 }

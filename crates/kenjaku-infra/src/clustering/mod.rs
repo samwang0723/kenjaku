@@ -2,12 +2,12 @@
 //! mini-batch k-means. Lives in infra so the core crate stays free of
 //! numerical dependencies.
 
-use linfa::traits::{Fit, Predict};
 use linfa::DatasetBase;
+use linfa::traits::{Fit, Predict};
 use linfa_clustering::KMeans;
 use ndarray::{Array1, Array2};
-use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 use kenjaku_core::error::{Error, Result};
 use kenjaku_core::traits::clusterer::{Cluster, Clusterer};

@@ -47,8 +47,7 @@ impl DefaultSuggestionsRepository {
         let batch_ids: Vec<i64> = rows.iter().map(|r| r.batch_id).collect();
         let locales: Vec<String> = rows.iter().map(|r| r.locale.as_str().to_string()).collect();
         let questions: Vec<String> = rows.iter().map(|r| r.question.clone()).collect();
-        let questions_lower: Vec<String> =
-            rows.iter().map(|r| r.question.to_lowercase()).collect();
+        let questions_lower: Vec<String> = rows.iter().map(|r| r.question.to_lowercase()).collect();
         let topic_cluster_ids: Vec<i32> = rows.iter().map(|r| r.topic_cluster_id).collect();
         let topic_labels: Vec<String> = rows.iter().map(|r| r.topic_label.clone()).collect();
         let weights: Vec<i32> = rows.iter().map(|r| r.weight).collect();
@@ -105,9 +104,7 @@ impl DefaultSuggestionsRepository {
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| {
-            Error::Database(format!("Failed to list active default_suggestions: {e}"))
-        })?;
+        .map_err(|e| Error::Database(format!("Failed to list active default_suggestions: {e}")))?;
 
         rows.iter().map(row_to_default_suggestion).collect()
     }

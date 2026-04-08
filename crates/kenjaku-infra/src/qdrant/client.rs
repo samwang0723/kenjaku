@@ -2,8 +2,8 @@ use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
     Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, Distance, FieldType,
     Filter, PointStruct, ScrollPointsBuilder, SearchPointsBuilder, TextIndexParamsBuilder,
-    TokenizerType, UpsertPointsBuilder, Value, VectorParamsBuilder,
-    point_id::PointIdOptions, vectors_output::VectorsOptions,
+    TokenizerType, UpsertPointsBuilder, Value, VectorParamsBuilder, point_id::PointIdOptions,
+    vectors_output::VectorsOptions,
 };
 
 /// Lightweight projection of a Qdrant point returned by

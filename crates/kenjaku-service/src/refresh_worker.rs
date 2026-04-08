@@ -190,9 +190,8 @@ impl SuggestionRefreshWorker {
         let vectors: Vec<Vec<f32>> = sample.iter().map(|p| p.vector.clone()).collect();
         let clusters = self.clusterer.kmeans(&vectors, refresh_cfg.cluster_count)?;
 
-        let safety_re = Regex::new(&self.config.safety_regex).map_err(|e| {
-            Error::Internal(format!("invalid suggestions.safety_regex: {e}"))
-        })?;
+        let safety_re = Regex::new(&self.config.safety_regex)
+            .map_err(|e| Error::Internal(format!("invalid suggestions.safety_regex: {e}")))?;
 
         let mut rows: Vec<NewDefaultSuggestion> = Vec::new();
         let mut llm_calls: usize = 0;
@@ -232,7 +231,10 @@ impl SuggestionRefreshWorker {
         }
 
         let inserted = self.default_repo.insert_bulk(&rows).await?;
-        info!(batch_id, kept, rejected, inserted, "suggestion refresh insert_bulk done");
+        info!(
+            batch_id,
+            kept, rejected, inserted, "suggestion refresh insert_bulk done"
+        );
 
         self.refresh_repo
             .swap_active_atomic(batch_id, llm_calls as i32, kept as i32, rejected as i32)
@@ -257,7 +259,10 @@ impl SuggestionRefreshWorker {
         info!("starting SuggestionRefreshWorker scheduled loop (daily 03:00 UTC)");
         loop {
             let sleep_secs = seconds_until_next_0300_utc();
-            info!(sleep_secs, "suggestion refresh sleeping until next 03:00 UTC");
+            info!(
+                sleep_secs,
+                "suggestion refresh sleeping until next 03:00 UTC"
+            );
             time::sleep(Duration::from_secs(sleep_secs)).await;
 
             match self.run_once(false).await {

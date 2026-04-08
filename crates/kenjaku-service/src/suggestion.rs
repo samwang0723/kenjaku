@@ -5,8 +5,8 @@
 
 use std::sync::Mutex;
 
-use rand::{Rng, RngCore, SeedableRng};
 use rand::rngs::StdRng;
+use rand::{Rng, RngCore, SeedableRng};
 use tracing::instrument;
 
 use kenjaku_core::error::Result;
@@ -177,7 +177,9 @@ mod tests {
     /// Run weighted_sample directly without touching repos. Builds an
     /// ad-hoc service with stub repos that are never invoked — we only
     /// exercise the pure sampling code path.
-    fn make_sampler(seed: u64) -> Box<dyn Fn(Vec<BlendedSuggestion>, usize) -> Vec<BlendedSuggestion>> {
+    fn make_sampler(
+        seed: u64,
+    ) -> Box<dyn Fn(Vec<BlendedSuggestion>, usize) -> Vec<BlendedSuggestion>> {
         let rng = std::sync::Arc::new(ServiceRng::from_seed(seed));
         Box::new(move |pool, limit| {
             // Inline the same algorithm as `SuggestionService::weighted_sample`
@@ -255,8 +257,8 @@ mod tests {
 
     #[test]
     fn build_pool_merges_both_sources() {
-        use kenjaku_core::types::trending::{PopularQuery, TrendingPeriod};
         use kenjaku_core::types::suggestion::DefaultSuggestion;
+        use kenjaku_core::types::trending::{PopularQuery, TrendingPeriod};
 
         let crowd = vec![PopularQuery {
             id: 1,
@@ -278,7 +280,10 @@ mod tests {
         }];
         let pool = build_pool(crowd, defaults);
         assert_eq!(pool.len(), 2);
-        assert!(pool.iter().any(|i| i.source == SuggestionSource::Crowdsourced));
+        assert!(
+            pool.iter()
+                .any(|i| i.source == SuggestionSource::Crowdsourced)
+        );
         assert!(pool.iter().any(|i| i.source == SuggestionSource::Default));
     }
 }

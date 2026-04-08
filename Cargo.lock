@@ -2004,6 +2004,7 @@ name = "kenjaku-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum 0.8.8",
  "kenjaku-api",
  "kenjaku-core",
