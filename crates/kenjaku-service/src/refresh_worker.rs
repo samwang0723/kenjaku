@@ -25,7 +25,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{Datelike, TimeZone, Utc};
+use cron::Schedule;
 use regex::Regex;
+use std::str::FromStr;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 use tokio::time;
@@ -232,16 +234,31 @@ impl SuggestionRefreshWorker {
         })
     }
 
-    /// Scheduled loop: sleeps until the next 03:00 UTC then calls
-    /// `run_once(false)`. Errors are logged, never propagated.
+    /// Scheduled loop: sleeps until the next time the configured cron
+    /// expression fires, then calls `run_once(false)`. Errors are logged,
+    /// never propagated. If the cron expression fails to parse the loop
+    /// falls back to a fixed daily 03:00 UTC schedule and logs an error.
     pub async fn run_scheduled(self) {
-        info!("starting SuggestionRefreshWorker scheduled loop (daily 03:00 UTC)");
+        let cron_expr = self.config.refresh.schedule_cron.clone();
+        info!(
+            cron = %cron_expr,
+            "starting SuggestionRefreshWorker scheduled loop"
+        );
+        let schedule = match Schedule::from_str(&cron_expr) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                error!(
+                    error = %e,
+                    cron = %cron_expr,
+                    "invalid suggestions.refresh.schedule_cron; falling back to daily 03:00 UTC"
+                );
+                None
+            }
+        };
+
         loop {
-            let sleep_secs = seconds_until_next_0300_utc();
-            info!(
-                sleep_secs,
-                "suggestion refresh sleeping until next 03:00 UTC"
-            );
+            let sleep_secs = seconds_until_next_fire(schedule.as_ref());
+            info!(sleep_secs, "suggestion refresh sleeping until next fire");
             time::sleep(Duration::from_secs(sleep_secs)).await;
 
             match self.run_once(false).await {
@@ -250,6 +267,19 @@ impl SuggestionRefreshWorker {
             }
         }
     }
+}
+
+/// Compute seconds-until-next-fire for the given schedule. Falls back to
+/// daily 03:00 UTC if the schedule is `None` or has no upcoming time.
+fn seconds_until_next_fire(schedule: Option<&Schedule>) -> u64 {
+    let now = Utc::now();
+    if let Some(s) = schedule
+        && let Some(next) = s.upcoming(Utc).next()
+    {
+        let diff = next.signed_duration_since(now).num_seconds();
+        return diff.max(1) as u64;
+    }
+    seconds_until_next_0300_utc()
 }
 
 // -------- helpers --------------------------------------------------------
@@ -846,6 +876,21 @@ mod tests {
     #[test]
     fn seconds_until_next_0300_utc_is_positive_and_bounded() {
         let s = seconds_until_next_0300_utc();
+        assert!(s > 0);
+        assert!(s <= 24 * 3600 + 1);
+    }
+
+    #[test]
+    fn seconds_until_next_fire_uses_cron_when_present() {
+        // 6-field cron: every second. Next fire should be <=1s away.
+        let schedule = Schedule::from_str("* * * * * *").expect("valid cron");
+        let s = seconds_until_next_fire(Some(&schedule));
+        assert!(s <= 2, "expected near-immediate fire, got {s}");
+    }
+
+    #[test]
+    fn seconds_until_next_fire_falls_back_to_0300_when_none() {
+        let s = seconds_until_next_fire(None);
         assert!(s > 0);
         assert!(s <= 24 * 3600 + 1);
     }
