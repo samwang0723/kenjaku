@@ -16,6 +16,10 @@ pub struct AppConfig {
     pub chunking: ChunkingConfig,
     pub search: SearchConfig,
     pub telemetry: TelemetryConfig,
+    #[serde(default)]
+    pub default_suggestions: DefaultSuggestionsConfig,
+    #[serde(default)]
+    pub locale_memory: LocaleMemoryConfig,
 }
 
 impl AppConfig {
@@ -241,6 +245,159 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+// ===========================================================================
+// Default suggestions + locale memory
+// ===========================================================================
+
+/// Top-level knobs for the dynamic default-suggestions feature.
+/// See `.claude/tasks/default-suggestions-locale/tech-spec.md` §10.2.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DefaultSuggestionsConfig {
+    #[serde(default = "default_default_suggestions_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub refresh: RefreshConfig,
+    /// Regex deny-list applied to every LLM-produced question. Rows that
+    /// match are dropped + logged as rejected. MUST be a non-backtracking
+    /// pattern (the `regex` crate guarantees this).
+    #[serde(default = "default_safety_regex")]
+    pub safety_regex: String,
+    /// Base pick weight written to `default_suggestions.weight` on insert.
+    #[serde(default = "default_default_weight")]
+    pub default_weight: i32,
+    /// LARGE_LIMIT for the blending pool. Bounds how many rows the read
+    /// path pulls per locale before weighted sampling.
+    #[serde(default = "default_pool_cap")]
+    pub pool_cap: usize,
+}
+
+impl Default for DefaultSuggestionsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_default_suggestions_enabled(),
+            refresh: RefreshConfig::default(),
+            safety_regex: default_safety_regex(),
+            default_weight: default_default_weight(),
+            pool_cap: default_pool_cap(),
+        }
+    }
+}
+
+/// Refresh worker tunables — schedule, sampling, clustering, retention.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefreshConfig {
+    /// Cron expression for the daily schedule. Parsed in `kenjaku-server`
+    /// when spawning the scheduled task. Default: 03:00 UTC daily.
+    #[serde(default = "default_schedule_cron")]
+    pub schedule_cron: String,
+    /// Maximum number of Qdrant points sampled per refresh run.
+    #[serde(default = "default_sample_cap")]
+    pub sample_cap: usize,
+    /// Number of clusters for k-means. Reduced automatically if the
+    /// sample count is < k*3.
+    #[serde(default = "default_cluster_count")]
+    pub cluster_count: usize,
+    /// Target questions per (cluster, locale). The LLM may return fewer
+    /// after safety filtering.
+    #[serde(default = "default_per_cluster")]
+    pub per_cluster: usize,
+    /// How many historical batches to keep before cascade-deleting.
+    #[serde(default = "default_retention_batches")]
+    pub retention_batches: usize,
+    /// LLM call timeout for `generate_cluster_questions`.
+    #[serde(default = "default_generation_timeout_ms")]
+    pub generation_timeout_ms: u64,
+    /// `pg_try_advisory_lock` key for replica safety — only one replica
+    /// can run the refresh at a time.
+    #[serde(default = "default_advisory_lock_id")]
+    pub advisory_lock_id: i64,
+}
+
+impl Default for RefreshConfig {
+    fn default() -> Self {
+        Self {
+            schedule_cron: default_schedule_cron(),
+            sample_cap: default_sample_cap(),
+            cluster_count: default_cluster_count(),
+            per_cluster: default_per_cluster(),
+            retention_batches: default_retention_batches(),
+            generation_timeout_ms: default_generation_timeout_ms(),
+            advisory_lock_id: default_advisory_lock_id(),
+        }
+    }
+}
+
+fn default_default_suggestions_enabled() -> bool {
+    true
+}
+fn default_safety_regex() -> String {
+    // (?i) = case-insensitive. Patterns are anchored at word fragments,
+    // bounded, no backtracking cliffs. Enforced by the `regex` crate which
+    // is linear-time by construction.
+    r"(?i)(price|should i (buy|sell)|will .* hit|prediction|forecast)".to_string()
+}
+fn default_default_weight() -> i32 {
+    10
+}
+fn default_pool_cap() -> usize {
+    50
+}
+fn default_schedule_cron() -> String {
+    "0 3 * * *".to_string()
+}
+fn default_sample_cap() -> usize {
+    2000
+}
+fn default_cluster_count() -> usize {
+    20
+}
+fn default_per_cluster() -> usize {
+    5
+}
+fn default_retention_batches() -> usize {
+    3
+}
+fn default_generation_timeout_ms() -> u64 {
+    8000
+}
+fn default_advisory_lock_id() -> i64 {
+    427318
+}
+
+/// Session -> locale memory (Redis-backed). Set `enabled=false` to skip
+/// the Redis lookup in the ResolvedLocale extractor chain.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocaleMemoryConfig {
+    #[serde(default = "default_locale_memory_enabled")]
+    pub enabled: bool,
+    /// Sliding TTL for `{key_prefix}{session_id}` entries.
+    #[serde(default = "default_locale_memory_ttl_seconds")]
+    pub ttl_seconds: u64,
+    /// Redis key prefix. Keep trailing `:` so operators can `SCAN sl:*`.
+    #[serde(default = "default_locale_memory_key_prefix")]
+    pub key_prefix: String,
+}
+
+impl Default for LocaleMemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_locale_memory_enabled(),
+            ttl_seconds: default_locale_memory_ttl_seconds(),
+            key_prefix: default_locale_memory_key_prefix(),
+        }
+    }
+}
+
+fn default_locale_memory_enabled() -> bool {
+    true
+}
+fn default_locale_memory_ttl_seconds() -> u64 {
+    7200
+}
+fn default_locale_memory_key_prefix() -> String {
+    "sl:".to_string()
+}
+
 /// Load configuration from the config hierarchy.
 ///
 /// Order (later overrides earlier):
@@ -413,6 +570,8 @@ contextualizer:
                 otlp_endpoint: None,
                 log_level: "info".into(),
             },
+            default_suggestions: DefaultSuggestionsConfig::default(),
+            locale_memory: LocaleMemoryConfig::default(),
         };
 
         let result = cfg.validate_secrets();
@@ -486,6 +645,8 @@ contextualizer:
                 otlp_endpoint: None,
                 log_level: "info".into(),
             },
+            default_suggestions: DefaultSuggestionsConfig::default(),
+            locale_memory: LocaleMemoryConfig::default(),
         };
 
         assert!(cfg.validate_secrets().is_ok());
@@ -510,5 +671,77 @@ contextualizer:
         let app_env = "staging";
         let expected_file = format!("config/{app_env}");
         assert_eq!(expected_file, "config/staging");
+    }
+
+    #[test]
+    fn test_default_suggestions_config_defaults() {
+        let cfg = DefaultSuggestionsConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.default_weight, 10);
+        assert_eq!(cfg.pool_cap, 50);
+        assert!(cfg.safety_regex.starts_with("(?i)"));
+        assert_eq!(cfg.refresh.schedule_cron, "0 3 * * *");
+        assert_eq!(cfg.refresh.sample_cap, 2000);
+        assert_eq!(cfg.refresh.cluster_count, 20);
+        assert_eq!(cfg.refresh.per_cluster, 5);
+        assert_eq!(cfg.refresh.retention_batches, 3);
+        assert_eq!(cfg.refresh.generation_timeout_ms, 8000);
+        assert_eq!(cfg.refresh.advisory_lock_id, 427318);
+    }
+
+    #[test]
+    fn test_locale_memory_config_defaults() {
+        let cfg = LocaleMemoryConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.ttl_seconds, 7200);
+        assert_eq!(cfg.key_prefix, "sl:");
+    }
+
+    #[test]
+    fn test_default_suggestions_config_deserializes_from_yaml() {
+        let yaml = r#"
+enabled: true
+refresh:
+  schedule_cron: "0 4 * * *"
+  sample_cap: 1500
+  cluster_count: 15
+  per_cluster: 4
+  retention_batches: 5
+  generation_timeout_ms: 10000
+  advisory_lock_id: 427318
+safety_regex: "(?i)(buy|sell)"
+default_weight: 7
+pool_cap: 40
+"#;
+        let cfg: DefaultSuggestionsConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.refresh.schedule_cron, "0 4 * * *");
+        assert_eq!(cfg.refresh.sample_cap, 1500);
+        assert_eq!(cfg.refresh.cluster_count, 15);
+        assert_eq!(cfg.default_weight, 7);
+        assert_eq!(cfg.pool_cap, 40);
+    }
+
+    #[test]
+    fn test_locale_memory_config_deserializes_from_yaml() {
+        let yaml = r#"
+enabled: false
+ttl_seconds: 3600
+key_prefix: "loc:"
+"#;
+        let cfg: LocaleMemoryConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.ttl_seconds, 3600);
+        assert_eq!(cfg.key_prefix, "loc:");
+    }
+
+    #[test]
+    fn test_refresh_config_partial_yaml_uses_defaults() {
+        // Only override one field — the rest should fall back to defaults
+        // via the `#[serde(default = ...)]` annotations.
+        let yaml = "sample_cap: 500\n";
+        let cfg: RefreshConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.sample_cap, 500);
+        assert_eq!(cfg.cluster_count, 20); // default
+        assert_eq!(cfg.schedule_cron, "0 3 * * *"); // default
     }
 }

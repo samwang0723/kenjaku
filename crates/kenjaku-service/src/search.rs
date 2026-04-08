@@ -20,6 +20,7 @@ use kenjaku_core::types::search::{
 
 use crate::component::ComponentService;
 use crate::conversation::ConversationService;
+use crate::locale_memory::LocaleMemory;
 use crate::quality::prettify_title;
 use crate::translation::TranslationService;
 use crate::trending::TrendingService;
@@ -34,6 +35,7 @@ pub struct SearchService {
     trending_service: TrendingService,
     conversation_service: ConversationService,
     title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
+    locale_memory: Arc<LocaleMemory>,
     collection_name: String,
     suggestion_count: usize,
 }
@@ -49,6 +51,7 @@ impl SearchService {
         trending_service: TrendingService,
         conversation_service: ConversationService,
         title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
+        locale_memory: Arc<LocaleMemory>,
         collection_name: String,
         suggestion_count: usize,
     ) -> Self {
@@ -61,6 +64,7 @@ impl SearchService {
             trending_service,
             conversation_service,
             title_resolver,
+            locale_memory,
             collection_name,
             suggestion_count,
         }
@@ -109,6 +113,17 @@ impl SearchService {
             source = ?locale_source,
             "Resolved answer locale"
         );
+
+        // Fire-and-forget: record the detected locale into LocaleMemory so
+        // subsequent same-session reads (autocomplete, top-searches) can
+        // honor it without requiring a client hint.
+        {
+            let lm = self.locale_memory.clone();
+            let sid = req.session_id.clone();
+            tokio::spawn(async move {
+                lm.record(&sid, detected_locale).await;
+            });
+        }
 
         // Step 3: Retrieve with hybrid search (uses the English-normalized
         // query, regardless of detected locale).
@@ -249,6 +264,15 @@ impl SearchService {
             source = ?locale_source,
             "Resolved answer locale (streaming)"
         );
+
+        // Fire-and-forget: record detected locale for the session.
+        {
+            let lm = self.locale_memory.clone();
+            let sid = req.session_id.clone();
+            tokio::spawn(async move {
+                lm.record(&sid, detected_locale).await;
+            });
+        }
 
         // Step 3: Retrieve
         let chunks = self
