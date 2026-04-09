@@ -1344,6 +1344,7 @@ body {
   align-items: center;
   gap: 10px;
   line-height: 1.4;
+  /* Long suggestions are clamped to 2 lines via the inner text span. */
 }
 .related-q:hover {
   border-color: rgba(255,255,255,0.12);
@@ -1353,6 +1354,17 @@ body {
   flex-shrink: 0;
   width: 20px;
   height: 20px;
+}
+.related-q-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-word;
 }
 .related-q::before {
   display: none;

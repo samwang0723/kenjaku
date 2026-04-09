@@ -58,24 +58,28 @@ pub async fn search(
     // Clamp top_k
     let top_k = dto.top_k.unwrap_or(10).min(MAX_TOP_K);
 
-    // PR9 #8: the body's `session_id` is a per-conversation rotating id,
-    // while the read-path extractors (`ResolvedLocale`) key off the device
-    // id from `X-Session-Id`. Capture the device id here so LocaleMemory
-    // is recorded under the SAME id the read path will use, otherwise the
-    // session_memory tier never hits.
-    let device_session_id = header_str(&headers, "x-session-id");
-
-    // Session + request ids: headers win; body fields are the backward-
-    // compat fallback. If neither provides a request id, the server
-    // generates a UUID so downstream logging/tracing always has a key.
-    // Cap header values at 128 chars to match LocaleMemory's session bound.
-    let session_id = device_session_id
+    // Session + request ids:
+    // - Header wins, then body field, then a fresh server-generated UUID.
+    // - request_id is ALWAYS server-generated when absent.
+    // - session_id is also generated server-side on first request of a
+    //   page session; the client captures it from the response and sends
+    //   it back as `X-Session-Id` on subsequent queries.
+    // The same `device_session_id` is reused inside SearchService for
+    // LocaleMemory and SessionHistoryStore keying.
+    let header_session_id = header_str(&headers, "x-session-id");
+    let session_id = header_session_id
         .clone()
         .or(dto.session_id)
-        .unwrap_or_else(|| "anonymous".to_string());
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let request_id = header_str(&headers, "x-request-id")
         .or(dto.request_id)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    // SearchService uses the resolved session id for locale memory and
+    // history keying. We pass an Option here so a missing header doesn't
+    // accidentally write under a fresh-uuid key (the LocaleMemory pipeline
+    // tolerates None and uses the body session_id in that case).
+    let device_session_id = Some(session_id.clone());
 
     let req = SearchRequest {
         query: dto.query,

@@ -297,10 +297,14 @@ function getAuthHeaders(extraHeaders) {
     var token = bearerTokenInput ? bearerTokenInput.value.trim() : '';
     if (token) headers['Authorization'] = 'Bearer ' + token;
   }
-  // Stable per-device id drives the server's session-locale memory lookup
-  // AND the per-session conversation history store. All API calls include it.
-  if (typeof deviceId === 'string' && deviceId) {
-    headers['X-Session-Id'] = deviceId;
+  // Send `X-Session-Id` only when we have one captured from a previous
+  // server response. First query of a page session sends nothing — the
+  // server generates a UUID and returns it in the response/SSE start
+  // metadata, which we then capture into `sessionId` for subsequent
+  // requests. A page reload resets `sessionId`, so the server issues a
+  // fresh UUID — that's the "new conversation per refresh" semantics.
+  if (typeof sessionId === 'string' && sessionId) {
+    headers['X-Session-Id'] = sessionId;
   }
   if (extraHeaders) {
     for (var k in extraHeaders) {
@@ -362,39 +366,34 @@ if (localeSwitcher) {
 }
 applyI18n();
 
-// Stable per-device identifier used for the server's session-locale memory.
-// Distinct from `sessionId`, which rotates on every fresh conversation.
-var deviceId = localStorage.getItem('kenjaku_device_id');
-if (!deviceId) {
-  deviceId = (typeof crypto !== 'undefined' && crypto.randomUUID)
-    ? crypto.randomUUID()
-    : 'dev-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
-  localStorage.setItem('kenjaku_device_id', deviceId);
-}
+// Note: there is no localStorage device id anymore. The conversation
+// session id is captured from the first server response and held
+// in-memory only — page reload deliberately starts a fresh session.
 
 function localeQueryString() {
   return userLocale ? ('&locale=' + encodeURIComponent(userLocale)) : '';
 }
 
 // ====== Session / Feedback State ======
+// `sessionId` is null until the first server response captures one.
+// `lastRequestId` is null until the first response — feedback POSTs use it.
+// Both reset on page reload (intentionally — refresh = new conversation).
 var feedbackState = {};                  // request_id -> 'like' | 'dislike' | null
 var lastRequestId = null;
 var lastQuery = null;
 var lastResponseText = null;
-var sessionId = localStorage.getItem('sessionId') || generateSessionId();
+var sessionId = null;
 var currentAbortController = null;
 
-function generateSessionId() {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    var r = Math.random() * 16 | 0;
-    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-  });
-}
-
+// Wipe the in-memory conversation. Called by the back button — the next
+// search will be sent without `X-Session-Id`, the server will generate
+// a fresh UUID, and we capture it on the response.
 function clearConversationState() {
-  sessionId = generateSessionId();
-  localStorage.setItem('sessionId', sessionId);
+  sessionId = null;
+  lastRequestId = null;
+  lastQuery = null;
+  lastResponseText = null;
+  feedbackState = {};
 }
 
 // Reason categories match the server-seeded rows in `reason_categories` table.
@@ -706,8 +705,10 @@ function renderSuggestions(comp) {
   if (suggestions.length === 0) return '';
   var html = '<div class="related-questions">';
   for (var i = 0; i < suggestions.length; i++) {
-    html += '<span class="related-q"><svg class="related-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M12.7998 8.80005L10.7998 6.80005M12.7998 8.80005L10.7998 10.8M12.7998 8.80005L7.46647 8.80005C5.25733 8.80005 3.46647 7.00919 3.46647 4.80005" stroke="#7B849B" stroke-width="1.25" stroke-miterlimit="1.41421" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
-      escapeHtml(suggestions[i]) + '</span>';
+    html += '<span class="related-q" title="' + escapeHtml(suggestions[i]) + '">' +
+      '<svg class="related-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M12.7998 8.80005L10.7998 6.80005M12.7998 8.80005L10.7998 10.8M12.7998 8.80005L7.46647 8.80005C5.25733 8.80005 3.46647 7.00919 3.46647 4.80005" stroke="#7B849B" stroke-width="1.25" stroke-miterlimit="1.41421" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+      '<span class="related-q-text">' + escapeHtml(suggestions[i]) + '</span>' +
+      '</span>';
   }
   html += '</div>';
   return html;
@@ -736,6 +737,10 @@ function renderPriceFocus(comp) {
 
 // ====== Main Render ======
 function renderResults(data) {
+  // Capture both server-issued ids on every response. The streaming
+  // path also captures them earlier in the SSE start handler — this is
+  // the non-streaming path / re-confirmation.
+  if (data.session_id) sessionId = data.session_id;
   lastRequestId = data.request_id || null;
   lastQuery = (data.metadata && data.metadata.original_query) || '';
   lastResponseText = extractAnswerText(data) || '';
@@ -857,12 +862,11 @@ async function doSearch(query, isFollowUp) {
   if (currentAbortController) currentAbortController.abort();
   currentAbortController = new AbortController();
 
-  var requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-
   try {
-    // session_id / request_id now travel as HTTP headers. The backend
-    // still accepts the body fields for backward compat, but header-first
-    // matches how the autocomplete/top-searches reads already work.
+    // No client-generated session_id or request_id. The server creates
+    // both on first contact and returns them; we capture them in the
+    // SSE start handler / non-streaming response handler. Subsequent
+    // calls send `X-Session-Id` automatically via getAuthHeaders().
     var reqBody = {
       query: query,
       streaming: true,
@@ -871,7 +875,7 @@ async function doSearch(query, isFollowUp) {
 
     var resp = await fetch(API_BASE + '/search', {
       method: 'POST',
-      headers: getAuthHeadersWithAccept({ 'X-Request-Id': requestId }),
+      headers: getAuthHeadersWithAccept(),
       body: JSON.stringify(reqBody),
       signal: currentAbortController.signal,
     });
@@ -885,7 +889,7 @@ async function doSearch(query, isFollowUp) {
 
     var contentType = resp.headers.get('Content-Type') || '';
     if (contentType.indexOf('text/event-stream') !== -1) {
-      await handleStreamResponse(resp, requestId);
+      await handleStreamResponse(resp);
     } else {
       await handleJsonResponse(resp);
     }
@@ -913,7 +917,7 @@ async function handleJsonResponse(resp) {
 //   event: delta   — {text: "..."} per token
 //   event: done    — StreamDoneMetadata (latency_ms, sources, suggestions, ...)
 //   event: error   — {error: "..."}
-async function handleStreamResponse(resp, requestId) {
+async function handleStreamResponse(resp) {
   var reader = resp.body.getReader();
   var decoder = new TextDecoder();
   var buffer = '';
@@ -964,6 +968,10 @@ async function handleStreamResponse(resp, requestId) {
     switch (event) {
       case 'start':
         startMeta = payload;
+        // Capture server-issued ids on the first contact of this page
+        // session and reuse them for subsequent requests.
+        if (payload.session_id) sessionId = payload.session_id;
+        if (payload.request_id) lastRequestId = payload.request_id;
         break;
 
       case 'delta':
