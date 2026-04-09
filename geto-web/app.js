@@ -812,6 +812,20 @@ function renderDebug(data) {
     tags.push('<span class="tag tag-lang">' + escapeHtml(label) + '</span>');
   }
   if (m.retrieval_count !== undefined) tags.push('<span class="tag tag-tier">retrieved ' + m.retrieval_count + '</span>');
+  // Web tier provenance — green pill when Brave/Serper supplied chunks,
+  // separate violet pill when Gemini's built-in google_search grounding
+  // metadata fired (rare on the preview model).
+  if (m.grounding) {
+    if (m.grounding.web_search_used) {
+      var provider = m.grounding.web_search_provider || 'web';
+      var count = m.grounding.web_search_count || 0;
+      tags.push('<span class="tag tag-grounding-web">' +
+        escapeHtml(provider) + ' · ' + count + '</span>');
+    }
+    if (m.grounding.gemini_grounding_used) {
+      tags.push('<span class="tag tag-grounding-gemini">google_search</span>');
+    }
+  }
   if (m.latency_ms !== undefined)      tags.push('<span class="tag tag-time">' + m.latency_ms + 'ms</span>');
   if (m.preamble_latency_ms !== undefined) tags.push('<span class="tag tag-ttft">preamble ' + m.preamble_latency_ms + 'ms</span>');
   if (m.ttft_ms !== undefined)         tags.push('<span class="tag tag-ttft">TTFT ' + m.ttft_ms + 'ms</span>');
@@ -982,6 +996,10 @@ async function handleStreamResponse(resp, requestId) {
             ttft_ms:          firstDeltaTs ? (firstDeltaTs - streamStartTs) : null,
             llm_model:        done.llm_model || '',
             streaming:        true,
+            // Web tier provenance — prefer the done event's grounding
+            // (it may have been refreshed during the stream when Gemini
+            // attached groundingMetadata) and fall back to start.
+            grounding: done.grounding || m.grounding || null,
           },
         };
         rawJsonPre.textContent = toRawJson(fullResponse);

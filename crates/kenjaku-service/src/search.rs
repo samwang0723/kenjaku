@@ -16,9 +16,9 @@ use kenjaku_core::types::conversation::{ConversationTurn, CreateConversation};
 use kenjaku_core::types::intent::Intent;
 use kenjaku_core::types::locale::{DetectedLocale, Locale};
 use kenjaku_core::types::search::{
-    DetectedLocaleSource, LlmSource, RetrievalMethod, RetrievedChunk, SearchMetadata,
-    SearchRequest, SearchResponse, StreamChunk, StreamDoneMetadata, StreamStartMetadata,
-    TranslationResult,
+    DetectedLocaleSource, GroundingInfo, LlmSource, RetrievalMethod, RetrievedChunk,
+    SearchMetadata, SearchRequest, SearchResponse, StreamChunk, StreamDoneMetadata,
+    StreamStartMetadata, TranslationResult,
 };
 use regex::Regex;
 
@@ -233,8 +233,14 @@ impl SearchService {
         // configured provider (Brave by default). Web chunks are
         // appended so the model sees them as `[Source N]` entries
         // alongside internal corpus chunks.
+        let mut grounding = GroundingInfo::default();
         if self.should_web_search(&search_query, chunks.len()) {
             let web_chunks = self.fetch_web_chunks(&search_query).await;
+            if !web_chunks.is_empty() {
+                grounding.web_search_used = true;
+                grounding.web_search_provider = Some(self.web_search_config.provider.clone());
+                grounding.web_search_count = web_chunks.len();
+            }
             chunks.extend(web_chunks);
         }
 
@@ -293,6 +299,7 @@ impl SearchService {
                 intent,
                 retrieval_count: chunks.len(),
                 latency_ms,
+                grounding: grounding.clone(),
             },
         };
 
@@ -420,8 +427,14 @@ impl SearchService {
             .await?;
 
         // Step 3b: Web tier (streaming path).
+        let mut grounding = GroundingInfo::default();
         if self.should_web_search(&search_query, chunks.len()) {
             let web_chunks = self.fetch_web_chunks(&search_query).await;
+            if !web_chunks.is_empty() {
+                grounding.web_search_used = true;
+                grounding.web_search_provider = Some(self.web_search_config.provider.clone());
+                grounding.web_search_count = web_chunks.len();
+            }
             chunks.extend(web_chunks);
         }
 
@@ -474,6 +487,7 @@ impl SearchService {
             intent,
             retrieval_count: chunks.len(),
             preamble_latency_ms,
+            grounding: grounding.clone(),
         };
 
         Ok(SearchStreamOutput {
@@ -483,6 +497,7 @@ impl SearchService {
                 sources,
                 llm_model: self.llm_model_name(),
                 start_instant: start,
+                grounding,
                 request_id: req.request_id.clone(),
                 session_id: req.session_id.clone(),
                 history_key: history_key.to_string(),
@@ -507,6 +522,7 @@ impl SearchService {
         accumulated_answer: &str,
         grounding_sources: Vec<LlmSource>,
     ) -> StreamDoneMetadata {
+        let grounding_sources_was_empty = grounding_sources.is_empty();
         let suggestions = match self.llm.suggest(&ctx.query, accumulated_answer).await {
             Ok(s) if s.len() >= self.suggestion_count => s[..self.suggestion_count].to_vec(),
             Ok(s) => s,
@@ -572,11 +588,20 @@ impl SearchService {
             );
         }
 
+        // Refresh grounding info: copy preamble flags AND add the
+        // gemini_grounding_used flag if any grounding metadata showed
+        // up on the LLM stream events.
+        let mut grounding = ctx.grounding;
+        if !grounding_sources_was_empty {
+            grounding.gemini_grounding_used = true;
+        }
+
         StreamDoneMetadata {
             latency_ms,
             sources: merged_sources,
             suggestions,
             llm_model: ctx.llm_model,
+            grounding,
         }
     }
 
@@ -647,6 +672,11 @@ pub struct StreamContext {
     pub sources: Vec<LlmSource>,
     pub llm_model: String,
     pub start_instant: Instant,
+    /// Web tier provenance captured during the preamble (before the
+    /// LLM stream opens). `complete_stream` may also flip
+    /// `gemini_grounding_used` if Gemini attached grounding metadata
+    /// to the stream.
+    pub grounding: GroundingInfo,
     pub request_id: String,
     pub session_id: String,
     /// Stable device/session key used for in-memory history and locale

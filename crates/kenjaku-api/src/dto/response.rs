@@ -87,6 +87,24 @@ pub struct SearchMetadataDto {
     pub intent: String,
     pub retrieval_count: usize,
     pub latency_ms: u64,
+    /// Web tier provenance — populated when SearchService called the
+    /// configured web search backend (Brave, etc.) for this request.
+    /// Default-skipped on the wire when both flags are false.
+    #[serde(default)]
+    pub grounding: GroundingInfoDto,
+}
+
+/// Mirrors `kenjaku_core::types::search::GroundingInfo` for the wire.
+#[derive(Debug, Default, Serialize, ToSchema)]
+pub struct GroundingInfoDto {
+    #[serde(default)]
+    pub web_search_used: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search_provider: Option<String>,
+    #[serde(default)]
+    pub web_search_count: usize,
+    #[serde(default)]
+    pub gemini_grounding_used: bool,
 }
 
 /// A single blended suggestion row — matches the domain `BlendedSuggestion`
@@ -187,6 +205,12 @@ impl From<SearchResponse> for SearchResponseDto {
                 intent: resp.metadata.intent.to_string(),
                 retrieval_count: resp.metadata.retrieval_count,
                 latency_ms: resp.metadata.latency_ms,
+                grounding: GroundingInfoDto {
+                    web_search_used: resp.metadata.grounding.web_search_used,
+                    web_search_provider: resp.metadata.grounding.web_search_provider.clone(),
+                    web_search_count: resp.metadata.grounding.web_search_count,
+                    gemini_grounding_used: resp.metadata.grounding.gemini_grounding_used,
+                },
             },
         }
     }
@@ -234,6 +258,7 @@ mod tests {
             intent: "unknown".into(),
             retrieval_count: 3,
             latency_ms: 120,
+            grounding: GroundingInfoDto::default(),
         };
         let v = serde_json::to_value(&meta).unwrap();
         assert_eq!(v.get("resolved_locale").unwrap(), "ja");
@@ -253,6 +278,7 @@ mod tests {
             intent: "unknown".into(),
             retrieval_count: 0,
             latency_ms: 10,
+            grounding: GroundingInfoDto::default(),
         };
         let v = serde_json::to_value(&meta).unwrap();
         assert!(v.get("resolved_locale").is_none());
