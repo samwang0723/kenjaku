@@ -601,20 +601,43 @@ function inlineMarkdown(text) {
   safe = safe.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   // Replace source citation markers with a clickable chip. Handles every
   // variant the LLM emits:
-  //   [Source 1]
-  //   [Source 1, 2, 3]
-  //   [Source 1,2,3]
-  //   [Source 1, Source 2]
-  //   [Source 1, Source 2, Source 3]
-  // The whole-match regex is restricted to digits/commas/whitespace plus the
-  // literal "Source" prefix, so the digits we extract from it are safe to
-  // interpolate without re-escaping.
+  //   [Source 1]            singular, single index
+  //   [Source 1, 2, 3]      singular, comma list
+  //   [Source 1,2,3]        singular, comma list (no spaces)
+  //   [Source 1, Source 2]  singular, repeated prefix
+  //   [Source 1-3]          singular, range
+  //   [Sources 1-5]         plural, range  ← was previously dropped
+  //   [Sources 1, 2, 3]     plural, comma list
+  //   [Sources 1 and 2]     plural, "and" connector
+  // The whole-match regex is restricted to digits / commas / hyphens /
+  // whitespace / "and" plus the literal "Source(s)" prefix, so the digits
+  // extracted from it are safe to interpolate without re-escaping.
   safe = safe.replace(
-    /\[Source\s+\d+(?:\s*,\s*(?:Source\s+)?\d+)*\]/g,
+    /\[Sources?\s+\d+(?:\s*[-–]\s*\d+|\s*(?:,|and)\s*(?:Sources?\s+)?\d+)*\]/gi,
     function(match) {
-      var nums = match.match(/\d+/g) || [];
-      var clean = nums.join(',');
-      var label = 'Source ' + clean;
+      // Expand any "N - M" range into the full integer list, then merge
+      // with bare digits.
+      var indices = [];
+      var rangeRe = /(\d+)\s*[-–]\s*(\d+)/g;
+      var rangeMatch;
+      var consumed = '';
+      while ((rangeMatch = rangeRe.exec(match)) !== null) {
+        var lo = parseInt(rangeMatch[1], 10);
+        var hi = parseInt(rangeMatch[2], 10);
+        if (lo <= hi && hi - lo < 50) {
+          for (var n = lo; n <= hi; n++) indices.push(n);
+        }
+        consumed += rangeMatch[0] + ' ';
+      }
+      // Bare digits not part of a range.
+      var stripped = match.replace(/(\d+)\s*[-–]\s*(\d+)/g, '');
+      var bare = stripped.match(/\d+/g) || [];
+      bare.forEach(function(n) { indices.push(parseInt(n, 10)); });
+      // Dedupe while preserving order, sort numerically.
+      indices = Array.from(new Set(indices)).sort(function(a, b) { return a - b; });
+      if (!indices.length) return match;
+      var clean = indices.join(',');
+      var label = (indices.length > 1 ? 'Sources ' : 'Source ') + clean;
       return '<button type="button" class="source-ref" data-sources="' + clean +
         '" onclick="openSourcesSheet()" title="' + label + '" aria-label="' + label + '">' +
         '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">' +

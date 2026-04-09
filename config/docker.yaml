@@ -11,4 +11,4 @@ redis:
 telemetry:
   service_name: "kenjaku"
   otlp_endpoint: "http://otel-collector:4317"
-  log_level: "info"
+  log_level: "kenjaku_infra=debug,info"

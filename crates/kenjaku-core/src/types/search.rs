@@ -94,6 +94,10 @@ pub enum RetrievalMethod {
     Vector,
     FullText,
     Hybrid,
+    /// Chunk originated from a live web search provider (Brave, Serper,
+    /// etc.) and was injected into the chunk list as a synthetic
+    /// `[Source N]` entry alongside internal corpus chunks.
+    Web,
 }
 
 /// Response from the LLM.

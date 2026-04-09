@@ -78,52 +78,45 @@ impl GeminiProvider {
         let mut contents = Vec::with_capacity(history.len() * 2 + 1);
         for turn in history {
             contents.push(GeminiContent {
-                parts: vec![GeminiPart::Text {
-                    text: turn.user.clone(),
-                }],
+                parts: vec![GeminiPart::text(turn.user.clone())],
                 role: Some("user".to_string()),
             });
             contents.push(GeminiContent {
-                parts: vec![GeminiPart::Text {
-                    text: turn.assistant.clone(),
-                }],
+                parts: vec![GeminiPart::text(turn.assistant.clone())],
                 role: Some("model".to_string()),
             });
         }
         contents.push(GeminiContent {
-            parts: vec![GeminiPart::Text {
-                text: current_user_prompt,
-            }],
+            parts: vec![GeminiPart::text(current_user_prompt)],
             role: Some("user".to_string()),
         });
         contents
     }
 
     /// Build the per-request `systemInstruction` for the answer call.
-    /// This pins the answer language to `answer_locale` and encodes the
-    /// "prefer internal context, fall back to google_search" policy.
+    /// Pins the answer language, sets grounding priority, and keeps the
+    /// wording generic so we don't trip Gemini preview models into
+    /// interpreting literal tool names as client-side function calls.
     fn build_search_system_instruction(answer_locale: Locale) -> GeminiContent {
         let display = answer_locale.display_name();
         let tag = answer_locale.as_str();
         let text = format!(
-            "You are a helpful search assistant with access to two information sources:\n\
+            "You are a helpful document search assistant.\n\
              \n\
-             1. INTERNAL CONTEXT — numbered `[Source N]` entries in the user turn. These are authoritative product/domain knowledge from the document corpus. Prefer them when they answer the question.\n\
-             2. The `google_search` TOOL — for anything the internal context does not cover, or any fact that changes over time.\n\
+             Sources, in priority order:\n\
+             1. Internal context — numbered `[Source N]` entries in the user turn, from the product's own document corpus. Prefer it when it answers the question, and cite with `[Source N]` markers.\n\
+             2. Web grounding — when available, use it to fill gaps the internal context does not cover or to add up-to-date facts. Web sources are attached separately by the platform; do not invent `[Source N]` markers for them.\n\
+             3. Your own knowledge — if neither of the above is sufficient, answer from your training data and make the limitation explicit (e.g. \"as of my training cut-off\").\n\
              \n\
-             CRITICAL BEHAVIOR RULES:\n\
-             - **You MUST call `google_search` whenever the question involves real-time, time-sensitive, or recent information**, including (but not limited to): current prices, today's news, market movements, weather, sports scores, recent events, \"today\", \"now\", \"current\", \"latest\". Do this even if the internal context is empty — the tool is always available to you on this turn.\n\
-             - **You MUST call `google_search` whenever the question is within the domain/topic of the internal corpus but retrieval did not return a matching chunk.** For example, if the corpus covers a product's help center and the user asks about a feature that is not in the retrieved chunks, search the web (ideally scoped to the product's official domain) rather than refusing.\n\
-             - **NEVER reply with \"I cannot access real-time information\", \"I don't have that in my documents\", or similar refusals.** You have the `google_search` tool. Use it.\n\
-             - When the internal context is empty OR does not answer the question, call `google_search` first, then answer from the results.\n\
-             - When you cite from the internal context, use the `[Source N]` marker referring to the numbered entries in the user turn.\n\
-             - When you ground via `google_search`, the platform attaches the web sources separately — do NOT invent `[Source N]` numbers for them.\n\
-             - **Always write your final answer in {display} (BCP-47 `{tag}`)**, regardless of the language of the retrieved context, the question, OR any earlier turns in this conversation. If previous turns were in a different language, IGNORE their language and respond ONLY in {display}. This rule overrides any continuity from prior turns.\n\
-             - Preserve proper nouns, product names, ticker symbols, and code in their original form.\n\
-             - Only if BOTH the internal context AND `google_search` yield nothing confident, say so plainly in {display}."
+             Always try to answer. Do not refuse just because the retrieved internal context is sparse — synthesize from whatever sources you have.\n\
+             \n\
+             Output rules:\n\
+             - Write the final answer in {display} (BCP-47 `{tag}`), regardless of the language of the retrieved context, the question, or earlier turns in this conversation. If previous turns were in a different language, ignore their language and respond only in {display}. This overrides any continuity from prior turns.\n\
+             - Preserve proper nouns, product names, ticker symbols, and code snippets in their original form.\n\
+             - Keep the response concise and well-structured. Use short paragraphs and lists where it helps readability."
         );
         GeminiContent {
-            parts: vec![GeminiPart::Text { text }],
+            parts: vec![GeminiPart::text(text)],
             role: Some("system".to_string()),
         }
     }
@@ -199,9 +192,13 @@ impl LlmProvider for GeminiProvider {
         let answer = result
             .candidates
             .first()
-            .and_then(|c| c.content.parts.first())
-            .map(|p| match p {
-                GeminiPart::Text { text } => text.clone(),
+            .map(|c| {
+                c.content
+                    .parts
+                    .iter()
+                    .map(|p| p.text_str())
+                    .collect::<Vec<_>>()
+                    .join("")
             })
             .unwrap_or_default();
 
@@ -246,9 +243,7 @@ impl LlmProvider for GeminiProvider {
     async fn generate_brief(&self, prompt: &str) -> Result<LlmResponse> {
         let request = GeminiRequest {
             contents: vec![GeminiContent {
-                parts: vec![GeminiPart::Text {
-                    text: prompt.to_string(),
-                }],
+                parts: vec![GeminiPart::text(prompt.to_string())],
                 role: Some("user".to_string()),
             }],
             system_instruction: None,
@@ -288,9 +283,13 @@ impl LlmProvider for GeminiProvider {
         let answer = result
             .candidates
             .first()
-            .and_then(|c| c.content.parts.first())
-            .map(|p| match p {
-                GeminiPart::Text { text } => text.clone(),
+            .map(|c| {
+                c.content
+                    .parts
+                    .iter()
+                    .map(|p| p.text_str())
+                    .collect::<Vec<_>>()
+                    .join("")
             })
             .unwrap_or_default();
 
@@ -363,6 +362,11 @@ impl LlmProvider for GeminiProvider {
         let stream = event_stream.filter_map(|event_result| async move {
             match event_result {
                 Ok(event) => {
+                    tracing::info!(
+                        event_len = event.data.len(),
+                        raw = %event.data,
+                        "Gemini SSE event (full)"
+                    );
                     if event.data.trim() == "[DONE]" {
                         return Some(Ok(StreamChunk {
                             delta: String::new(),
@@ -374,23 +378,41 @@ impl LlmProvider for GeminiProvider {
 
                     let response: GeminiResponse = match serde_json::from_str(&event.data) {
                         Ok(r) => r,
-                        Err(_) => return None, // skip unparseable events
+                        Err(e) => {
+                            tracing::warn!(
+                                parse_error = %e,
+                                sample = %event.data.chars().take(400).collect::<String>(),
+                                "Failed to parse Gemini SSE event — dropping"
+                            );
+                            return None;
+                        }
                     };
 
                     let text = response
                         .candidates
                         .first()
-                        .and_then(|c| c.content.parts.first())
-                        .map(|p| match p {
-                            GeminiPart::Text { text } => text.clone(),
+                        .map(|c| {
+                            c.content
+                                .parts
+                                .iter()
+                                .map(|p| p.text_str())
+                                .collect::<Vec<_>>()
+                                .join("")
                         })
                         .unwrap_or_default();
 
-                    let finished = response
+                    let finish_reason = response
                         .candidates
                         .first()
-                        .and_then(|c| c.finish_reason.as_ref())
-                        .is_some();
+                        .and_then(|c| c.finish_reason.clone());
+                    let finished = finish_reason.is_some();
+                    if let Some(reason) = finish_reason.as_ref() {
+                        info!(
+                            finish_reason = %reason,
+                            text_len = text.len(),
+                            "Gemini stream final event"
+                        );
+                    }
 
                     // Extract google_search grounding sources from this event.
                     // Gemini typically attaches groundingMetadata only on the
@@ -492,7 +514,7 @@ impl LlmProvider for GeminiProvider {
 
         let request = GeminiRequest {
             contents: vec![GeminiContent {
-                parts: vec![GeminiPart::Text { text: prompt }],
+                parts: vec![GeminiPart::text(prompt)],
                 role: Some("user".to_string()),
             }],
             system_instruction: None,
@@ -534,9 +556,13 @@ impl LlmProvider for GeminiProvider {
         let raw_text = result
             .candidates
             .first()
-            .and_then(|c| c.content.parts.first())
-            .map(|p| match p {
-                GeminiPart::Text { text } => text.clone(),
+            .map(|c| {
+                c.content
+                    .parts
+                    .iter()
+                    .map(|p| p.text_str())
+                    .collect::<Vec<_>>()
+                    .join("")
             })
             .unwrap_or_default();
 
@@ -581,7 +607,7 @@ impl LlmProvider for GeminiProvider {
 
         let request = GeminiRequest {
             contents: vec![GeminiContent {
-                parts: vec![GeminiPart::Text { text: prompt }],
+                parts: vec![GeminiPart::text(prompt)],
                 role: Some("user".to_string()),
             }],
             system_instruction: None,
@@ -621,9 +647,13 @@ impl LlmProvider for GeminiProvider {
         let text = result
             .candidates
             .first()
-            .and_then(|c| c.content.parts.first())
-            .map(|p| match p {
-                GeminiPart::Text { text } => text.clone(),
+            .map(|c| {
+                c.content
+                    .parts
+                    .iter()
+                    .map(|p| p.text_str())
+                    .collect::<Vec<_>>()
+                    .join("")
             })
             .unwrap_or_default();
 
@@ -705,7 +735,7 @@ impl LlmProvider for GeminiProvider {
 
         let request = GeminiRequest {
             contents: vec![GeminiContent {
-                parts: vec![GeminiPart::Text { text: prompt }],
+                parts: vec![GeminiPart::text(prompt)],
                 role: Some("user".to_string()),
             }],
             system_instruction: None,
@@ -760,9 +790,13 @@ impl LlmProvider for GeminiProvider {
         let raw_text = result
             .candidates
             .first()
-            .and_then(|c| c.content.parts.first())
-            .map(|p| match p {
-                GeminiPart::Text { text } => text.clone(),
+            .map(|c| {
+                c.content
+                    .parts
+                    .iter()
+                    .map(|p| p.text_str())
+                    .collect::<Vec<_>>()
+                    .join("")
             })
             .unwrap_or_default();
 
@@ -852,7 +886,57 @@ struct GeminiContent {
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 enum GeminiPart {
-    Text { text: String },
+    /// Normal text delta. Gemini 3 may also emit a `thoughtSignature`
+    /// field on text parts for "thinking" traces — we capture it so
+    /// deserialization doesn't fail, but we don't use it.
+    Text {
+        text: String,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "thoughtSignature"
+        )]
+        thought_signature: Option<String>,
+    },
+    /// Gemini 3 streams the model's decision to call the built-in
+    /// `google_search` tool as a `functionCall` part BEFORE the grounded
+    /// text arrives. We need to accept and ignore it so the event parses;
+    /// the grounded answer text shows up in a later event as a plain
+    /// Text part. Dropping the whole event here is what caused
+    /// "empty answer" on real-time questions.
+    FunctionCall {
+        #[serde(rename = "functionCall")]
+        function_call: serde_json::Value,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            rename = "thoughtSignature"
+        )]
+        thought_signature: Option<String>,
+    },
+    /// Catch-all for any future part type we don't know about. Keeps
+    /// the stream parser resilient.
+    Other(serde_json::Value),
+}
+
+impl GeminiPart {
+    /// Borrow the text content if this part is a text delta; otherwise
+    /// return an empty str (for `functionCall`, `Other`, etc.).
+    fn text_str(&self) -> &str {
+        match self {
+            GeminiPart::Text { text, .. } => text,
+            _ => "",
+        }
+    }
+
+    /// Convenience for building a user/model text part without having
+    /// to spell out `thought_signature: None` at every call site.
+    fn text(text: String) -> Self {
+        GeminiPart::Text {
+            text,
+            thought_signature: None,
+        }
+    }
 }
 
 #[derive(Serialize)]

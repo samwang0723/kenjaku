@@ -20,6 +20,8 @@ pub struct AppConfig {
     pub default_suggestions: DefaultSuggestionsConfig,
     #[serde(default)]
     pub locale_memory: LocaleMemoryConfig,
+    #[serde(default)]
+    pub web_search: WebSearchConfig,
 }
 
 impl AppConfig {
@@ -443,6 +445,84 @@ fn default_locale_memory_key_prefix() -> String {
     "sl:".to_string()
 }
 
+// ===========================================================================
+// Web search (Brave / Serper / ...) — replaces Gemini's non-functional
+// built-in google_search tool
+// ===========================================================================
+
+/// Live web search configuration. When enabled, `SearchService` augments
+/// internal corpus retrieval with top-N results from a third-party search
+/// API (Brave by default) for queries matching the trigger regex. The
+/// results become synthetic `[Source N]` chunks the LLM cites like any
+/// other retrieval chunk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSearchConfig {
+    #[serde(default = "default_web_search_enabled")]
+    pub enabled: bool,
+    /// Vendor tag. Currently `brave` is the only supported value. New
+    /// providers are added by implementing `WebSearchProvider` and
+    /// wiring a match arm in the server bootstrap.
+    #[serde(default = "default_web_search_provider")]
+    pub provider: String,
+    /// API key for the chosen provider. Lives in `secrets.{env}.yaml`,
+    /// never in committed files.
+    #[serde(default)]
+    pub api_key: String,
+    /// Max results to inject as `[Source N]` chunks per query.
+    #[serde(default = "default_web_search_limit")]
+    pub limit: usize,
+    /// Request timeout against the provider, in milliseconds.
+    #[serde(default = "default_web_search_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Regex(es) matched (OR'd) against the translated query. If any
+    /// matches, the web tier fires. Keeps us from burning queries on
+    /// every single call.
+    #[serde(default = "default_web_search_trigger_patterns")]
+    pub trigger_patterns: Vec<String>,
+    /// Also fire when internal retrieval returned fewer than this many
+    /// chunks — covers the "in-domain but retrieval missed" case.
+    #[serde(default = "default_web_search_fallback_min_chunks")]
+    pub fallback_min_chunks: usize,
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_web_search_enabled(),
+            provider: default_web_search_provider(),
+            api_key: String::new(),
+            limit: default_web_search_limit(),
+            timeout_ms: default_web_search_timeout_ms(),
+            trigger_patterns: default_web_search_trigger_patterns(),
+            fallback_min_chunks: default_web_search_fallback_min_chunks(),
+        }
+    }
+}
+
+fn default_web_search_enabled() -> bool {
+    false
+}
+fn default_web_search_provider() -> String {
+    "brave".to_string()
+}
+fn default_web_search_limit() -> usize {
+    5
+}
+fn default_web_search_timeout_ms() -> u64 {
+    4000
+}
+fn default_web_search_trigger_patterns() -> Vec<String> {
+    vec![
+        // Time-sensitive keywords
+        r"(?i)\b(today|tonight|now|current|currently|latest|recent|this (week|month|year)|yesterday|live|real[- ]?time|this morning|this afternoon|this evening)\b".to_string(),
+        // Topic keywords that are almost always real-time
+        r"(?i)\b(price|market|news|weather|score|schedule|forecast|trending|happening|update|stocks?|crypto(currency)?)\b".to_string(),
+    ]
+}
+fn default_web_search_fallback_min_chunks() -> usize {
+    2
+}
+
 /// Load configuration from the config hierarchy.
 ///
 /// Order (later overrides earlier):
@@ -618,6 +698,7 @@ contextualizer:
             },
             default_suggestions: DefaultSuggestionsConfig::default(),
             locale_memory: LocaleMemoryConfig::default(),
+            web_search: WebSearchConfig::default(),
         };
 
         let result = cfg.validate_secrets();
@@ -694,6 +775,7 @@ contextualizer:
             },
             default_suggestions: DefaultSuggestionsConfig::default(),
             locale_memory: LocaleMemoryConfig::default(),
+            web_search: WebSearchConfig::default(),
         };
 
         assert!(cfg.validate_secrets().is_ok());

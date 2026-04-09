@@ -40,8 +40,8 @@ trending:
   crowd_sourcing_min_count: 2
 
 chunking:
-  chunk_size: 800      # tokens (cl100k_base), ~10% of embedding context
-  chunk_overlap: 100   # tokens (~12.5% overlap)
+  chunk_size: 800 # tokens (cl100k_base), ~10% of embedding context
+  chunk_overlap: 100 # tokens (~12.5% overlap)
 
 search:
   semantic_weight: 0.8
@@ -72,6 +72,18 @@ default_suggestions:
   safety_regex: '(?i)(\bprice\b|should[\s\-]?i[\s\-]?(buy|sell|invest)|will[\s\w]+hit|\bprediction\b|\bforecast\b|\bpredicted\b|\bpurchase\b|\binvesting\b|\bbuying\b|where[\s\w]+buy)'
   default_weight: 10
   pool_cap: 50
+
+web_search:
+  enabled: false
+  provider: brave
+  limit: 5
+  timeout_ms: 4000
+  fallback_min_chunks: 2
+  # Fires when any pattern matches the translated query. Defaults cover
+  # real-time keywords + domain keywords that are almost always fresh.
+  trigger_patterns:
+    - "(?i)\\b(today|tonight|now|current|currently|latest|recent|this (week|month|year)|yesterday|live|real[- ]?time)\\b"
+    - "(?i)\\b(price|market|news|weather|score|forecast|trending|happening|update|stocks?|crypto(currency)?)\\b"
 
 locale_memory:
   enabled: true
