@@ -366,30 +366,53 @@ if (localeSwitcher) {
 }
 applyI18n();
 
-// Note: there is no localStorage device id anymore. The conversation
-// session id is captured from the first server response and held
-// in-memory only — page reload deliberately starts a fresh session.
+// Session id lives in sessionStorage — persists across refreshes in
+// the same tab, cleared automatically when the tab is closed. That
+// matches the "one conversation per browser tab" mental model.
+// Clean up stale localStorage keys from earlier versions that wrote
+// `kenjaku_device_id` / `sessionId` there — harmless but noisy in
+// DevTools otherwise.
+try {
+  localStorage.removeItem('kenjaku_device_id');
+  localStorage.removeItem('sessionId');
+} catch (_) { /* ignore — private mode throws */ }
 
 function localeQueryString() {
   return userLocale ? ('&locale=' + encodeURIComponent(userLocale)) : '';
 }
 
 // ====== Session / Feedback State ======
-// `sessionId` is null until the first server response captures one.
-// `lastRequestId` is null until the first response — feedback POSTs use it.
-// Both reset on page reload (intentionally — refresh = new conversation).
+// Session id is captured from the first server response and mirrored
+// into sessionStorage so it survives a page refresh in the same tab
+// and clears automatically when the tab closes (that's just how
+// sessionStorage works). Refreshing the page within the same tab
+// therefore CONTINUES the conversation; open a new tab or close and
+// reopen to get a fresh session.
+//
+// `lastRequestId` is transient per-request state — no need to persist.
 var feedbackState = {};                  // request_id -> 'like' | 'dislike' | null
 var lastRequestId = null;
 var lastQuery = null;
 var lastResponseText = null;
-var sessionId = null;
+var sessionId = (function () {
+  try { return sessionStorage.getItem('kenjaku_session_id') || null; }
+  catch (_) { return null; }
+})();
 var currentAbortController = null;
 
-// Wipe the in-memory conversation. Called by the back button — the next
-// search will be sent without `X-Session-Id`, the server will generate
-// a fresh UUID, and we capture it on the response.
+function setSessionId(id) {
+  sessionId = id || null;
+  try {
+    if (sessionId) sessionStorage.setItem('kenjaku_session_id', sessionId);
+    else sessionStorage.removeItem('kenjaku_session_id');
+  } catch (_) { /* private mode */ }
+}
+
+// Wipe the conversation. Called by the back button — the next search
+// will be sent without `X-Session-Id`, the server will generate a
+// fresh UUID, and we capture it on the response.
 function clearConversationState() {
-  sessionId = null;
+  setSessionId(null);
   lastRequestId = null;
   lastQuery = null;
   lastResponseText = null;
@@ -740,7 +763,7 @@ function renderResults(data) {
   // Capture both server-issued ids on every response. The streaming
   // path also captures them earlier in the SSE start handler — this is
   // the non-streaming path / re-confirmation.
-  if (data.session_id) sessionId = data.session_id;
+  if (data.session_id) setSessionId(data.session_id);
   lastRequestId = data.request_id || null;
   lastQuery = (data.metadata && data.metadata.original_query) || '';
   lastResponseText = extractAnswerText(data) || '';
@@ -968,9 +991,9 @@ async function handleStreamResponse(resp) {
     switch (event) {
       case 'start':
         startMeta = payload;
-        // Capture server-issued ids on the first contact of this page
-        // session and reuse them for subsequent requests.
-        if (payload.session_id) sessionId = payload.session_id;
+        // Capture server-issued ids on the first contact of this tab
+        // session and persist for subsequent requests + refreshes.
+        if (payload.session_id) setSessionId(payload.session_id);
         if (payload.request_id) lastRequestId = payload.request_id;
         break;
 
