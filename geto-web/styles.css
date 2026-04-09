@@ -1556,6 +1556,16 @@ body {
   background: rgba(255,138,0,0.15);
   color: var(--accent-orange);
 }
+.debug-info .tag-grounding-web {
+  background: rgba(111,162,101,0.18);
+  color: var(--accent-green);
+  border: 1px solid rgba(111,162,101,0.35);
+}
+.debug-info .tag-grounding-gemini {
+  background: rgba(180,168,240,0.15);
+  color: var(--accent-violet);
+  border: 1px solid rgba(180,168,240,0.35);
+}
 .debug-info .tag-tokens {
   background: rgba(255,138,0,0.08);
   color: #FFB44D;

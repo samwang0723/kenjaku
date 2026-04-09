@@ -5,18 +5,22 @@ use std::time::Instant;
 use futures::Stream;
 use tracing::{info, instrument, warn};
 
+use kenjaku_core::config::WebSearchConfig;
 use kenjaku_core::error::Result;
 use kenjaku_core::traits::intent::IntentClassifier;
 use kenjaku_core::traits::llm::LlmProvider;
 use kenjaku_core::traits::retriever::Retriever;
+use kenjaku_core::traits::web_search::WebSearchProvider;
 use kenjaku_core::types::component::SuggestionSource;
 use kenjaku_core::types::conversation::{ConversationTurn, CreateConversation};
 use kenjaku_core::types::intent::Intent;
 use kenjaku_core::types::locale::{DetectedLocale, Locale};
 use kenjaku_core::types::search::{
-    DetectedLocaleSource, LlmSource, SearchMetadata, SearchRequest, SearchResponse, StreamChunk,
-    StreamDoneMetadata, StreamStartMetadata, TranslationResult,
+    DetectedLocaleSource, GroundingInfo, LlmSource, RetrievalMethod, RetrievedChunk,
+    SearchMetadata, SearchRequest, SearchResponse, StreamChunk, StreamDoneMetadata,
+    StreamStartMetadata, TranslationResult,
 };
+use regex::Regex;
 
 use crate::component::ComponentService;
 use crate::conversation::ConversationService;
@@ -38,6 +42,9 @@ pub struct SearchService {
     title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
     locale_memory: Arc<LocaleMemory>,
     history_store: SessionHistoryStore,
+    web_search: Option<Arc<dyn WebSearchProvider>>,
+    web_search_config: WebSearchConfig,
+    web_search_triggers: Vec<Regex>,
     collection_name: String,
     suggestion_count: usize,
 }
@@ -55,9 +62,26 @@ impl SearchService {
         title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
         locale_memory: Arc<LocaleMemory>,
         history_store: SessionHistoryStore,
+        web_search: Option<Arc<dyn WebSearchProvider>>,
+        web_search_config: WebSearchConfig,
         collection_name: String,
         suggestion_count: usize,
     ) -> Self {
+        // Pre-compile trigger regexes once. Bad patterns are dropped with
+        // a warning so a single misconfigured entry doesn't disable the
+        // whole web tier.
+        let web_search_triggers = web_search_config
+            .trigger_patterns
+            .iter()
+            .filter_map(|p| match Regex::new(p) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    warn!(pattern = %p, error = %e, "dropping invalid web_search trigger pattern");
+                    None
+                }
+            })
+            .collect();
+
         Self {
             retriever,
             llm,
@@ -69,8 +93,66 @@ impl SearchService {
             title_resolver,
             locale_memory,
             history_store,
+            web_search,
+            web_search_config,
+            web_search_triggers,
             collection_name,
             suggestion_count,
+        }
+    }
+
+    /// Decide whether to hit the web tier for this query. Trigger when:
+    /// (a) web search is enabled and configured,
+    /// (b) the query matches any configured pattern, OR
+    /// (c) internal retrieval returned fewer than `fallback_min_chunks`.
+    fn should_web_search(&self, search_query: &str, internal_chunk_count: usize) -> bool {
+        if !self.web_search_config.enabled || self.web_search.is_none() {
+            return false;
+        }
+        if self
+            .web_search_triggers
+            .iter()
+            .any(|r| r.is_match(search_query))
+        {
+            return true;
+        }
+        internal_chunk_count < self.web_search_config.fallback_min_chunks
+    }
+
+    /// Fetch top-N web results and convert them into synthetic
+    /// `RetrievedChunk`s the LLM can cite via `[Source N]`. Always
+    /// fallible-safe: on error we log and return an empty vec so the
+    /// search hot path never blocks.
+    async fn fetch_web_chunks(&self, query: &str) -> Vec<RetrievedChunk> {
+        let Some(provider) = self.web_search.as_ref() else {
+            return Vec::new();
+        };
+        match provider.search(query, self.web_search_config.limit).await {
+            Ok(results) => {
+                info!(
+                    count = results.len(),
+                    query = %query,
+                    "web search returned results"
+                );
+                results
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, r)| RetrievedChunk {
+                        doc_id: format!("web-{i}"),
+                        chunk_id: format!("web-{i}"),
+                        title: r.title,
+                        original_content: r.snippet.clone(),
+                        contextualized_content: r.snippet,
+                        source_url: Some(r.url),
+                        score: 0.0,
+                        retrieval_method: RetrievalMethod::Web,
+                    })
+                    .collect()
+            }
+            Err(e) => {
+                warn!(error = %e, "web search failed; continuing with internal-only retrieval");
+                Vec::new()
+            }
         }
     }
 
@@ -141,10 +223,26 @@ impl SearchService {
 
         // Step 3: Retrieve with hybrid search (uses the English-normalized
         // query, regardless of detected locale).
-        let chunks = self
+        let mut chunks = self
             .retriever
             .retrieve(&search_query, &self.collection_name, req.top_k)
             .await?;
+
+        // Step 3b: Web tier. For time-sensitive queries or when internal
+        // retrieval is sparse, augment with live web results via the
+        // configured provider (Brave by default). Web chunks are
+        // appended so the model sees them as `[Source N]` entries
+        // alongside internal corpus chunks.
+        let mut grounding = GroundingInfo::default();
+        if self.should_web_search(&search_query, chunks.len()) {
+            let web_chunks = self.fetch_web_chunks(&search_query).await;
+            if !web_chunks.is_empty() {
+                grounding.web_search_used = true;
+                grounding.web_search_provider = Some(self.web_search_config.provider.clone());
+                grounding.web_search_count = web_chunks.len();
+            }
+            chunks.extend(web_chunks);
+        }
 
         // Session-scoped conversation history for follow-up context.
         // Keyed by device_session_id (X-Session-Id header) with fallback
@@ -201,6 +299,7 @@ impl SearchService {
                 intent,
                 retrieval_count: chunks.len(),
                 latency_ms,
+                grounding: grounding.clone(),
             },
         };
 
@@ -322,10 +421,22 @@ impl SearchService {
         }
 
         // Step 3: Retrieve
-        let chunks = self
+        let mut chunks = self
             .retriever
             .retrieve(&search_query, &self.collection_name, req.top_k)
             .await?;
+
+        // Step 3b: Web tier (streaming path).
+        let mut grounding = GroundingInfo::default();
+        if self.should_web_search(&search_query, chunks.len()) {
+            let web_chunks = self.fetch_web_chunks(&search_query).await;
+            if !web_chunks.is_empty() {
+                grounding.web_search_used = true;
+                grounding.web_search_provider = Some(self.web_search_config.provider.clone());
+                grounding.web_search_count = web_chunks.len();
+            }
+            chunks.extend(web_chunks);
+        }
 
         // Sources are known at this point (from retrieved chunks). Dedupe by
         // URL so multiple chunks from the same document produce a single
@@ -376,6 +487,7 @@ impl SearchService {
             intent,
             retrieval_count: chunks.len(),
             preamble_latency_ms,
+            grounding: grounding.clone(),
         };
 
         Ok(SearchStreamOutput {
@@ -385,6 +497,7 @@ impl SearchService {
                 sources,
                 llm_model: self.llm_model_name(),
                 start_instant: start,
+                grounding,
                 request_id: req.request_id.clone(),
                 session_id: req.session_id.clone(),
                 history_key: history_key.to_string(),
@@ -409,6 +522,7 @@ impl SearchService {
         accumulated_answer: &str,
         grounding_sources: Vec<LlmSource>,
     ) -> StreamDoneMetadata {
+        let grounding_sources_was_empty = grounding_sources.is_empty();
         let suggestions = match self.llm.suggest(&ctx.query, accumulated_answer).await {
             Ok(s) if s.len() >= self.suggestion_count => s[..self.suggestion_count].to_vec(),
             Ok(s) => s,
@@ -474,11 +588,20 @@ impl SearchService {
             );
         }
 
+        // Refresh grounding info: copy preamble flags AND add the
+        // gemini_grounding_used flag if any grounding metadata showed
+        // up on the LLM stream events.
+        let mut grounding = ctx.grounding;
+        if !grounding_sources_was_empty {
+            grounding.gemini_grounding_used = true;
+        }
+
         StreamDoneMetadata {
             latency_ms,
             sources: merged_sources,
             suggestions,
             llm_model: ctx.llm_model,
+            grounding,
         }
     }
 
@@ -549,6 +672,11 @@ pub struct StreamContext {
     pub sources: Vec<LlmSource>,
     pub llm_model: String,
     pub start_instant: Instant,
+    /// Web tier provenance captured during the preamble (before the
+    /// LLM stream opens). `complete_stream` may also flip
+    /// `gemini_grounding_used` if Gemini attached grounding metadata
+    /// to the stream.
+    pub grounding: GroundingInfo,
     pub request_id: String,
     pub session_id: String,
     /// Stable device/session key used for in-memory history and locale

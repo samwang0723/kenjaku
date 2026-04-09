@@ -15,6 +15,7 @@ use kenjaku_infra::qdrant::QdrantClient;
 use kenjaku_infra::redis::{LocaleMemoryRedis, RedisClient};
 use kenjaku_infra::telemetry::init_telemetry;
 use kenjaku_infra::title_resolver::TitleResolver;
+use kenjaku_infra::web_search::BraveSearchProvider;
 
 use kenjaku_service::autocomplete::AutocompleteService;
 use kenjaku_service::component::ComponentService;
@@ -129,6 +130,34 @@ async fn main() -> anyhow::Result<()> {
         kenjaku_service::history::SessionHistoryStore::new(config.search.history.clone());
     history_store.clone().spawn_janitor();
 
+    // Web search provider — replaces Gemini's non-functional built-in
+    // `google_search` tool. Constructed only when enabled + configured
+    // with an API key; otherwise SearchService falls back to internal-
+    // only retrieval as before.
+    let web_search_provider: Option<Arc<dyn kenjaku_core::traits::web_search::WebSearchProvider>> =
+        if config.web_search.enabled && !config.web_search.api_key.is_empty() {
+            match config.web_search.provider.as_str() {
+                "brave" => match BraveSearchProvider::new(config.web_search.clone()) {
+                    Ok(p) => Some(Arc::new(p)),
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to init Brave provider; web tier disabled");
+                        None
+                    }
+                },
+                other => {
+                    tracing::warn!(provider = %other, "unknown web_search.provider; web tier disabled");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+    info!(
+        enabled = config.web_search.enabled,
+        configured = web_search_provider.is_some(),
+        "Web search tier"
+    );
+
     let search_service = SearchService::new(
         retriever,
         llm_provider.clone(),
@@ -140,6 +169,8 @@ async fn main() -> anyhow::Result<()> {
         Some(title_resolver),
         locale_memory.clone(),
         history_store,
+        web_search_provider,
+        config.web_search.clone(),
         config.qdrant.collection_name.clone(),
         config.search.suggestion_count,
     );

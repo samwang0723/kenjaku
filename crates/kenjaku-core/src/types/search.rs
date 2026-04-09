@@ -73,6 +73,34 @@ pub struct SearchMetadata {
     pub intent: Intent,
     pub retrieval_count: usize,
     pub latency_ms: u64,
+    /// Web tier provenance — tells the client whether and how the
+    /// real-time web search backend (Brave / Serper / …) was hit on
+    /// this request, and how many results it contributed.
+    #[serde(default)]
+    pub grounding: GroundingInfo,
+}
+
+/// What grounding tier(s) supplied chunks/sources for this request.
+/// Skipped on the wire when both flags are false to keep the JSON tidy.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GroundingInfo {
+    /// True iff `SearchService` invoked its configured `WebSearchProvider`
+    /// (Brave / Serper / …) for this request and got back ≥1 result.
+    #[serde(default)]
+    pub web_search_used: bool,
+    /// Identifier of the web provider that supplied results, if any
+    /// (e.g. `"brave"`). `None` when `web_search_used == false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search_provider: Option<String>,
+    /// How many synthetic chunks the web tier added.
+    #[serde(default)]
+    pub web_search_count: usize,
+    /// True iff Gemini's built-in `google_search` tool fired and
+    /// attached `groundingMetadata` to its response. Currently rare in
+    /// practice (the preview model silently ignores the tool) but
+    /// reported when present so the client knows it happened.
+    #[serde(default)]
+    pub gemini_grounding_used: bool,
 }
 
 /// A chunk retrieved from the vector store.
@@ -94,6 +122,10 @@ pub enum RetrievalMethod {
     Vector,
     FullText,
     Hybrid,
+    /// Chunk originated from a live web search provider (Brave, Serper,
+    /// etc.) and was injected into the chunk list as a synthetic
+    /// `[Source N]` entry alongside internal corpus chunks.
+    Web,
 }
 
 /// Response from the LLM.
@@ -153,6 +185,10 @@ pub struct StreamStartMetadata {
     pub intent: super::intent::Intent,
     pub retrieval_count: usize,
     pub preamble_latency_ms: u64,
+    /// Web tier provenance — known by the time we emit `start` since
+    /// the web search runs in the preamble before the LLM stream opens.
+    #[serde(default)]
+    pub grounding: GroundingInfo,
 }
 
 /// Metadata sent at the END of a streaming search — total latency and
@@ -164,6 +200,11 @@ pub struct StreamDoneMetadata {
     pub sources: Vec<LlmSource>,
     pub suggestions: Vec<String>,
     pub llm_model: String,
+    /// Mirrors `start.grounding`, refreshed with anything we learned
+    /// during the stream (e.g. Gemini grounding metadata that arrived
+    /// in the final event).
+    #[serde(default)]
+    pub grounding: GroundingInfo,
 }
 
 /// Type of content in a stream chunk.

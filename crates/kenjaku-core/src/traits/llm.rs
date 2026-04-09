@@ -42,6 +42,18 @@ pub trait LlmProvider: Send + Sync {
         answer_locale: Locale,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>>;
 
+    /// Fast, stateless, tool-less completion — used for intent
+    /// classification and other single-shot utility calls where the
+    /// response is short, English, and doesn't need grounding. Skipping
+    /// the google_search tool drops latency by several seconds.
+    ///
+    /// Default impl calls `generate` with empty context/history and the
+    /// English locale — correct but slow. Real providers (Gemini) should
+    /// override to cap max_tokens and skip the grounding tool entirely.
+    async fn generate_brief(&self, prompt: &str) -> Result<LlmResponse> {
+        self.generate(prompt, &[], &[], Locale::En).await
+    }
+
     /// Normalize a query into canonical English AND detect its source
     /// locale in a single LLM call. Source language is auto-detected;
     /// the implementation MUST NOT take a target locale (always English).
