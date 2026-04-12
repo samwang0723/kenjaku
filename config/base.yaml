@@ -63,7 +63,7 @@ search:
 default_suggestions:
   enabled: true
   refresh:
-    schedule_cron: "0 3 * * *"
+    schedule_cron: "0 0 3 * * *"  # 6-field: sec min hour day month weekday
     sample_cap: 2000
     cluster_count: 20
     per_cluster: 5

@@ -430,7 +430,9 @@ fn default_pool_cap() -> usize {
     50
 }
 fn default_schedule_cron() -> String {
-    "0 3 * * *".to_string()
+    // 6-field cron (sec min hour day month weekday) — the `cron` crate
+    // requires the seconds field; 5-field POSIX format is rejected.
+    "0 0 3 * * *".to_string()
 }
 fn default_sample_cap() -> usize {
     2000
@@ -855,7 +857,7 @@ contextualizer:
         assert_eq!(cfg.default_weight, 10);
         assert_eq!(cfg.pool_cap, 50);
         assert!(cfg.safety_regex.starts_with("(?i)"));
-        assert_eq!(cfg.refresh.schedule_cron, "0 3 * * *");
+        assert_eq!(cfg.refresh.schedule_cron, "0 0 3 * * *");
         assert_eq!(cfg.refresh.sample_cap, 2000);
         assert_eq!(cfg.refresh.cluster_count, 20);
         assert_eq!(cfg.refresh.per_cluster, 5);
@@ -917,6 +919,6 @@ key_prefix: "loc:"
         let cfg: RefreshConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.sample_cap, 500);
         assert_eq!(cfg.cluster_count, 20); // default
-        assert_eq!(cfg.schedule_cron, "0 3 * * *"); // default
+        assert_eq!(cfg.schedule_cron, "0 0 3 * * *"); // default
     }
 }
