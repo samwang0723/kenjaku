@@ -7,11 +7,11 @@ use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument, warn};
 
+use fanout::ToolTunnel;
 use kenjaku_core::config::WebSearchConfig;
 use kenjaku_core::error::Result;
 use kenjaku_core::traits::brain::Brain;
 use kenjaku_core::traits::tool::Tool;
-use fanout::ToolTunnel;
 use kenjaku_core::types::component::SuggestionSource;
 use kenjaku_core::types::conversation::{ConversationTurn, CreateConversation};
 use kenjaku_core::types::intent::Intent;
@@ -535,8 +535,8 @@ mod tests {
     use std::pin::Pin;
 
     use async_trait::async_trait;
-    use futures::stream;
     use futures::Stream;
+    use futures::stream;
 
     use kenjaku_core::config::HistoryConfig;
     use kenjaku_core::error::Error;
@@ -544,10 +544,10 @@ mod tests {
     use kenjaku_core::types::intent::IntentClassification;
     use kenjaku_core::types::locale::{DetectedLocale, Locale};
     use kenjaku_core::types::search::{
-        DetectedLocaleSource, GroundingInfo, LlmResponse, RetrievedChunk, RetrievalMethod,
+        DetectedLocaleSource, GroundingInfo, LlmResponse, RetrievalMethod, RetrievedChunk,
         StreamChunk, StreamChunkType, TranslationResult,
     };
-    use kenjaku_core::types::tool::{ToolConfig, ToolId, ToolError, ToolOutput, ToolOutputMap};
+    use kenjaku_core::types::tool::{ToolConfig, ToolError, ToolId, ToolOutput, ToolOutputMap};
 
     // ---- MockBrain -----------------------------------------------------------
 
@@ -761,7 +761,10 @@ mod tests {
     fn make_orchestrator(
         brain: impl Brain + 'static,
         tools: Vec<Arc<dyn Tool>>,
-    ) -> (SearchOrchestrator, tokio::sync::mpsc::Receiver<CreateConversation>) {
+    ) -> (
+        SearchOrchestrator,
+        tokio::sync::mpsc::Receiver<CreateConversation>,
+    ) {
         let (conversation_service, conv_rx) = ConversationService::test_channel();
         let component_service = ComponentService::new(ComponentLayout::default());
         let history_store = SessionHistoryStore::new(history_config());
@@ -789,15 +792,13 @@ mod tests {
     #[tokio::test]
     async fn orchestrator_search_returns_response() {
         let brain = MockBrain::new();
-        let tool = Arc::new(
-            MockTool::new("doc_rag").with_output(ToolOutput::Chunks {
-                chunks: vec![
-                    make_chunk("1", "Title One", Some("https://example.com/1")),
-                    make_chunk("2", "Title Two", Some("https://example.com/2")),
-                ],
-                provider: "rag".into(),
-            }),
-        ) as Arc<dyn Tool>;
+        let tool = Arc::new(MockTool::new("doc_rag").with_output(ToolOutput::Chunks {
+            chunks: vec![
+                make_chunk("1", "Title One", Some("https://example.com/1")),
+                make_chunk("2", "Title Two", Some("https://example.com/2")),
+            ],
+            provider: "rag".into(),
+        })) as Arc<dyn Tool>;
 
         let (orch, _rx) = make_orchestrator(brain, vec![tool]);
         let req = make_request();
@@ -926,16 +927,14 @@ mod tests {
     async fn orchestrator_suggestion_fallback_to_titles() {
         // Brain returns fewer suggestions than needed -> fallback to chunk titles
         let brain = MockBrain::new().with_suggestions(vec!["only one".into()]);
-        let tool = Arc::new(
-            MockTool::new("doc_rag").with_output(ToolOutput::Chunks {
-                chunks: vec![
-                    make_chunk("1", "Chunk Title A", Some("https://a.com")),
-                    make_chunk("2", "Chunk Title B", Some("https://b.com")),
-                    make_chunk("3", "Chunk Title C", Some("https://c.com")),
-                ],
-                provider: "rag".into(),
-            }),
-        ) as Arc<dyn Tool>;
+        let tool = Arc::new(MockTool::new("doc_rag").with_output(ToolOutput::Chunks {
+            chunks: vec![
+                make_chunk("1", "Chunk Title A", Some("https://a.com")),
+                make_chunk("2", "Chunk Title B", Some("https://b.com")),
+                make_chunk("3", "Chunk Title C", Some("https://c.com")),
+            ],
+            provider: "rag".into(),
+        })) as Arc<dyn Tool>;
 
         let (orch, _rx) = make_orchestrator(brain, vec![tool]);
         let req = make_request();
@@ -961,12 +960,10 @@ mod tests {
         use futures::StreamExt;
 
         let brain = MockBrain::new();
-        let tool = Arc::new(
-            MockTool::new("doc_rag").with_output(ToolOutput::Chunks {
-                chunks: vec![make_chunk("1", "Title", Some("https://example.com"))],
-                provider: "rag".into(),
-            }),
-        ) as Arc<dyn Tool>;
+        let tool = Arc::new(MockTool::new("doc_rag").with_output(ToolOutput::Chunks {
+            chunks: vec![make_chunk("1", "Title", Some("https://example.com"))],
+            provider: "rag".into(),
+        })) as Arc<dyn Tool>;
 
         let (orch, _rx) = make_orchestrator(brain, vec![tool]);
         let req = SearchRequest {
@@ -1071,9 +1068,7 @@ mod tests {
             snippet: Some("snippet".into()),
         }];
 
-        let done = orch
-            .complete_stream(ctx, "answer", grounding_sources)
-            .await;
+        let done = orch.complete_stream(ctx, "answer", grounding_sources).await;
 
         // Only one source after dedup -- grounding wins because it's first
         assert_eq!(done.sources.len(), 1);
@@ -1126,9 +1121,7 @@ mod tests {
             intent: Intent::Navigational,
         };
 
-        let _done = orch
-            .complete_stream(ctx, "streamed answer", vec![])
-            .await;
+        let _done = orch.complete_stream(ctx, "streamed answer", vec![]).await;
 
         let record = rx.try_recv().unwrap();
         assert_eq!(record.query, "streamed query");

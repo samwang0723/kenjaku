@@ -66,9 +66,7 @@ impl ToolTunnel {
         let mut current_in_degree = in_degree;
 
         loop {
-            let tier_indices: Vec<usize> = (0..n)
-                .filter(|&i| current_in_degree[i] == 0)
-                .collect();
+            let tier_indices: Vec<usize> = (0..n).filter(|&i| current_in_degree[i] == 0).collect();
 
             if tier_indices.is_empty() {
                 break;
@@ -139,8 +137,8 @@ impl ToolTunnel {
                 continue;
             }
 
-            let results: Vec<(ToolId, ToolOutput)> = futures::future::join_all(firing.iter().map(
-                |t| {
+            let results: Vec<(ToolId, ToolOutput)> =
+                futures::future::join_all(firing.iter().map(|t| {
                     let t = Arc::clone(t);
                     let req = req.clone();
                     let prior = accumulated.clone();
@@ -174,9 +172,8 @@ impl ToolTunnel {
                         };
                         (id, output)
                     }
-                },
-            ))
-            .await;
+                }))
+                .await;
 
             for (id, output) in results {
                 accumulated.insert(id, output);
@@ -332,10 +329,7 @@ mod tests {
             _cancel: &CancellationToken,
         ) -> Result<ToolOutput, ToolError> {
             let seq = self.counter.fetch_add(1, Ordering::SeqCst);
-            self.order
-                .lock()
-                .unwrap()
-                .push((self.tool_id.clone(), seq));
+            self.order.lock().unwrap().push((self.tool_id.clone(), seq));
             Ok(ToolOutput::Empty)
         }
     }
@@ -444,7 +438,10 @@ mod tests {
         // "a" must have a lower sequence number than "b"
         let a_seq = log.iter().find(|(id, _)| id == "a").unwrap().1;
         let b_seq = log.iter().find(|(id, _)| id == "b").unwrap().1;
-        assert!(a_seq < b_seq, "Tier 0 tool 'a' must execute before Tier 1 tool 'b'");
+        assert!(
+            a_seq < b_seq,
+            "Tier 0 tool 'a' must execute before Tier 1 tool 'b'"
+        );
     }
 
     #[tokio::test]

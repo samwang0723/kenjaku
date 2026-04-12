@@ -8,7 +8,9 @@ use tracing::warn;
 use kenjaku_core::traits::tool::Tool;
 use kenjaku_core::traits::web_search::WebSearchProvider;
 use kenjaku_core::types::search::LlmSource;
-use kenjaku_core::types::tool::{ToolConfig, ToolError, ToolId, ToolOutput, ToolOutputMap, ToolRequest};
+use kenjaku_core::types::tool::{
+    ToolConfig, ToolError, ToolId, ToolOutput, ToolOutputMap, ToolRequest,
+};
 
 /// Wraps an optional `WebSearchProvider` (Brave, Serper, etc.) as a
 /// `Tool`. Mirrors the existing `should_web_search` + `fetch_web_chunks`
@@ -314,7 +316,10 @@ mod tests {
         );
         let req = make_request("market today");
         let cancel = CancellationToken::new();
-        let result = tool.invoke(&req, &ToolOutputMap::new(), &cancel).await.unwrap();
+        let result = tool
+            .invoke(&req, &ToolOutputMap::new(), &cancel)
+            .await
+            .unwrap();
         match result {
             ToolOutput::WebHits { hits, provider } => {
                 assert_eq!(hits.len(), 1);

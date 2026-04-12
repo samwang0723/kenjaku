@@ -5,7 +5,9 @@ use tokio_util::sync::CancellationToken;
 
 use kenjaku_core::traits::retriever::Retriever;
 use kenjaku_core::traits::tool::Tool;
-use kenjaku_core::types::tool::{ToolConfig, ToolError, ToolId, ToolOutput, ToolOutputMap, ToolRequest};
+use kenjaku_core::types::tool::{
+    ToolConfig, ToolError, ToolId, ToolOutput, ToolOutputMap, ToolRequest,
+};
 
 /// Wraps the existing `HybridRetriever` (or any `dyn Retriever`) as a
 /// `Tool`. Phase 1: shadow implementation exercised only by tests.
