@@ -35,10 +35,12 @@ use crate::trending::TrendingService;
 pub(crate) struct SearchOrchestrator {
     brain: Arc<dyn Brain>,
     component_service: ComponentService,
-    trending_service: TrendingService,
+    /// `None` only in unit tests where Redis is unavailable.
+    trending_service: Option<TrendingService>,
     conversation_service: ConversationService,
     title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
-    locale_memory: Arc<LocaleMemory>,
+    /// `None` only in unit tests where Redis is unavailable.
+    locale_memory: Option<Arc<LocaleMemory>>,
     history_store: SessionHistoryStore,
     /// DAG-based tool executor. Tools declare dependencies; the tunnel
     /// resolves execution tiers at construction time via topological sort.
@@ -73,10 +75,10 @@ impl SearchOrchestrator {
         Self {
             brain,
             component_service,
-            trending_service,
+            trending_service: Some(trending_service),
             conversation_service,
             title_resolver,
-            locale_memory,
+            locale_memory: Some(locale_memory),
             history_store,
             tunnel,
             collection_name,
@@ -138,8 +140,7 @@ impl SearchOrchestrator {
         // Fire-and-forget: record the detected locale into LocaleMemory so
         // subsequent same-session reads (autocomplete, top-searches) can
         // honor it without requiring a client hint.
-        {
-            let lm = self.locale_memory.clone();
+        if let Some(lm) = self.locale_memory.clone() {
             let sid = device_session_id
                 .map(str::to_owned)
                 .unwrap_or_else(|| req.session_id.clone());
@@ -214,10 +215,11 @@ impl SearchOrchestrator {
 
         // Step 7: Record trending (fire-and-forget) under the DETECTED
         // locale, not a client hint.
-        let _ = self
-            .trending_service
-            .record_query(detected_locale, &req.query, &search_query)
-            .await;
+        if let Some(ref ts) = self.trending_service {
+            let _ = ts
+                .record_query(detected_locale, &req.query, &search_query)
+                .await;
+        }
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
@@ -327,8 +329,7 @@ impl SearchOrchestrator {
         );
 
         // Fire-and-forget: record detected locale for the session.
-        {
-            let lm = self.locale_memory.clone();
+        if let Some(lm) = self.locale_memory.clone() {
             let sid = device_session_id
                 .map(str::to_owned)
                 .unwrap_or_else(|| req.session_id.clone());
@@ -394,10 +395,11 @@ impl SearchOrchestrator {
             .await?;
 
         // Step 5: Record trending (fire-and-forget).
-        let _ = self
-            .trending_service
-            .record_query(detected_locale, &req.query, &search_query)
-            .await;
+        if let Some(ref ts) = self.trending_service {
+            let _ = ts
+                .record_query(detected_locale, &req.query, &search_query)
+                .await;
+        }
 
         let preamble_latency_ms = start.elapsed().as_millis() as u64;
 
@@ -524,5 +526,689 @@ impl SearchOrchestrator {
 
     fn llm_model_name(&self) -> String {
         "gemini".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::pin::Pin;
+
+    use async_trait::async_trait;
+    use futures::stream;
+    use futures::Stream;
+
+    use kenjaku_core::config::HistoryConfig;
+    use kenjaku_core::error::Error;
+    use kenjaku_core::types::component::{Component, ComponentLayout};
+    use kenjaku_core::types::intent::IntentClassification;
+    use kenjaku_core::types::locale::{DetectedLocale, Locale};
+    use kenjaku_core::types::search::{
+        DetectedLocaleSource, GroundingInfo, LlmResponse, RetrievedChunk, RetrievalMethod,
+        StreamChunk, StreamChunkType, TranslationResult,
+    };
+    use kenjaku_core::types::tool::{ToolConfig, ToolId, ToolError, ToolOutput, ToolOutputMap};
+
+    // ---- MockBrain -----------------------------------------------------------
+
+    /// Configurable mock Brain for orchestrator tests.
+    struct MockBrain {
+        intent: Intent,
+        intent_fail: bool,
+        translate_fail: bool,
+        translate_locale: Locale,
+        answer: String,
+        suggestions: Vec<String>,
+    }
+
+    impl MockBrain {
+        fn new() -> Self {
+            Self {
+                intent: Intent::Factual,
+                intent_fail: false,
+                translate_fail: false,
+                translate_locale: Locale::En,
+                answer: "Mock answer".to_string(),
+                suggestions: vec![
+                    "Suggestion 1".into(),
+                    "Suggestion 2".into(),
+                    "Suggestion 3".into(),
+                ],
+            }
+        }
+
+        fn with_intent_fail(mut self) -> Self {
+            self.intent_fail = true;
+            self
+        }
+
+        fn with_translate_fail(mut self) -> Self {
+            self.translate_fail = true;
+            self
+        }
+
+        fn with_translate_locale(mut self, locale: Locale) -> Self {
+            self.translate_locale = locale;
+            self
+        }
+
+        fn with_suggestions(mut self, suggestions: Vec<String>) -> Self {
+            self.suggestions = suggestions;
+            self
+        }
+    }
+
+    #[async_trait]
+    impl Brain for MockBrain {
+        async fn classify_intent(
+            &self,
+            _query: &str,
+            _cancel: &CancellationToken,
+        ) -> Result<IntentClassification> {
+            if self.intent_fail {
+                return Err(Error::Llm("intent classification failed".into()));
+            }
+            Ok(IntentClassification {
+                intent: self.intent,
+                confidence: 0.95,
+            })
+        }
+
+        async fn translate(
+            &self,
+            query: &str,
+            _cancel: &CancellationToken,
+        ) -> Result<TranslationResult> {
+            if self.translate_fail {
+                return Err(Error::Llm("translation failed".into()));
+            }
+            Ok(TranslationResult {
+                normalized: query.to_string(),
+                detected_locale: DetectedLocale::Supported(self.translate_locale),
+            })
+        }
+
+        async fn generate(
+            &self,
+            _messages: &[kenjaku_core::types::message::Message],
+            _chunks: &[RetrievedChunk],
+            _locale: Locale,
+            _cancel: &CancellationToken,
+        ) -> Result<LlmResponse> {
+            Ok(LlmResponse {
+                answer: self.answer.clone(),
+                sources: vec![],
+                model: "mock-model".to_string(),
+                usage: None,
+            })
+        }
+
+        async fn generate_stream(
+            &self,
+            _messages: &[kenjaku_core::types::message::Message],
+            _chunks: &[RetrievedChunk],
+            _locale: Locale,
+            _cancel: &CancellationToken,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>> {
+            let chunk = StreamChunk {
+                delta: self.answer.clone(),
+                chunk_type: StreamChunkType::Answer,
+                finished: true,
+                grounding: None,
+            };
+            Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
+        }
+
+        async fn suggest(
+            &self,
+            _query: &str,
+            _answer: &str,
+            _cancel: &CancellationToken,
+        ) -> Result<Vec<String>> {
+            Ok(self.suggestions.clone())
+        }
+    }
+
+    // ---- MockTool (adapted from fanout tests) --------------------------------
+
+    static TOOL_CONFIG: ToolConfig = ToolConfig {
+        enabled: true,
+        rollout_pct: None,
+    };
+
+    struct MockTool {
+        tool_id: String,
+        output: ToolOutput,
+        fire: bool,
+    }
+
+    impl MockTool {
+        fn new(id: &str) -> Self {
+            Self {
+                tool_id: id.into(),
+                output: ToolOutput::Empty,
+                fire: true,
+            }
+        }
+
+        fn with_output(mut self, output: ToolOutput) -> Self {
+            self.output = output;
+            self
+        }
+
+        fn with_fire(mut self, fire: bool) -> Self {
+            self.fire = fire;
+            self
+        }
+    }
+
+    #[async_trait]
+    impl kenjaku_core::traits::tool::Tool for MockTool {
+        fn id(&self) -> ToolId {
+            ToolId(self.tool_id.clone())
+        }
+        fn config(&self) -> &ToolConfig {
+            &TOOL_CONFIG
+        }
+        fn should_fire(&self, _req: &ToolRequest, _prior: &ToolOutputMap) -> bool {
+            self.fire
+        }
+        async fn invoke(
+            &self,
+            _req: &ToolRequest,
+            _prior: &ToolOutputMap,
+            _cancel: &CancellationToken,
+        ) -> std::result::Result<ToolOutput, ToolError> {
+            Ok(self.output.clone())
+        }
+    }
+
+    // ---- Helpers -------------------------------------------------------------
+
+    fn make_request() -> SearchRequest {
+        SearchRequest {
+            query: "test query".into(),
+            session_id: "sess-1".into(),
+            request_id: "req-1".into(),
+            streaming: false,
+            top_k: 10,
+        }
+    }
+
+    fn make_chunk(id: &str, title: &str, url: Option<&str>) -> RetrievedChunk {
+        RetrievedChunk {
+            doc_id: format!("doc-{id}"),
+            chunk_id: format!("chunk-{id}"),
+            title: title.to_string(),
+            original_content: format!("Content of {id}"),
+            contextualized_content: format!("Context of {id}"),
+            source_url: url.map(String::from),
+            score: 0.9,
+            retrieval_method: RetrievalMethod::Vector,
+        }
+    }
+
+    fn history_config() -> HistoryConfig {
+        HistoryConfig {
+            enabled: true,
+            max_turns_per_session: 10,
+            inject_max_turns: 3,
+            session_idle_ttl_seconds: 3600,
+        }
+    }
+
+    /// Build a test orchestrator with the given Brain and tools, no infra deps.
+    fn make_orchestrator(
+        brain: impl Brain + 'static,
+        tools: Vec<Arc<dyn Tool>>,
+    ) -> (SearchOrchestrator, tokio::sync::mpsc::Receiver<CreateConversation>) {
+        let (conversation_service, conv_rx) = ConversationService::test_channel();
+        let component_service = ComponentService::new(ComponentLayout::default());
+        let history_store = SessionHistoryStore::new(history_config());
+        let tunnel = ToolTunnel::new(tools);
+
+        let orchestrator = SearchOrchestrator {
+            brain: Arc::new(brain),
+            component_service,
+            trending_service: None,
+            conversation_service,
+            title_resolver: None,
+            locale_memory: None,
+            history_store,
+            tunnel,
+            collection_name: "test-collection".into(),
+            suggestion_count: 3,
+            tool_budget_ms: 5000,
+            has_web_grounding: false,
+        };
+        (orchestrator, conv_rx)
+    }
+
+    // ---- Tests ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn orchestrator_search_returns_response() {
+        let brain = MockBrain::new();
+        let tool = Arc::new(
+            MockTool::new("doc_rag").with_output(ToolOutput::Chunks {
+                chunks: vec![
+                    make_chunk("1", "Title One", Some("https://example.com/1")),
+                    make_chunk("2", "Title Two", Some("https://example.com/2")),
+                ],
+                provider: "rag".into(),
+            }),
+        ) as Arc<dyn Tool>;
+
+        let (orch, _rx) = make_orchestrator(brain, vec![tool]);
+        let req = make_request();
+        let response = orch.search(&req, None).await.unwrap();
+
+        assert_eq!(response.request_id, "req-1");
+        assert_eq!(response.session_id, "sess-1");
+
+        // Should have LlmAnswer, Sources, and Suggestions components
+        assert_eq!(response.components.len(), 3);
+        let answer = response.components.iter().find_map(|c| {
+            if let Component::LlmAnswer(a) = c {
+                Some(a.answer.clone())
+            } else {
+                None
+            }
+        });
+        assert_eq!(answer, Some("Mock answer".into()));
+
+        // Metadata checks
+        assert_eq!(response.metadata.locale, Locale::En);
+        assert_eq!(response.metadata.intent, Intent::Factual);
+        assert_eq!(response.metadata.retrieval_count, 2);
+        assert_eq!(
+            response.metadata.detected_locale_source,
+            DetectedLocaleSource::LlmDetected
+        );
+    }
+
+    #[tokio::test]
+    async fn orchestrator_search_with_empty_tools() {
+        let brain = MockBrain::new();
+        // Tool exists but won't fire
+        let tool = Arc::new(MockTool::new("doc_rag").with_fire(false)) as Arc<dyn Tool>;
+
+        let (orch, _rx) = make_orchestrator(brain, vec![tool]);
+        let req = make_request();
+        let response = orch.search(&req, None).await.unwrap();
+
+        // Still returns a valid response, just no retrieval context
+        assert_eq!(response.metadata.retrieval_count, 0);
+        let answer = response.components.iter().find_map(|c| {
+            if let Component::LlmAnswer(a) = c {
+                Some(a.answer.clone())
+            } else {
+                None
+            }
+        });
+        assert_eq!(answer, Some("Mock answer".into()));
+    }
+
+    #[tokio::test]
+    async fn orchestrator_search_passes_locale_from_brain() {
+        let brain = MockBrain::new().with_translate_locale(Locale::Ja);
+        let (orch, _rx) = make_orchestrator(brain, vec![]);
+        let req = make_request();
+        let response = orch.search(&req, None).await.unwrap();
+
+        assert_eq!(response.metadata.locale, Locale::Ja);
+        assert_eq!(
+            response.metadata.detected_locale_source,
+            DetectedLocaleSource::LlmDetected
+        );
+    }
+
+    #[tokio::test]
+    async fn orchestrator_handles_brain_classify_error() {
+        let brain = MockBrain::new().with_intent_fail();
+        let (orch, _rx) = make_orchestrator(brain, vec![]);
+        let req = make_request();
+        let response = orch.search(&req, None).await.unwrap();
+
+        // Falls back to Unknown
+        assert_eq!(response.metadata.intent, Intent::Unknown);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_handles_brain_translate_error() {
+        let brain = MockBrain::new().with_translate_fail();
+        let (orch, _rx) = make_orchestrator(brain, vec![]);
+        let req = make_request();
+        let response = orch.search(&req, None).await.unwrap();
+
+        // Falls back to Locale::En with FallbackEn source
+        assert_eq!(response.metadata.locale, Locale::En);
+        assert_eq!(
+            response.metadata.detected_locale_source,
+            DetectedLocaleSource::FallbackEn
+        );
+        // Original query used as-is (no translation)
+        assert!(response.metadata.translated_query.is_none());
+    }
+
+    #[tokio::test]
+    async fn orchestrator_records_conversation() {
+        let brain = MockBrain::new();
+        let (orch, mut rx) = make_orchestrator(brain, vec![]);
+        let req = make_request();
+        let _response = orch.search(&req, None).await.unwrap();
+
+        // The conversation should be queued
+        let record = rx.try_recv().unwrap();
+        assert_eq!(record.query, "test query");
+        assert_eq!(record.response_text, "Mock answer");
+        assert_eq!(record.session_id, "sess-1");
+        assert_eq!(record.request_id, "req-1");
+        assert_eq!(record.locale, Locale::En);
+        assert_eq!(record.intent, Intent::Factual);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_appends_to_session_history() {
+        let brain = MockBrain::new();
+        let (orch, _rx) = make_orchestrator(brain, vec![]);
+        let req = make_request();
+        let _response = orch.search(&req, None).await.unwrap();
+
+        // History should now have one turn
+        let history = orch.history_store.snapshot_for_llm("sess-1");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].user, "test query");
+        assert_eq!(history[0].assistant, "Mock answer");
+    }
+
+    #[tokio::test]
+    async fn orchestrator_suggestion_fallback_to_titles() {
+        // Brain returns fewer suggestions than needed -> fallback to chunk titles
+        let brain = MockBrain::new().with_suggestions(vec!["only one".into()]);
+        let tool = Arc::new(
+            MockTool::new("doc_rag").with_output(ToolOutput::Chunks {
+                chunks: vec![
+                    make_chunk("1", "Chunk Title A", Some("https://a.com")),
+                    make_chunk("2", "Chunk Title B", Some("https://b.com")),
+                    make_chunk("3", "Chunk Title C", Some("https://c.com")),
+                ],
+                provider: "rag".into(),
+            }),
+        ) as Arc<dyn Tool>;
+
+        let (orch, _rx) = make_orchestrator(brain, vec![tool]);
+        let req = make_request();
+        let response = orch.search(&req, None).await.unwrap();
+
+        // Should fall back to chunk titles since suggest returned < suggestion_count
+        let suggestions = response.components.iter().find_map(|c| {
+            if let Component::Suggestions(s) = c {
+                Some(s.suggestions.clone())
+            } else {
+                None
+            }
+        });
+        let suggestions = suggestions.unwrap();
+        assert_eq!(suggestions.len(), 3);
+        assert_eq!(suggestions[0], "Chunk Title A");
+        assert_eq!(suggestions[1], "Chunk Title B");
+        assert_eq!(suggestions[2], "Chunk Title C");
+    }
+
+    #[tokio::test]
+    async fn orchestrator_search_stream_emits_start_and_chunks() {
+        use futures::StreamExt;
+
+        let brain = MockBrain::new();
+        let tool = Arc::new(
+            MockTool::new("doc_rag").with_output(ToolOutput::Chunks {
+                chunks: vec![make_chunk("1", "Title", Some("https://example.com"))],
+                provider: "rag".into(),
+            }),
+        ) as Arc<dyn Tool>;
+
+        let (orch, _rx) = make_orchestrator(brain, vec![tool]);
+        let req = SearchRequest {
+            query: "stream test".into(),
+            session_id: "sess-stream".into(),
+            request_id: "req-stream".into(),
+            streaming: true,
+            top_k: 5,
+        };
+
+        let output = orch.search_stream(&req, None).await.unwrap();
+
+        // Verify start_metadata
+        assert_eq!(output.start_metadata.request_id, "req-stream");
+        assert_eq!(output.start_metadata.session_id, "sess-stream");
+        assert_eq!(output.start_metadata.locale, Locale::En);
+        assert_eq!(output.start_metadata.intent, Intent::Factual);
+        assert_eq!(output.start_metadata.retrieval_count, 1);
+
+        // Drain stream and verify chunks
+        let chunks: Vec<_> = output.stream.collect::<Vec<_>>().await;
+        assert_eq!(chunks.len(), 1);
+        let chunk = chunks[0].as_ref().unwrap();
+        assert_eq!(chunk.delta, "Mock answer");
+        assert!(chunk.finished);
+
+        // Verify context
+        assert_eq!(output.context.request_id, "req-stream");
+        assert_eq!(output.context.locale, Locale::En);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_complete_stream_merges_sources() {
+        let brain = MockBrain::new();
+        let (orch, _rx) = make_orchestrator(brain, vec![]);
+
+        let ctx = StreamContext {
+            sources: vec![LlmSource {
+                title: "Internal Source".into(),
+                url: "https://internal.com".into(),
+                snippet: None,
+            }],
+            llm_model: "gemini".into(),
+            start_instant: Instant::now(),
+            grounding: GroundingInfo::default(),
+            request_id: "req-cs".into(),
+            session_id: "sess-cs".into(),
+            history_key: "sess-cs".into(),
+            query: "test".into(),
+            locale: Locale::En,
+            intent: Intent::Factual,
+        };
+
+        let grounding_sources = vec![LlmSource {
+            title: "Grounding Source".into(),
+            url: "https://grounding.com".into(),
+            snippet: Some("snippet".into()),
+        }];
+
+        let done = orch
+            .complete_stream(ctx, "accumulated answer", grounding_sources)
+            .await;
+
+        // Grounding sources come first, then internal sources
+        assert_eq!(done.sources.len(), 2);
+        assert_eq!(done.sources[0].title, "Grounding Source");
+        assert_eq!(done.sources[1].title, "Internal Source");
+
+        // Gemini grounding flag should be set
+        assert!(done.grounding.gemini_grounding_used);
+
+        // Suggestions from the brain
+        assert_eq!(done.suggestions.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_complete_stream_dedupes_sources_by_url() {
+        let brain = MockBrain::new();
+        let (orch, _rx) = make_orchestrator(brain, vec![]);
+
+        let ctx = StreamContext {
+            sources: vec![LlmSource {
+                title: "Internal Title".into(),
+                url: "https://same-url.com".into(),
+                snippet: None,
+            }],
+            llm_model: "gemini".into(),
+            start_instant: Instant::now(),
+            grounding: GroundingInfo::default(),
+            request_id: "req-dd".into(),
+            session_id: "sess-dd".into(),
+            history_key: "sess-dd".into(),
+            query: "test".into(),
+            locale: Locale::En,
+            intent: Intent::Factual,
+        };
+
+        // Same URL as internal source -- grounding should win
+        let grounding_sources = vec![LlmSource {
+            title: "Grounding Title".into(),
+            url: "https://same-url.com".into(),
+            snippet: Some("snippet".into()),
+        }];
+
+        let done = orch
+            .complete_stream(ctx, "answer", grounding_sources)
+            .await;
+
+        // Only one source after dedup -- grounding wins because it's first
+        assert_eq!(done.sources.len(), 1);
+        assert_eq!(done.sources[0].title, "Grounding Title");
+    }
+
+    #[tokio::test]
+    async fn orchestrator_complete_stream_no_grounding() {
+        let brain = MockBrain::new();
+        let (orch, _rx) = make_orchestrator(brain, vec![]);
+
+        let ctx = StreamContext {
+            sources: vec![LlmSource {
+                title: "Internal".into(),
+                url: "https://internal.com".into(),
+                snippet: None,
+            }],
+            llm_model: "gemini".into(),
+            start_instant: Instant::now(),
+            grounding: GroundingInfo::default(),
+            request_id: "req-ng".into(),
+            session_id: "sess-ng".into(),
+            history_key: "sess-ng".into(),
+            query: "test".into(),
+            locale: Locale::En,
+            intent: Intent::Factual,
+        };
+
+        let done = orch.complete_stream(ctx, "answer", vec![]).await;
+
+        assert_eq!(done.sources.len(), 1);
+        assert!(!done.grounding.gemini_grounding_used);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_complete_stream_records_conversation() {
+        let brain = MockBrain::new();
+        let (orch, mut rx) = make_orchestrator(brain, vec![]);
+
+        let ctx = StreamContext {
+            sources: vec![],
+            llm_model: "gemini".into(),
+            start_instant: Instant::now(),
+            grounding: GroundingInfo::default(),
+            request_id: "req-cr".into(),
+            session_id: "sess-cr".into(),
+            history_key: "sess-cr".into(),
+            query: "streamed query".into(),
+            locale: Locale::Ja,
+            intent: Intent::Navigational,
+        };
+
+        let _done = orch
+            .complete_stream(ctx, "streamed answer", vec![])
+            .await;
+
+        let record = rx.try_recv().unwrap();
+        assert_eq!(record.query, "streamed query");
+        assert_eq!(record.response_text, "streamed answer");
+        assert_eq!(record.locale, Locale::Ja);
+        assert_eq!(record.intent, Intent::Navigational);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_complete_stream_appends_history() {
+        let brain = MockBrain::new();
+        let (orch, _rx) = make_orchestrator(brain, vec![]);
+
+        let ctx = StreamContext {
+            sources: vec![],
+            llm_model: "gemini".into(),
+            start_instant: Instant::now(),
+            grounding: GroundingInfo::default(),
+            request_id: "req-h".into(),
+            session_id: "sess-h".into(),
+            history_key: "history-key".into(),
+            query: "history query".into(),
+            locale: Locale::En,
+            intent: Intent::Factual,
+        };
+
+        let _done = orch.complete_stream(ctx, "history answer", vec![]).await;
+
+        let history = orch.history_store.snapshot_for_llm("history-key");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].user, "history query");
+        assert_eq!(history[0].assistant, "history answer");
+    }
+
+    #[tokio::test]
+    async fn orchestrator_empty_answer_skips_history() {
+        let brain = MockBrain::new();
+        let (orch, _rx) = make_orchestrator(brain, vec![]);
+
+        let ctx = StreamContext {
+            sources: vec![],
+            llm_model: "gemini".into(),
+            start_instant: Instant::now(),
+            grounding: GroundingInfo::default(),
+            request_id: "req-e".into(),
+            session_id: "sess-e".into(),
+            history_key: "empty-key".into(),
+            query: "q".into(),
+            locale: Locale::En,
+            intent: Intent::Factual,
+        };
+
+        let _done = orch.complete_stream(ctx, "", vec![]).await;
+
+        let history = orch.history_store.snapshot_for_llm("empty-key");
+        assert!(history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn orchestrator_device_session_id_used_for_history() {
+        let brain = MockBrain::new();
+        let (orch, _rx) = make_orchestrator(brain, vec![]);
+        let req = make_request();
+
+        // Pass a device session id different from the body session_id
+        let _response = orch.search(&req, Some("device-123")).await.unwrap();
+
+        // History should be keyed by device session id
+        let device_history = orch.history_store.snapshot_for_llm("device-123");
+        assert_eq!(device_history.len(), 1);
+
+        // Body session_id should have no history
+        let body_history = orch.history_store.snapshot_for_llm("sess-1");
+        assert!(body_history.is_empty());
+    }
+
+    #[test]
+    fn llm_model_name_returns_gemini() {
+        let brain = MockBrain::new();
+        let (orch, _rx) = make_orchestrator(brain, vec![]);
+        assert_eq!(orch.llm_model_name(), "gemini");
     }
 }

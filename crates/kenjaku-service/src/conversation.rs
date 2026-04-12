@@ -34,6 +34,15 @@ impl ConversationService {
             error!(error = %e, "Failed to queue conversation record (channel full or closed)");
         }
     }
+
+    /// Test-only constructor: returns a service backed by a plain mpsc
+    /// channel (no flush worker, no PgPool). The receiver is returned so
+    /// tests can inspect queued records.
+    #[cfg(test)]
+    pub(crate) fn test_channel() -> (Self, mpsc::Receiver<CreateConversation>) {
+        let (tx, rx) = mpsc::channel(64);
+        (Self { tx }, rx)
+    }
 }
 
 /// Background worker that drains the conversation channel and batch-writes to PostgreSQL.
