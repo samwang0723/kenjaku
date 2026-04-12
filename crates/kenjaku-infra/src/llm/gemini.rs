@@ -9,11 +9,10 @@ use tracing::{info, instrument};
 use kenjaku_core::config::LlmConfig;
 use kenjaku_core::error::{Error, Result};
 use kenjaku_core::traits::llm::LlmProvider;
-use kenjaku_core::types::conversation::ConversationTurn;
 use kenjaku_core::types::locale::{DetectedLocale, Locale};
+use kenjaku_core::types::message::{ContentPart, Message, Role};
 use kenjaku_core::types::search::{
-    LlmResponse, LlmSource, LlmUsage, RetrievedChunk, StreamChunk, StreamChunkType,
-    TranslationResult,
+    LlmResponse, LlmSource, LlmUsage, StreamChunk, StreamChunkType, TranslationResult,
 };
 use kenjaku_core::types::suggestion::ClusterQuestions;
 use std::collections::HashMap;
@@ -49,164 +48,96 @@ impl GeminiProvider {
         }
     }
 
-    /// Build the context string from retrieved chunks.
-    fn build_context(chunks: &[RetrievedChunk]) -> String {
-        chunks
-            .iter()
-            .enumerate()
-            .map(|(i, chunk)| {
-                format!(
-                    "[Source {}] {}\n{}\n",
-                    i + 1,
-                    chunk.title,
-                    chunk.original_content,
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n---\n")
+    /// Returns the ALL-CAPS service tier for the `serviceTier` request field.
+    fn service_tier_value(&self) -> Option<String> {
+        Some(self.config.service_tier.as_api_value().to_string())
     }
 
-    /// Build the user-turn prompt. Includes an explicit language
-    /// reminder because in-context multi-turn priors in another language
-    /// can override the systemInstruction — we want the model to see the
-    /// target language inside the current user turn as well.
+    /// Estimate cost in USD for a given token usage, factoring in model
+    /// base pricing and the configured service tier multiplier.
     ///
-    /// When retrieval returned no chunks, the `Internal context:` block is
-    /// omitted entirely rather than emitted empty — an empty block is a
-    /// negative cue that nudges the model toward refusal, whereas omitting
-    /// it leaves the model free to reach for `google_search`.
-    fn build_search_prompt(query: &str, context: &str, answer_locale: Locale) -> String {
-        let display = answer_locale.display_name();
-        let tag = answer_locale.as_str();
-        let context_block = if context.trim().is_empty() {
-            String::new()
+    /// Pricing per 1M tokens (standard tier):
+    /// - gemini-3.1-pro*:         $2.00 input,  $12.00 output (<=200k ctx)
+    /// - gemini-2.5-flash*:       $0.30 input,   $2.50 output
+    /// - gemini-2.5-flash-lite*:  $0.10 input,   $0.40 output
+    /// - gemini-3.1-flash-lite*:  $0.10 input,   $0.40 output
+    /// - fallback (unknown):      $0.30 input,   $2.50 output (flash rate)
+    fn estimate_cost(&self, prompt_tokens: u32, completion_tokens: u32) -> Option<f64> {
+        let model = &self.config.model;
+        let (input_per_m, output_per_m) = if model.contains("pro") {
+            (2.00_f64, 12.00_f64)
+        } else if model.contains("flash-lite") || model.contains("flash_lite") {
+            (0.10, 0.40)
         } else {
-            format!("Internal context:\n{context}\n\n")
+            // flash + unknown models default to flash pricing
+            (0.30, 2.50)
         };
-        format!(
-            "{context_block}\
-             Question: {query}\n\n\
-             Respond in {display} (`{tag}`). If earlier turns were in a different language, ignore that — answer this question in {display}.\n\n\
-             Answer:"
-        )
+
+        let tier_mult = self.config.service_tier.cost_multiplier();
+        let cost = tier_mult
+            * ((prompt_tokens as f64 / 1_000_000.0) * input_per_m
+                + (completion_tokens as f64 / 1_000_000.0) * output_per_m);
+
+        Some((cost * 1_000_000.0).round() / 1_000_000.0) // round to 6 decimal places
     }
 
-    /// Build a multi-turn `contents` list from prior conversation turns
-    /// plus the current prompt. The history is mapped into alternating
-    /// user/model Content entries so Gemini can attend over it natively.
-    /// The final entry is always the current user turn containing the
-    /// retrieved-context dump and the new question.
-    fn build_multi_turn_contents(
-        history: &[ConversationTurn],
-        current_user_prompt: String,
-    ) -> Vec<GeminiContent> {
-        let mut contents = Vec::with_capacity(history.len() * 2 + 1);
-        for turn in history {
-            contents.push(GeminiContent {
-                parts: vec![GeminiPart::text(turn.user.clone())],
-                role: Some("user".to_string()),
-            });
-            contents.push(GeminiContent {
-                parts: vec![GeminiPart::text(turn.assistant.clone())],
-                role: Some("model".to_string()),
-            });
+    /// Convert LLM-agnostic `Message` values to Gemini wire format.
+    ///
+    /// Returns `(system_instruction, contents)`:
+    /// - If the first message has `Role::System`, it becomes the
+    ///   `systemInstruction` field; otherwise `None`.
+    /// - All remaining messages map to `GeminiContent` entries with
+    ///   `role` set to `"user"` or `"model"` (Gemini's term for
+    ///   assistant). System messages after the first are treated as
+    ///   user messages (Gemini only supports one system instruction).
+    fn messages_to_wire(messages: &[Message]) -> (Option<GeminiContent>, Vec<GeminiContent>) {
+        if messages.is_empty() {
+            return (None, Vec::new());
         }
-        contents.push(GeminiContent {
-            parts: vec![GeminiPart::text(current_user_prompt)],
-            role: Some("user".to_string()),
-        });
-        contents
+
+        let (system, body) = if messages[0].role == Role::System {
+            let sys = Self::message_to_gemini(&messages[0], "system");
+            (Some(sys), &messages[1..])
+        } else {
+            (None, messages)
+        };
+
+        let contents = body
+            .iter()
+            .map(|m| {
+                let role = match m.role {
+                    Role::User | Role::System => "user",
+                    Role::Assistant => "model",
+                };
+                Self::message_to_gemini(m, role)
+            })
+            .collect();
+
+        (system, contents)
     }
 
-    /// Build the per-request `systemInstruction` for the answer call.
-    /// Pins the answer language, sets source-handling rules, and keeps
-    /// wording generic so we don't trip Gemini preview models into
-    /// interpreting literal tool names as client-side function calls.
-    ///
-    /// Two variants, selected by `has_builtin_web_tool`:
-    /// - **true** — the `google_search` grounding tool is attached to
-    ///   this request. The model can reach for live web facts itself.
-    ///   Prompt language encourages it to do so for real-time questions
-    ///   and forbids the "I cannot access real-time data" refusal.
-    /// - **false** — no tool is attached; a separate `WebSearchProvider`
-    ///   (Brave) has already pre-injected fresh web results as
-    ///   `[Source N]` chunks in the user turn. Prompt language tells
-    ///   the model those chunks ARE its real-time data and that it must
-    ///   synthesize from them without deferring the user elsewhere.
-    fn build_search_system_instruction(
-        answer_locale: Locale,
-        has_builtin_web_tool: bool,
-    ) -> GeminiContent {
-        let display = answer_locale.display_name();
-        let tag = answer_locale.as_str();
-        let source_rules = if has_builtin_web_tool {
-            "Your inputs, in priority order:\n\
-             1. The numbered `[Source N]` entries in the current user turn. These come from the product's own document corpus. Prefer them when they answer the question, and cite with `[Source N]` markers.\n\
-             2. The built-in web search capability attached to this request. For real-time questions — markets, prices, news, weather, sports scores, live events, anything mentioning \"today\", \"now\", \"current\", \"latest\", \"this week\" — you MUST use the web search to retrieve fresh facts, then synthesize a direct answer. Web sources surface separately in the response; do not invent `[Source N]` markers for them.\n\
-             3. Your own training knowledge, used only as a last-resort fallback for timeless factual questions when both above are insufficient. Only this case may disclose a training cut-off.\n\
-             \n\
-             How to answer:\n\
-             - NEVER respond with \"I cannot access real-time information\", \"as an AI I don't have live data\", \"check Reuters / Yahoo / CNN / Bloomberg / etc.\", or any variant that tells the user to go look it up themselves. You have a web search tool — use it. Refusals are forbidden for real-time questions.\n\
-             - Include concrete numbers, dates, names, and timestamps when the retrieved sources carry them.\n\
-             - Do not refuse because internal retrieval is sparse. Reach for web search instead."
-        } else {
-            "Your only inputs are:\n\
-             1. The numbered `[Source N]` entries in the current user turn. These are authoritative. They may include product documentation, knowledge-base articles, and/or fresh web results that the platform has pre-fetched for you — you do NOT need to distinguish between them. Treat every `[Source N]` as trustworthy context supplied by the platform for this specific question.\n\
-             2. Your own training knowledge, used only as a fallback when the `[Source N]` entries do not cover the question.\n\
-             \n\
-             How to answer:\n\
-             - If `[Source N]` entries are present, synthesize a direct answer from them and cite with `[Source N]` markers. Include concrete numbers, dates, names, and timestamps when the sources carry them.\n\
-             - If no `[Source N]` entries are present, answer from your training knowledge. Only in this case may you briefly note a training cut-off.\n\
-             - NEVER respond with \"I cannot access real-time information\", \"as an AI I don't have live data\", \"check Reuters / Yahoo / CNN / Bloomberg / etc.\", or any variant that tells the user to go look it up themselves. If the `[Source N]` entries carry fresh facts, those facts ARE your real-time data — use them. The platform has already done the web search for you.\n\
-             - Do not refuse because retrieval is sparse. Synthesize from whatever sources you have. Refusals are forbidden."
-        };
-        let text = format!(
-            "You are a helpful document search assistant.\n\
-             \n\
-             {source_rules}\n\
-             \n\
-             Output rules:\n\
-             - Write the final answer in {display} (BCP-47 `{tag}`), regardless of the language of the retrieved context, the question, or earlier turns in this conversation. If previous turns were in a different language, ignore their language and respond only in {display}. This overrides any continuity from prior turns.\n\
-             - Preserve proper nouns, product names, ticker symbols, and code snippets in their original form.\n\
-             - Keep the response concise and well-structured. Use short paragraphs and lists where it helps readability."
-        );
+    /// Convert a single `Message` into a `GeminiContent` with the given role.
+    fn message_to_gemini(msg: &Message, role: &str) -> GeminiContent {
+        let parts = msg
+            .parts
+            .iter()
+            .map(|p| match p {
+                ContentPart::Text(s) => GeminiPart::text(s.clone()),
+            })
+            .collect();
         GeminiContent {
-            parts: vec![GeminiPart::text(text)],
-            role: Some("system".to_string()),
+            parts,
+            role: Some(role.to_string()),
         }
     }
 }
 
 #[async_trait]
 impl LlmProvider for GeminiProvider {
-    #[instrument(skip(self, context, history), fields(model = %self.config.model, locale = %answer_locale, history_turns = history.len(), context_chunks = context.len()))]
-    async fn generate(
-        &self,
-        query: &str,
-        context: &[RetrievedChunk],
-        history: &[ConversationTurn],
-        answer_locale: Locale,
-    ) -> Result<LlmResponse> {
-        // `generate` is the search-path entrypoint. It sends the
-        // locale-pinning system instruction and the retrieved context
-        // chunks, then asks Gemini to synthesize an answer.
-        //
-        // Web grounding wiring:
-        // - When `self.use_google_search_tool` is true (wired from
-        //   `!config.web_search.enabled` at bootstrap), the built-in
-        //   `google_search` tool is attached and Gemini can call out to
-        //   live web search autonomously for real-time facts.
-        // - When false, a separate `WebSearchProvider` (Brave by default)
-        //   has pre-fetched fresh web results and injected them as
-        //   synthetic `[Source N]` chunks into `context` before this
-        //   method was called — so no tool is attached and Gemini
-        //   synthesizes purely from the unified chunk stream.
-        //
-        // Stateless single-shot calls (intent classification, short
-        // utility completions) should call `generate_brief` instead —
-        // that path always skips tools and caps tokens to stay fast.
-        let context_str = Self::build_context(context);
-        let prompt = Self::build_search_prompt(query, &context_str, answer_locale);
+    #[instrument(skip(self, messages), fields(model = %self.config.model, msg_count = messages.len()))]
+    async fn generate(&self, messages: &[Message]) -> Result<LlmResponse> {
+        let (system_instruction, contents) = Self::messages_to_wire(messages);
+
         let tools = if self.use_google_search_tool {
             Some(vec![GeminiTool {
                 google_search: Some(serde_json::json!({})),
@@ -214,24 +145,18 @@ impl LlmProvider for GeminiProvider {
         } else {
             None
         };
-        let system_instruction = Some(Self::build_search_system_instruction(
-            answer_locale,
-            self.use_google_search_tool,
-        ));
-        let contents = Self::build_multi_turn_contents(history, prompt);
-        let max_tokens = self.config.max_tokens;
-        let temperature = self.config.temperature;
 
         let request = GeminiRequest {
             contents,
             system_instruction,
             tools,
             generation_config: Some(GeminiGenerationConfig {
-                max_output_tokens: Some(max_tokens),
-                temperature: Some(temperature),
+                max_output_tokens: Some(self.config.max_tokens),
+                temperature: Some(self.config.temperature),
                 response_mime_type: None,
                 response_schema: None,
             }),
+            service_tier: self.service_tier_value(),
         };
 
         let url = format!(
@@ -290,10 +215,15 @@ impl LlmProvider for GeminiProvider {
             })
             .unwrap_or_default();
 
-        let usage = result.usage_metadata.map(|u| LlmUsage {
-            prompt_tokens: u.prompt_token_count.unwrap_or(0),
-            completion_tokens: u.candidates_token_count.unwrap_or(0),
-            total_tokens: u.total_token_count.unwrap_or(0),
+        let usage = result.usage_metadata.map(|u| {
+            let prompt = u.prompt_token_count.unwrap_or(0);
+            let completion = u.candidates_token_count.unwrap_or(0);
+            LlmUsage {
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                total_tokens: u.total_token_count.unwrap_or(0),
+                cost_usd: self.estimate_cost(prompt, completion),
+            }
         });
 
         Ok(LlmResponse {
@@ -323,6 +253,7 @@ impl LlmProvider for GeminiProvider {
                 response_mime_type: None,
                 response_schema: None,
             }),
+            service_tier: self.service_tier_value(),
         };
 
         let url = format!(
@@ -370,21 +301,13 @@ impl LlmProvider for GeminiProvider {
         })
     }
 
+    #[instrument(skip(self, messages), fields(model = %self.config.model, msg_count = messages.len()))]
     async fn generate_stream(
         &self,
-        query: &str,
-        context: &[RetrievedChunk],
-        history: &[ConversationTurn],
-        answer_locale: Locale,
+        messages: &[Message],
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>> {
-        let context_str = Self::build_context(context);
-        let prompt = Self::build_search_prompt(query, &context_str, answer_locale);
+        let (system_instruction, contents) = Self::messages_to_wire(messages);
 
-        // Mirror `generate`: the `google_search` tool is attached iff
-        // `self.use_google_search_tool` is true (no separate
-        // WebSearchProvider is wired in). Otherwise the Brave tier has
-        // already injected fresh web results as `[Source N]` chunks in
-        // `context` and no tool is needed.
         let tools = if self.use_google_search_tool {
             Some(vec![GeminiTool {
                 google_search: Some(serde_json::json!({})),
@@ -392,12 +315,10 @@ impl LlmProvider for GeminiProvider {
         } else {
             None
         };
+
         let request = GeminiRequest {
-            contents: Self::build_multi_turn_contents(history, prompt),
-            system_instruction: Some(Self::build_search_system_instruction(
-                answer_locale,
-                self.use_google_search_tool,
-            )),
+            contents,
+            system_instruction,
             tools,
             generation_config: Some(GeminiGenerationConfig {
                 max_output_tokens: Some(self.config.max_tokens),
@@ -405,6 +326,7 @@ impl LlmProvider for GeminiProvider {
                 response_mime_type: None,
                 response_schema: None,
             }),
+            service_tier: self.service_tier_value(),
         };
 
         let url = format!(
@@ -546,14 +468,6 @@ impl LlmProvider for GeminiProvider {
 
     #[instrument(skip(self))]
     async fn translate(&self, text: &str) -> Result<TranslationResult> {
-        // Translator + normalizer + locale detector in one call. Always
-        // safe to run on any input — fixes typos, canonicalizes terms,
-        // and reports the source language back so the answer LLM can be
-        // pinned to the same locale.
-        //
-        // The user text is isolated inside <text> tags to defend against
-        // prompt injection — any instructions inside the query must not
-        // hijack the translator.
         let prompt = format!(
             "You are a precise search query translator, normalizer, and language detector\n\
              for a generic document search engine. Your ONLY job is to produce a clean\n\
@@ -607,6 +521,7 @@ impl LlmProvider for GeminiProvider {
                 response_mime_type: Some("application/json".to_string()),
                 response_schema: Some(schema),
             }),
+            service_tier: self.service_tier_value(),
         };
 
         let url = format!(
@@ -700,6 +615,7 @@ impl LlmProvider for GeminiProvider {
                 response_mime_type: None,
                 response_schema: None,
             }),
+            service_tier: self.service_tier_value(),
         };
 
         let url = format!(
@@ -757,10 +673,6 @@ impl LlmProvider for GeminiProvider {
 
     #[instrument(skip(self, excerpt))]
     async fn generate_cluster_questions(&self, excerpt: &str) -> Result<ClusterQuestions> {
-        // One call, all 8 locales. The model is constrained via
-        // responseMimeType + responseSchema so a plain serde parse is
-        // reliable. On any failure we degrade gracefully to an empty
-        // ClusterQuestions instead of crashing the refresh worker.
         let prompt = format!(
             "You generate search suggestion questions for a document search engine, for a\n\
              cluster of related document excerpts.\n\
@@ -787,8 +699,6 @@ impl LlmProvider for GeminiProvider {
              Output strict JSON matching the response schema."
         );
 
-        // responseSchema requires every locale key. The model fills each
-        // with a 3-5 element array of plain strings.
         let locale_prop = serde_json::json!({
             "type": "ARRAY",
             "items": { "type": "STRING" }
@@ -828,6 +738,7 @@ impl LlmProvider for GeminiProvider {
                 response_mime_type: Some("application/json".to_string()),
                 response_schema: Some(schema),
             }),
+            service_tier: self.service_tier_value(),
         };
 
         let url = format!(
@@ -835,11 +746,6 @@ impl LlmProvider for GeminiProvider {
             self.base_url, self.config.model, self.config.api_key
         );
 
-        // Transport, HTTP, and parse failures must surface as `Err` so the
-        // refresh worker counts them as cluster errors and can abort the
-        // batch when ALL clusters fail. Only the success-but-empty case
-        // (200 + valid JSON whose payload happens to be empty, e.g. server-
-        // side safety filtering) returns `Ok(ClusterQuestions::default())`.
         let response = self
             .client
             .post(&url)
@@ -885,11 +791,6 @@ impl LlmProvider for GeminiProvider {
         match serde_json::from_str::<ClusterQuestionsJson>(&raw_text) {
             Ok(parsed) => Ok(parsed.into_domain()),
             Err(e) => {
-                // Success-but-empty inner payload: log and return empty so
-                // the worker treats it as a cluster that produced zero
-                // questions (counted in `kept`/`rejected`, NOT a hard
-                // error). Transport/HTTP/envelope-parse failures above
-                // already returned Err.
                 tracing::warn!(
                     error = %e,
                     raw = %raw_text,
@@ -956,6 +857,9 @@ struct GeminiRequest {
     tools: Option<Vec<GeminiTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     generation_config: Option<GeminiGenerationConfig>,
+    /// Inference tier: STANDARD, FLEX, or PRIORITY. Controls latency/cost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_tier: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -984,8 +888,7 @@ enum GeminiPart {
     /// `google_search` tool as a `functionCall` part BEFORE the grounded
     /// text arrives. We need to accept and ignore it so the event parses;
     /// the grounded answer text shows up in a later event as a plain
-    /// Text part. Dropping the whole event here is what caused
-    /// "empty answer" on real-time questions.
+    /// Text part.
     FunctionCall {
         #[serde(rename = "functionCall")]
         function_call: serde_json::Value,
@@ -1094,6 +997,59 @@ struct GeminiUsageMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn messages_to_wire_empty() {
+        let (sys, contents) = GeminiProvider::messages_to_wire(&[]);
+        assert!(sys.is_none());
+        assert!(contents.is_empty());
+    }
+
+    #[test]
+    fn messages_to_wire_system_plus_user() {
+        let messages = vec![
+            Message::system_text("You are a helpful assistant."),
+            Message::user_text("Hello"),
+        ];
+        let (sys, contents) = GeminiProvider::messages_to_wire(&messages);
+        assert!(sys.is_some());
+        let sys = sys.unwrap();
+        assert_eq!(sys.role, Some("system".to_string()));
+        assert_eq!(sys.parts.len(), 1);
+        assert_eq!(sys.parts[0].text_str(), "You are a helpful assistant.");
+
+        assert_eq!(contents.len(), 1);
+        assert_eq!(contents[0].role, Some("user".to_string()));
+        assert_eq!(contents[0].parts[0].text_str(), "Hello");
+    }
+
+    #[test]
+    fn messages_to_wire_with_history() {
+        let messages = vec![
+            Message::system_text("sys"),
+            Message::user_text("q1"),
+            Message::assistant_text("a1"),
+            Message::user_text("q2"),
+        ];
+        let (sys, contents) = GeminiProvider::messages_to_wire(&messages);
+        assert!(sys.is_some());
+        assert_eq!(contents.len(), 3);
+        assert_eq!(contents[0].role, Some("user".to_string()));
+        assert_eq!(contents[0].parts[0].text_str(), "q1");
+        assert_eq!(contents[1].role, Some("model".to_string()));
+        assert_eq!(contents[1].parts[0].text_str(), "a1");
+        assert_eq!(contents[2].role, Some("user".to_string()));
+        assert_eq!(contents[2].parts[0].text_str(), "q2");
+    }
+
+    #[test]
+    fn messages_to_wire_no_system() {
+        let messages = vec![Message::user_text("just a user message")];
+        let (sys, contents) = GeminiProvider::messages_to_wire(&messages);
+        assert!(sys.is_none());
+        assert_eq!(contents.len(), 1);
+        assert_eq!(contents[0].role, Some("user".to_string()));
+    }
 
     #[test]
     fn cluster_questions_json_parses_all_locales() {

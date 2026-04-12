@@ -634,40 +634,62 @@ function inlineMarkdown(text) {
   // The whole-match regex is restricted to digits / commas / hyphens /
   // whitespace / "and" plus the literal "Source(s)" prefix, so the digits
   // extracted from it are safe to interpolate without re-escaping.
+  // Helper: build a clickable source chip from a sorted array of indices.
+  function sourceChip(indices) {
+    var clean = indices.join(',');
+    var label = (indices.length > 1 ? 'Sources ' : 'Source ') + clean;
+    return '<button type="button" class="source-ref" data-sources="' + clean +
+      '" onclick="openSourcesSheet()" title="' + label + '" aria-label="' + label + '">' +
+      '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>' +
+      '<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>' +
+      '</svg></button>';
+  }
+
+  // Pass 1: Full "[Source N]" / "[Sources N, M]" / "[Sources N-M]" variants.
   safe = safe.replace(
     /\[Sources?\s+\d+(?:\s*[-–]\s*\d+|\s*(?:,|and)\s*(?:Sources?\s+)?\d+)*\]/gi,
     function(match) {
-      // Expand any "N - M" range into the full integer list, then merge
-      // with bare digits.
       var indices = [];
       var rangeRe = /(\d+)\s*[-–]\s*(\d+)/g;
       var rangeMatch;
-      var consumed = '';
       while ((rangeMatch = rangeRe.exec(match)) !== null) {
         var lo = parseInt(rangeMatch[1], 10);
         var hi = parseInt(rangeMatch[2], 10);
         if (lo <= hi && hi - lo < 50) {
           for (var n = lo; n <= hi; n++) indices.push(n);
         }
-        consumed += rangeMatch[0] + ' ';
       }
-      // Bare digits not part of a range.
       var stripped = match.replace(/(\d+)\s*[-–]\s*(\d+)/g, '');
       var bare = stripped.match(/\d+/g) || [];
       bare.forEach(function(n) { indices.push(parseInt(n, 10)); });
-      // Dedupe while preserving order, sort numerically.
       indices = Array.from(new Set(indices)).sort(function(a, b) { return a - b; });
       if (!indices.length) return match;
-      var clean = indices.join(',');
-      var label = (indices.length > 1 ? 'Sources ' : 'Source ') + clean;
-      return '<button type="button" class="source-ref" data-sources="' + clean +
-        '" onclick="openSourcesSheet()" title="' + label + '" aria-label="' + label + '">' +
-        '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">' +
-        '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>' +
-        '<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>' +
-        '</svg></button>';
+      return sourceChip(indices);
     }
   );
+
+  // Pass 2: Bare numeric citations — [1], [2], [1][2], [1, 2], [1,2,3].
+  // These appear when the LLM abbreviates "[Source N]" to just "[N]".
+  // Runs AFTER pass 1 so already-converted [Source N] chips are not
+  // double-matched. Only matches numbers 1-99 to avoid false positives
+  // on things like [2024] (years) or [100] (HTTP status codes).
+  // Adjacent [N][M] are merged into a single multi-source chip.
+  safe = safe.replace(
+    /(?:\[\d{1,2}(?:\s*,\s*\d{1,2})*\])+/g,
+    function(match) {
+      // Skip if this is inside an already-converted chip (data-sources=)
+      // or inside an <a> tag / markdown link artifact.
+      if (match.indexOf('data-sources') !== -1) return match;
+      var nums = match.match(/\d+/g) || [];
+      var indices = nums.map(function(n) { return parseInt(n, 10); })
+        .filter(function(n) { return n >= 1 && n <= 99; });
+      indices = Array.from(new Set(indices)).sort(function(a, b) { return a - b; });
+      if (!indices.length) return match;
+      return sourceChip(indices);
+    }
+  );
+
   return safe;
 }
 

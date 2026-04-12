@@ -127,6 +127,42 @@ pub struct LlmConfig {
     pub max_tokens: u32,
     #[serde(default = "default_temperature")]
     pub temperature: f32,
+    /// Gemini inference tier: standard (default), flex (50% cheaper, higher
+    /// latency), or priority (75-100% more expensive, lowest latency).
+    /// Sent as `serviceTier` in the request body, ALL CAPS.
+    #[serde(default = "default_service_tier")]
+    pub service_tier: ServiceTier,
+}
+
+/// Gemini inference tier. Controls latency/cost trade-off.
+/// Sent lowercase in the API request body (`standard`, `flex`, `priority`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceTier {
+    Standard,
+    Flex,
+    Priority,
+}
+
+impl ServiceTier {
+    /// Returns the lowercase string for the Gemini `serviceTier` request field.
+    pub fn as_api_value(&self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Flex => "flex",
+            Self::Priority => "priority",
+        }
+    }
+
+    /// Cost multiplier relative to standard pricing.
+    /// Standard = 1.0, Flex = 0.5, Priority = 1.75.
+    pub fn cost_multiplier(&self) -> f64 {
+        match self {
+            Self::Standard => 1.0,
+            Self::Flex => 0.5,
+            Self::Priority => 1.75,
+        }
+    }
 }
 
 fn default_max_tokens() -> u32 {
@@ -135,6 +171,10 @@ fn default_max_tokens() -> u32 {
 
 fn default_temperature() -> f32 {
     0.7
+}
+
+fn default_service_tier() -> ServiceTier {
+    ServiceTier::Standard
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -390,7 +430,9 @@ fn default_pool_cap() -> usize {
     50
 }
 fn default_schedule_cron() -> String {
-    "0 3 * * *".to_string()
+    // 6-field cron (sec min hour day month weekday) — the `cron` crate
+    // requires the seconds field; 5-field POSIX format is rejected.
+    "0 0 3 * * *".to_string()
 }
 fn default_sample_cap() -> usize {
     2000
@@ -522,6 +564,10 @@ fn default_web_search_trigger_patterns() -> Vec<String> {
 fn default_web_search_fallback_min_chunks() -> usize {
     2
 }
+
+// ===========================================================================
+// FAQ tool
+// ===========================================================================
 
 /// Load configuration from the config hierarchy.
 ///
@@ -666,6 +712,7 @@ contextualizer:
                 api_key: String::new(),
                 max_tokens: 2048,
                 temperature: 0.7,
+                service_tier: ServiceTier::Standard,
             },
             contextualizer: ContextualizerConfig {
                 provider: "anthropic".into(),
@@ -743,6 +790,7 @@ contextualizer:
                 api_key: "gm-key".into(),
                 max_tokens: 2048,
                 temperature: 0.7,
+                service_tier: ServiceTier::Standard,
             },
             contextualizer: ContextualizerConfig {
                 provider: "anthropic".into(),
@@ -809,7 +857,7 @@ contextualizer:
         assert_eq!(cfg.default_weight, 10);
         assert_eq!(cfg.pool_cap, 50);
         assert!(cfg.safety_regex.starts_with("(?i)"));
-        assert_eq!(cfg.refresh.schedule_cron, "0 3 * * *");
+        assert_eq!(cfg.refresh.schedule_cron, "0 0 3 * * *");
         assert_eq!(cfg.refresh.sample_cap, 2000);
         assert_eq!(cfg.refresh.cluster_count, 20);
         assert_eq!(cfg.refresh.per_cluster, 5);
@@ -871,6 +919,6 @@ key_prefix: "loc:"
         let cfg: RefreshConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.sample_cap, 500);
         assert_eq!(cfg.cluster_count, 20); // default
-        assert_eq!(cfg.schedule_cron, "0 3 * * *"); // default
+        assert_eq!(cfg.schedule_cron, "0 0 3 * * *"); // default
     }
 }

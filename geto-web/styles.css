@@ -28,6 +28,8 @@
   src: url('fonts/Inter-Bold.ttf') format('truetype');
 }
 
+
+
 * {
   margin: 0;
   padding: 0;
@@ -882,6 +884,7 @@ body {
 .text-content {
   margin-bottom: 16px;
 }
+
 
 .text-content .text-title {
   font-weight: 400;

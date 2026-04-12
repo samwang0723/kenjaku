@@ -5,12 +5,19 @@ A production-grade Contextual RAG search engine built in Rust. Combines hybrid v
 ## Architecture
 
 ```
-kenjaku-core       Domain types, traits, config, errors
-kenjaku-infra      Qdrant, PostgreSQL, Redis, OpenAI, Gemini, Claude,
-                   TitleResolver (Gemini grounding URL → real page title),
-                   OpenTelemetry
-kenjaku-service    Search pipeline, hybrid retrieval, RRF reranking, trending,
-                   conversations, query quality guard, grounding source merge
+kenjaku-core       Domain types (Message, ToolId, ToolOutput, ServiceTier, ...),
+                   traits (LlmProvider, Tool, Brain, EmbeddingProvider, ...),
+                   config, errors
+kenjaku-infra      Qdrant, PostgreSQL, Redis, OpenAI, Gemini (messages_to_wire,
+                   serviceTier, estimate_cost), Claude, TitleResolver, OpenTelemetry
+kenjaku-service    5-layer architecture:
+                     brain/       — Brain facade, translator, classifier, prompt
+                                    builders, ConversationAssembler, generator
+                     tools/       — Tool impls: DocRagTool, BraveWebTool
+                     session/     — conversation, history, locale memory, feedback
+                     foundation/  — quality guard, trending, suggestion, workers
+                     harness/     — SearchOrchestrator, ToolTunnel DAG executor,
+                                    context merger, CancellationToken cascade
 kenjaku-api        Axum HTTP handlers, rate limiting, input validation, SSE streaming
 kenjaku-server     Binary with DI, graceful shutdown, background workers
 kenjaku-ingest     CLI for document crawling, parsing, and chunking
