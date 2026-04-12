@@ -22,8 +22,6 @@ pub struct AppConfig {
     pub locale_memory: LocaleMemoryConfig,
     #[serde(default)]
     pub web_search: WebSearchConfig,
-    #[serde(default)]
-    pub faq: FaqConfig,
 }
 
 impl AppConfig {
@@ -529,26 +527,6 @@ fn default_web_search_fallback_min_chunks() -> usize {
 // FAQ tool
 // ===========================================================================
 
-/// Configuration for the FAQ tool — a static list of question/answer pairs
-/// matched by keyword. Disabled by default; exists to validate the plugin
-/// architecture.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct FaqConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub entries: Vec<FaqEntryConfig>,
-}
-
-/// A single FAQ entry in the config file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FaqEntryConfig {
-    pub question: String,
-    pub answer: String,
-    #[serde(default)]
-    pub keywords: Vec<String>,
-}
-
 /// Load configuration from the config hierarchy.
 ///
 /// Order (later overrides earlier):
@@ -725,7 +703,6 @@ contextualizer:
             default_suggestions: DefaultSuggestionsConfig::default(),
             locale_memory: LocaleMemoryConfig::default(),
             web_search: WebSearchConfig::default(),
-            faq: FaqConfig::default(),
         };
 
         let result = cfg.validate_secrets();
@@ -803,7 +780,6 @@ contextualizer:
             default_suggestions: DefaultSuggestionsConfig::default(),
             locale_memory: LocaleMemoryConfig::default(),
             web_search: WebSearchConfig::default(),
-            faq: FaqConfig::default(),
         };
 
         assert!(cfg.validate_secrets().is_ok());

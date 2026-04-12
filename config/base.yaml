@@ -90,19 +90,6 @@ locale_memory:
   ttl_seconds: 7200
   key_prefix: "sl:"
 
-faq:
-  enabled: false  # disabled by default — validation tool for plugin architecture
-  entries:
-    - question: "How do I reset my password?"
-      answer: "Go to Settings > Security > Reset Password. You'll receive a verification email."
-      keywords: ["password", "reset", "forgot", "login"]
-    - question: "What payment methods are accepted?"
-      answer: "We accept Visa, Mastercard, bank transfer, and cryptocurrency payments."
-      keywords: ["payment", "pay", "visa", "mastercard", "bank", "crypto"]
-    - question: "How do I contact support?"
-      answer: "Email support@example.com or use the in-app chat feature."
-      keywords: ["support", "help", "contact", "email", "chat"]
-
 telemetry:
   service_name: "kenjaku"
   log_level: "info"
