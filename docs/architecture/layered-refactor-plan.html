@@ -1113,9 +1113,9 @@
         </div>
         <div class="hero-cell">
           <div class="hero-cell__num">03</div>
-          <h4>Harness owns the lifecycle</h4>
+          <h4>ToolTunnel DAG executor</h4>
           <p>
-            <code>SearchOrchestrator</code> replaces the body of <code>SearchService</code>. Fan-out via <code>join_all&lt;Result&gt;</code> (never short-circuit). Per-request <code>CancellationToken</code> cascades on client disconnect.
+            Tools declare <code>depends_on()</code>; the <code>ToolTunnel</code> topologically sorts them into tiers at startup (Kahn's algorithm). Within each tier: parallel via <code>join_all</code>. Between tiers: serial, so dependent tools read prior outputs from <code>ToolOutputMap</code>. Per-request <code>CancellationToken</code> cascades on disconnect.
           </p>
         </div>
       </div>
@@ -1237,12 +1237,12 @@
           <div class="layer-card__name">Harness</div>
           <div class="layer-card__idx">L·05</div>
         </div>
-        <p>Coordinator. Picks tools, fans them out, merges outputs, manages the cancellation lifecycle.</p>
+        <p>Coordinator. ToolTunnel topologically sorts tools into tiers, fans out each tier in parallel, merges outputs, manages cancellation.</p>
         <ul class="layer-card__list">
-          <li><strong>SearchOrchestrator</strong> — replaces search.rs body</li>
+          <li><strong>SearchOrchestrator</strong> — owns ToolTunnel</li>
           <li><strong>routing</strong> — intent → Vec of ToolId</li>
-          <li><strong>fanout</strong> — join_all + degrade → Empty</li>
-          <li><strong>context</strong> — ToolOutput → ToolContext merge</li>
+          <li><strong>ToolTunnel</strong> — topo sort + tiered join_all</li>
+          <li><strong>context</strong> — ToolOutputMap → ToolContext merge</li>
           <li><strong>title_resolver</strong> — post-generation step</li>
           <li><strong>CancellationToken</strong> — parent scope</li>
         </ul>
@@ -1277,8 +1277,8 @@ flowchart TB
 
   subgraph H ["HARNESS · L·05"]
     direction TB
-    ORC["SearchOrchestrator<br/>routing · fan-out · cancel"]:::harness
-    FAN["fanout · join_all of Result<br/>degrade · Empty"]:::harness
+    ORC["SearchOrchestrator<br/>ToolTunnel DAG · cancel"]:::harness
+    FAN["ToolTunnel<br/>topo sort · tiered join_all"]:::harness
     TR["TitleResolver<br/>post-generation"]:::harness
   end
 
@@ -1660,10 +1660,10 @@ kenjaku-service/src/
 ├── <span class="new">session/</span>          <span class="ann">conversation · history · locale_memory · feedback</span>
 ├── <span class="new">foundation/</span>       <span class="ann">quality + workers move here</span>
 └── <span class="new">harness/</span>
-    ├── mod.rs          <span class="ann">SearchOrchestrator · replaces SearchService body</span>
+    ├── mod.rs          <span class="ann">SearchOrchestrator · owns ToolTunnel</span>
     ├── routing.rs      <span class="ann">intent → Vec of ToolId · rollout gating</span>
-    ├── <span class="new">fanout.rs</span>        <span class="ann">new · join_all of Result → Empty mapper</span>
-    ├── context.rs      <span class="ann">ToolOutput → ToolContext merger</span>
+    ├── <span class="new">fanout.rs</span>        <span class="ann">new · ToolTunnel DAG executor (topo sort + tiered join_all)</span>
+    ├── context.rs      <span class="ann">ToolOutputMap → ToolContext merger</span>
     └── <span class="new">title_resolver.rs</span> <span class="ann">new · service-layer trait wrapper</span></pre>
 
     <!-- ============ 8. PHASE PLAN ============ -->
