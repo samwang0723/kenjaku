@@ -17,6 +17,7 @@ tracing = { workspace = true }
 futures = { workspace = true }
 pin-project-lite = { workspace = true }
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

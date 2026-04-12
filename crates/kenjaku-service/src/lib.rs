@@ -11,6 +11,7 @@ pub mod reranker;
 pub mod retriever;
 pub mod search;
 pub mod suggestion;
+pub mod tools;
 pub mod translation;
 pub mod trending;
 pub mod worker;
