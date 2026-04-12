@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use futures::Stream;
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use kenjaku_core::config::WebSearchConfig;
@@ -165,6 +166,28 @@ pub struct SearchStreamOutput {
     pub context: StreamContext,
 }
 
+/// RAII guard that cancels its `CancellationToken` on drop. Stored
+/// inside `StreamContext` so that if the SSE connection is dropped
+/// early, in-flight LLM / tool work is cancelled automatically.
+pub struct CancelGuard(CancellationToken);
+
+impl CancelGuard {
+    pub fn new(token: CancellationToken) -> Self {
+        Self(token)
+    }
+
+    /// Access the underlying token (e.g. to pass to tools).
+    pub fn token(&self) -> &CancellationToken {
+        &self.0
+    }
+}
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
 /// Bookkeeping passed from `search_stream` to `complete_stream` -- kept
 /// separate from the Stream so the handler can move it into the completion
 /// call after dropping the stream.
@@ -185,4 +208,7 @@ pub struct StreamContext {
     pub query: String,
     pub locale: kenjaku_core::types::locale::Locale,
     pub intent: Intent,
+    /// Cancellation guard that fires on drop, ensuring in-flight work
+    /// is cancelled when the SSE connection disconnects.
+    pub _cancel_guard: CancelGuard,
 }

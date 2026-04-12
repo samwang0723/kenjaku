@@ -10,7 +10,7 @@ use kenjaku_core::types::tool::{ToolOutput, ToolOutputMap};
 pub fn merge_tool_outputs(outputs: &ToolOutputMap) -> Vec<RetrievedChunk> {
     let mut chunks = Vec::new();
 
-    for (_, output) in outputs.iter() {
+    for (_, output) in outputs.iter_ordered() {
         match output {
             ToolOutput::Chunks {
                 chunks: tool_chunks,
@@ -18,12 +18,12 @@ pub fn merge_tool_outputs(outputs: &ToolOutputMap) -> Vec<RetrievedChunk> {
             } => {
                 chunks.extend(tool_chunks.iter().cloned());
             }
-            ToolOutput::WebHits { hits, .. } => {
+            ToolOutput::WebHits { hits, provider } => {
                 for (i, hit) in hits.iter().enumerate() {
                     let snippet = hit.snippet.clone().unwrap_or_default();
                     chunks.push(RetrievedChunk {
-                        doc_id: format!("web-{i}"),
-                        chunk_id: format!("web-{i}"),
+                        doc_id: format!("web-{provider}-{i}"),
+                        chunk_id: format!("web-{provider}-{i}"),
                         title: hit.title.clone(),
                         original_content: snippet.clone(),
                         contextualized_content: snippet,
@@ -46,7 +46,7 @@ pub fn merge_tool_outputs(outputs: &ToolOutputMap) -> Vec<RetrievedChunk> {
 /// tool contributed results and captures the provider name.
 pub fn grounding_from_outputs(outputs: &ToolOutputMap) -> GroundingInfo {
     let mut info = GroundingInfo::default();
-    for (_, output) in outputs.iter() {
+    for (_, output) in outputs.iter_ordered() {
         if let ToolOutput::WebHits { hits, provider } = output
             && !hits.is_empty()
         {

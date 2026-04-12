@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, warn};
 
+use kenjaku_core::error::Error;
 use kenjaku_core::traits::tool::Tool;
 use kenjaku_core::types::tool::{ToolError, ToolId, ToolOutput, ToolOutputMap, ToolRequest};
 
@@ -18,8 +19,7 @@ use kenjaku_core::types::tool::{ToolError, ToolId, ToolOutput, ToolOutputMap, To
 ///
 /// Error policy:
 /// - `ToolError::Upstream | Timeout | Cancelled | Disabled` -> `ToolOutput::Empty`
-/// - `ToolError::BadRequest` -> logged as error, degrades to `ToolOutput::Empty`
-///   (the harness can inspect the map if it needs to propagate)
+/// - `ToolError::BadRequest` -> propagated as `Error::Validation` (fails the request)
 pub struct ToolTunnel {
     /// Tools grouped by execution tier. Tier 0 has no deps, Tier 1 depends
     /// on Tier 0 outputs, etc. Within a tier, tools run in parallel.
@@ -31,12 +31,18 @@ impl ToolTunnel {
     /// Panics on dependency cycles. Logs a warning for unregistered deps
     /// (tool will see `None` in the output map -- can decide to skip).
     pub fn new(tools: Vec<Arc<dyn Tool>>) -> Self {
-        // Build lookup: tool_id -> index
-        let id_to_idx: HashMap<String, usize> = tools
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (t.id().0.clone(), i))
-            .collect();
+        // Build lookup: tool_id -> index. Detect duplicates eagerly so
+        // misconfigured registries fail at boot, not at runtime.
+        let mut id_to_idx: HashMap<String, usize> = HashMap::with_capacity(tools.len());
+        for (i, t) in tools.iter().enumerate() {
+            let id = t.id().0.clone();
+            if let Some(prev) = id_to_idx.insert(id.clone(), i) {
+                panic!(
+                    "ToolTunnel: duplicate tool ID '{id}' at indices {prev} and {i}; \
+                     each tool must have a unique ID"
+                );
+            }
+        }
 
         let n = tools.len();
 
@@ -117,13 +123,14 @@ impl ToolTunnel {
     }
 
     /// Execute all tiers sequentially, tools within each tier in parallel.
-    /// Returns the accumulated output map.
+    /// Returns the accumulated output map, or `Error::Validation` if any
+    /// tool returns `ToolError::BadRequest`.
     pub async fn execute(
         &self,
         req: &ToolRequest,
         cancel: &CancellationToken,
         tool_budget_ms: u64,
-    ) -> ToolOutputMap {
+    ) -> Result<ToolOutputMap, Error> {
         let timeout_dur = Duration::from_millis(tool_budget_ms);
         let mut accumulated = ToolOutputMap::new();
 
@@ -137,7 +144,7 @@ impl ToolTunnel {
                 continue;
             }
 
-            let results: Vec<(ToolId, ToolOutput)> =
+            let results: Vec<(ToolId, Result<ToolOutput, Error>)> =
                 futures::future::join_all(firing.iter().map(|t| {
                     let t = Arc::clone(t);
                     let req = req.clone();
@@ -151,15 +158,15 @@ impl ToolTunnel {
                         )
                         .await
                         {
-                            Ok(Ok(out)) => out,
+                            Ok(Ok(out)) => Ok(out),
                             Ok(Err(ToolError::BadRequest(msg))) => {
                                 error!(tool = %id.0, error = %msg, "tool bad request");
-                                ToolOutput::Empty
+                                Err(Error::Validation(format!("tool '{}': {msg}", id.0)))
                             }
-                            Ok(Err(ToolError::Disabled)) => ToolOutput::Empty,
+                            Ok(Err(ToolError::Disabled)) => Ok(ToolOutput::Empty),
                             Ok(Err(e)) => {
                                 warn!(tool = %id.0, error = %e, "tool degraded to empty");
-                                ToolOutput::Empty
+                                Ok(ToolOutput::Empty)
                             }
                             Err(_) => {
                                 warn!(
@@ -167,7 +174,7 @@ impl ToolTunnel {
                                     budget_ms = tool_budget_ms,
                                     "tool timed out"
                                 );
-                                ToolOutput::Empty
+                                Ok(ToolOutput::Empty)
                             }
                         };
                         (id, output)
@@ -175,12 +182,15 @@ impl ToolTunnel {
                 }))
                 .await;
 
-            for (id, output) in results {
-                accumulated.insert(id, output);
+            for (id, result) in results {
+                match result {
+                    Ok(output) => accumulated.insert(id, output),
+                    Err(e) => return Err(e),
+                }
             }
         }
 
-        accumulated
+        Ok(accumulated)
     }
 }
 
@@ -432,7 +442,7 @@ mod tests {
         let tunnel = ToolTunnel::new(vec![a, b]);
         let req = make_request();
         let cancel = CancellationToken::new();
-        tunnel.execute(&req, &cancel, 5000).await;
+        tunnel.execute(&req, &cancel, 5000).await.unwrap();
 
         let log = order.lock().unwrap();
         // "a" must have a lower sequence number than "b"
@@ -453,7 +463,7 @@ mod tests {
         let tunnel = ToolTunnel::new(vec![a, b]);
         let req = make_request();
         let cancel = CancellationToken::new();
-        let outputs = tunnel.execute(&req, &cancel, 5000).await;
+        let outputs = tunnel.execute(&req, &cancel, 5000).await.unwrap();
 
         assert_eq!(outputs.len(), 2);
         assert!(outputs.get("a").is_some());
@@ -469,7 +479,7 @@ mod tests {
         let tunnel = ToolTunnel::new(vec![fail]);
         let req = make_request();
         let cancel = CancellationToken::new();
-        let outputs = tunnel.execute(&req, &cancel, 5000).await;
+        let outputs = tunnel.execute(&req, &cancel, 5000).await.unwrap();
 
         assert_eq!(outputs.len(), 1);
         assert!(matches!(outputs.get("fail"), Some(ToolOutput::Empty)));
@@ -481,7 +491,7 @@ mod tests {
         let tunnel = ToolTunnel::new(vec![a]);
         let req = make_request();
         let cancel = CancellationToken::new();
-        let outputs = tunnel.execute(&req, &cancel, 5000).await;
+        let outputs = tunnel.execute(&req, &cancel, 5000).await.unwrap();
         assert!(outputs.is_empty());
     }
 
@@ -498,7 +508,7 @@ mod tests {
         let tunnel = ToolTunnel::new(vec![doc_rag, conditional]);
         let req = make_request();
         let cancel = CancellationToken::new();
-        let outputs = tunnel.execute(&req, &cancel, 5000).await;
+        let outputs = tunnel.execute(&req, &cancel, 5000).await.unwrap();
 
         assert_eq!(outputs.len(), 2);
         assert!(outputs.get("doc_rag").is_some());
@@ -532,10 +542,69 @@ mod tests {
         let tunnel = ToolTunnel::new(vec![doc_rag, conditional]);
         let req = make_request();
         let cancel = CancellationToken::new();
-        let outputs = tunnel.execute(&req, &cancel, 5000).await;
+        let outputs = tunnel.execute(&req, &cancel, 5000).await.unwrap();
 
         assert_eq!(outputs.len(), 1); // only doc_rag
         assert!(outputs.get("doc_rag").is_some());
         assert!(outputs.get("conditional").is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate tool ID")]
+    fn tunnel_detects_duplicate_tool_ids() {
+        let a = Arc::new(MockTool::new("dup")) as Arc<dyn Tool>;
+        let b = Arc::new(MockTool::new("dup")) as Arc<dyn Tool>;
+        ToolTunnel::new(vec![a, b]);
+    }
+
+    /// A tool that always returns a BadRequest error.
+    struct BadRequestTool {
+        tool_id: String,
+    }
+
+    #[async_trait]
+    impl Tool for BadRequestTool {
+        fn id(&self) -> ToolId {
+            ToolId(self.tool_id.clone())
+        }
+        fn config(&self) -> &ToolConfig {
+            &TOOL_CONFIG
+        }
+        fn should_fire(&self, _req: &ToolRequest, _prior: &ToolOutputMap) -> bool {
+            true
+        }
+        async fn invoke(
+            &self,
+            _req: &ToolRequest,
+            _prior: &ToolOutputMap,
+            _cancel: &CancellationToken,
+        ) -> Result<ToolOutput, ToolError> {
+            Err(ToolError::BadRequest("invalid query".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn tunnel_propagates_bad_request() {
+        let tool = Arc::new(BadRequestTool {
+            tool_id: "bad".into(),
+        }) as Arc<dyn Tool>;
+
+        let tunnel = ToolTunnel::new(vec![tool]);
+        let req = make_request();
+        let cancel = CancellationToken::new();
+        let result = tunnel.execute(&req, &cancel, 5000).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match &err {
+            Error::Validation(msg) => {
+                assert!(msg.contains("bad"), "should mention tool id");
+                assert!(
+                    msg.contains("invalid query"),
+                    "should contain the error message"
+                );
+            }
+            other => panic!("expected Error::Validation, got: {other:?}"),
+        }
     }
 }

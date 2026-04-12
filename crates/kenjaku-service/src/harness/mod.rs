@@ -28,7 +28,7 @@ use crate::conversation::ConversationService;
 use crate::history::SessionHistoryStore;
 use crate::locale_memory::LocaleMemory;
 use crate::quality::prettify_title;
-use crate::search::{SearchStreamOutput, StreamContext, resolve_translation};
+use crate::search::{CancelGuard, SearchStreamOutput, StreamContext, resolve_translation};
 use crate::trending::TrendingService;
 
 /// Internal orchestrator behind `SearchService`. Owns the full RAG pipeline
@@ -165,7 +165,7 @@ impl SearchOrchestrator {
         let tool_outputs = self
             .tunnel
             .execute(&tool_req, &cancel, self.tool_budget_ms)
-            .await;
+            .await?;
 
         let grounding = context::grounding_from_outputs(&tool_outputs);
         let chunks = context::merge_tool_outputs(&tool_outputs);
@@ -354,7 +354,7 @@ impl SearchOrchestrator {
         let tool_outputs = self
             .tunnel
             .execute(&tool_req, &cancel, self.tool_budget_ms)
-            .await;
+            .await?;
 
         let grounding = context::grounding_from_outputs(&tool_outputs);
         let chunks = context::merge_tool_outputs(&tool_outputs);
@@ -431,6 +431,7 @@ impl SearchOrchestrator {
                 query: req.query.clone(),
                 locale: detected_locale,
                 intent,
+                _cancel_guard: CancelGuard::new(cancel),
             },
         })
     }
@@ -1016,6 +1017,7 @@ mod tests {
             query: "test".into(),
             locale: Locale::En,
             intent: Intent::Factual,
+            _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
         let grounding_sources = vec![LlmSource {
@@ -1060,6 +1062,7 @@ mod tests {
             query: "test".into(),
             locale: Locale::En,
             intent: Intent::Factual,
+            _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
         // Same URL as internal source -- grounding should win
@@ -1096,6 +1099,7 @@ mod tests {
             query: "test".into(),
             locale: Locale::En,
             intent: Intent::Factual,
+            _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
         let done = orch.complete_stream(ctx, "answer", vec![]).await;
@@ -1120,6 +1124,7 @@ mod tests {
             query: "streamed query".into(),
             locale: Locale::Ja,
             intent: Intent::Navigational,
+            _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
         let _done = orch.complete_stream(ctx, "streamed answer", vec![]).await;
@@ -1147,6 +1152,7 @@ mod tests {
             query: "history query".into(),
             locale: Locale::En,
             intent: Intent::Factual,
+            _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
         let _done = orch.complete_stream(ctx, "history answer", vec![]).await;
@@ -1173,6 +1179,7 @@ mod tests {
             query: "q".into(),
             locale: Locale::En,
             intent: Intent::Factual,
+            _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
         let _done = orch.complete_stream(ctx, "", vec![]).await;

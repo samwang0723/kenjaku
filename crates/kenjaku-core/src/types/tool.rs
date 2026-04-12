@@ -104,8 +104,10 @@ impl ToolConfig {
                 let mut hasher = DefaultHasher::new();
                 request_id.hash(&mut hasher);
                 let hash = hasher.finish();
-                // Map hash to 0.0..1.0
-                let normalized = (hash as f64) / (u64::MAX as f64);
+                // Map hash to [0.0, 1.0) — the +1.0 ensures u64::MAX
+                // maps to a value strictly less than 1.0 so that
+                // rollout_pct == 1.0 always fires.
+                let normalized = (hash as f64) / (u64::MAX as f64 + 1.0);
                 (normalized as f32) < pct
             }
         }
@@ -114,20 +116,33 @@ impl ToolConfig {
 
 /// Accumulated outputs from prior tool tiers, keyed by `ToolId`.
 /// Tools in tier N can read outputs from tiers 0..N-1.
+///
+/// Maintains insertion order via `ordered_keys` so that iteration
+/// via `iter_ordered()` is deterministic (important for stable
+/// source numbering in merged chunks).
 #[derive(Debug, Clone, Default)]
-pub struct ToolOutputMap(HashMap<ToolId, ToolOutput>);
+pub struct ToolOutputMap {
+    map: HashMap<ToolId, ToolOutput>,
+    ordered_keys: Vec<ToolId>,
+}
 
 impl ToolOutputMap {
     pub fn new() -> Self {
-        Self(HashMap::new())
+        Self {
+            map: HashMap::new(),
+            ordered_keys: Vec::new(),
+        }
     }
 
     pub fn insert(&mut self, id: ToolId, output: ToolOutput) {
-        self.0.insert(id, output);
+        if !self.map.contains_key(&id) {
+            self.ordered_keys.push(id.clone());
+        }
+        self.map.insert(id, output);
     }
 
     pub fn get(&self, id: &str) -> Option<&ToolOutput> {
-        self.0.get(&ToolId(id.to_string()))
+        self.map.get(&ToolId(id.to_string()))
     }
 
     /// Count chunks returned by a specific tool. Returns 0 if tool
@@ -141,29 +156,38 @@ impl ToolOutputMap {
 
     /// True if any tool returned `WebHits`.
     pub fn has_web_hits(&self) -> bool {
-        self.0
+        self.map
             .values()
             .any(|o| matches!(o, ToolOutput::WebHits { .. }))
     }
 
-    /// Iterate all outputs.
+    /// Iterate all outputs in insertion order. Use this instead of
+    /// `iter()` when stable ordering matters (e.g. source numbering).
+    pub fn iter_ordered(&self) -> impl Iterator<Item = (&ToolId, &ToolOutput)> {
+        self.ordered_keys
+            .iter()
+            .filter_map(|k| self.map.get(k).map(|v| (k, v)))
+    }
+
+    /// Iterate all outputs (HashMap order — non-deterministic).
+    /// Prefer `iter_ordered()` when stable ordering matters.
     pub fn iter(&self) -> impl Iterator<Item = (&ToolId, &ToolOutput)> {
-        self.0.iter()
+        self.map.iter()
     }
 
     /// Consume into inner map.
     pub fn into_inner(self) -> HashMap<ToolId, ToolOutput> {
-        self.0
+        self.map
     }
 
     /// Number of tool outputs stored.
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.map.len()
     }
 
     /// True when empty.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.map.is_empty()
     }
 }
 

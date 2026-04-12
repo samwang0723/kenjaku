@@ -51,9 +51,18 @@ impl Tool for DocRagTool {
             return Err(ToolError::Cancelled);
         }
 
+        // Prefer the per-request collection_name (supports multi-collection
+        // routing) but fall back to the constructor-provided default when
+        // the request leaves it empty.
+        let collection = if req.collection_name.is_empty() {
+            &self.collection_name
+        } else {
+            &req.collection_name
+        };
+
         let chunks = self
             .retriever
-            .retrieve(&req.query_normalized, &self.collection_name, req.top_k)
+            .retrieve(&req.query_normalized, collection, req.top_k)
             .await
             .map_err(|e| ToolError::Upstream(e.to_string()))?;
 
