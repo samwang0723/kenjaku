@@ -1,0 +1,2262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kenjaku — Layered Architecture Refactor Plan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  /* ============================================================
+     BLUEPRINT — technical drawing feel
+     deep navy + gold dark / cream paper + ink light
+     ============================================================ */
+  :root {
+    --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+
+    /* Light — cream paper & ink blueprint */
+    --bg: #f5f2e8;
+    --bg-grid: rgba(30, 58, 95, 0.06);
+    --surface: #fbf9f1;
+    --surface-elevated: #ffffff;
+    --surface-recessed: #efeadc;
+    --border: rgba(30, 58, 95, 0.14);
+    --border-bright: rgba(30, 58, 95, 0.26);
+    --text: #1e3a5f;
+    --text-dim: #6a7d94;
+    --text-muted: #8b9cb3;
+
+    /* Accents — semantic roles */
+    --gold: #b8892a;          /* primary — the crown jewel */
+    --gold-dim: rgba(184, 137, 42, 0.12);
+    --gold-bright: #d4a73a;
+    --sage: #4d7a3c;          /* success, after, brain */
+    --sage-dim: rgba(77, 122, 60, 0.12);
+    --teal: #2d7a70;          /* session */
+    --teal-dim: rgba(45, 122, 112, 0.12);
+    --slate: #3e5a80;         /* foundation */
+    --slate-dim: rgba(62, 90, 128, 0.12);
+    --crimson: #8a2e2e;       /* harness, risk */
+    --crimson-dim: rgba(138, 46, 46, 0.1);
+    --rose: #a84545;          /* before, warning */
+    --rose-dim: rgba(168, 69, 69, 0.1);
+    --amber: #c57a1a;         /* caution */
+    --amber-dim: rgba(197, 122, 26, 0.12);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1828;
+      --bg-grid: rgba(212, 167, 58, 0.05);
+      --surface: #122235;
+      --surface-elevated: #172a42;
+      --surface-recessed: #0e1e30;
+      --border: rgba(212, 167, 58, 0.15);
+      --border-bright: rgba(212, 167, 58, 0.3);
+      --text: #e8f0fc;
+      --text-dim: #93a6c4;
+      --text-muted: #6a7e9a;
+
+      --gold: #d4a73a;
+      --gold-dim: rgba(212, 167, 58, 0.16);
+      --gold-bright: #e6bd50;
+      --sage: #8cb365;
+      --sage-dim: rgba(140, 179, 101, 0.14);
+      --teal: #65b5aa;
+      --teal-dim: rgba(101, 181, 170, 0.14);
+      --slate: #7b93bd;
+      --slate-dim: rgba(123, 147, 189, 0.14);
+      --crimson: #c86060;
+      --crimson-dim: rgba(200, 96, 96, 0.14);
+      --rose: #d87878;
+      --rose-dim: rgba(216, 120, 120, 0.12);
+      --amber: #e0a05c;
+      --amber-dim: rgba(224, 160, 92, 0.14);
+    }
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+  body {
+    background-color: var(--bg);
+    background-image:
+      linear-gradient(var(--bg-grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px);
+    background-size: 32px 32px;
+    color: var(--text);
+    font-family: var(--font-body);
+    font-weight: 400;
+    letter-spacing: 0.02em;
+    line-height: 1.5;
+    padding: 48px 40px 96px;
+    min-height: 100vh;
+    overflow-wrap: break-word;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ============ LAYOUT ============ */
+  .wrap {
+    max-width: 1340px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    gap: 0 44px;
+  }
+  .main { min-width: 0; }
+
+  /* ============ TOC ============ */
+  .toc {
+    position: sticky;
+    top: 24px;
+    align-self: start;
+    padding: 14px 0;
+    grid-row: 1 / -1;
+    max-height: calc(100dvh - 48px);
+    overflow-y: auto;
+  }
+  .toc::-webkit-scrollbar { width: 3px; }
+  .toc::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 2px; }
+
+  .toc-title {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 2.5px;
+    color: var(--text-muted);
+    padding: 0 0 10px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .toc a {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-dim);
+    text-decoration: none;
+    padding: 5px 8px;
+    border-radius: 4px;
+    border-left: 2px solid transparent;
+    transition: all 0.15s;
+    line-height: 1.5;
+    margin-bottom: 2px;
+  }
+  .toc a:hover { color: var(--text); background: var(--gold-dim); }
+  .toc a.active {
+    color: var(--text);
+    border-left-color: var(--gold);
+    background: var(--gold-dim);
+  }
+
+  /* ============ ANIMATION ============ */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .animate {
+    animation: fadeUp 0.4s ease-out both;
+    animation-delay: calc(var(--i, 0) * 0.05s);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-delay: 0ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  /* ============ HEADER ============ */
+  .hdr {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 28px;
+    margin-bottom: 40px;
+  }
+  .hdr-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--gold);
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .hdr-label::before {
+    content: '';
+    width: 22px;
+    height: 1px;
+    background: var(--gold);
+  }
+  h1 {
+    font-size: 48px;
+    font-weight: 700;
+    font-style: italic;
+    letter-spacing: -1.5px;
+    line-height: 1.04;
+    margin-bottom: 12px;
+    text-wrap: balance;
+  }
+  h1 em {
+    font-style: normal;
+    color: var(--gold);
+    font-weight: 800;
+  }
+  .hdr-sub {
+    font-size: 17px;
+    color: var(--text-dim);
+    line-height: 1.55;
+    max-width: 760px;
+    margin-bottom: 18px;
+  }
+  .hdr-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .hdr-meta span strong {
+    color: var(--text-dim);
+    font-weight: 500;
+    margin-right: 6px;
+  }
+
+  /* ============ SECTION HEADINGS ============ */
+  .sec-head {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 3.5px;
+    color: var(--text-dim);
+    margin: 52px 0 20px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    scroll-margin-top: 24px;
+  }
+  .sec-head .num {
+    color: var(--gold);
+    font-weight: 600;
+  }
+  .sec-head .body-label {
+    font-family: var(--font-body);
+    font-size: 22px;
+    font-style: italic;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: -0.3px;
+    color: var(--text);
+    margin-left: 4px;
+  }
+
+  h3 {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    margin: 28px 0 12px;
+    color: var(--text);
+  }
+  h4 {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    margin: 22px 0 10px;
+  }
+  p {
+    font-size: 14.5px;
+    line-height: 1.68;
+    color: var(--text);
+    margin-bottom: 12px;
+  }
+  p.dim { color: var(--text-dim); }
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.84em;
+    background: var(--gold-dim);
+    color: var(--gold);
+    padding: 1px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+
+  /* ============ HERO CARD (exec summary) ============ */
+  .hero {
+    background: var(--surface-elevated);
+    border: 1px solid var(--border);
+    border-top: 3px solid var(--gold);
+    border-radius: 8px;
+    padding: 32px 36px;
+    box-shadow: 0 4px 24px rgba(30, 58, 95, 0.06);
+    margin-bottom: 28px;
+    position: relative;
+  }
+  .hero::before {
+    content: 'LOAD-BEARING DECISIONS';
+    position: absolute;
+    top: -10px;
+    left: 32px;
+    background: var(--surface-elevated);
+    padding: 0 10px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 3px;
+    color: var(--gold);
+  }
+  .hero-lead {
+    font-size: 15.5px;
+    line-height: 1.72;
+    color: var(--text);
+    margin-bottom: 24px;
+    font-style: italic;
+    border-left: 2px solid var(--gold);
+    padding-left: 18px;
+  }
+  .hero-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 22px;
+  }
+  .hero-grid > * { min-width: 0; }
+  .hero-cell {
+    position: relative;
+    padding-left: 38px;
+  }
+  .hero-cell__num {
+    position: absolute;
+    left: 0;
+    top: 0;
+    font-family: var(--font-mono);
+    font-size: 26px;
+    font-weight: 400;
+    color: var(--gold);
+    line-height: 1;
+  }
+  .hero-cell h4 {
+    margin: 0 0 6px;
+    font-family: var(--font-body);
+    font-size: 14px;
+    font-weight: 700;
+    text-transform: none;
+    letter-spacing: -0.2px;
+    color: var(--text);
+  }
+  .hero-cell p {
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-dim);
+    margin: 0;
+  }
+
+  /* ============ CARDS ============ */
+  .ve-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 18px 22px;
+    min-width: 0;
+    overflow-wrap: break-word;
+  }
+  .ve-card--elevated {
+    background: var(--surface-elevated);
+    box-shadow: 0 2px 10px rgba(30, 58, 95, 0.05);
+  }
+  .ve-card--recessed {
+    background: var(--surface-recessed);
+    box-shadow: inset 0 1px 2px rgba(30, 58, 95, 0.06);
+  }
+  .ve-card__label {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 2.2px;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .ve-card__label::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    flex-shrink: 0;
+  }
+  .ve-card__label--gold { color: var(--gold); }
+  .ve-card__label--sage { color: var(--sage); }
+  .ve-card__label--teal { color: var(--teal); }
+  .ve-card__label--slate { color: var(--slate); }
+  .ve-card__label--crimson { color: var(--crimson); }
+  .ve-card__label--rose { color: var(--rose); }
+
+  /* ============ PROBLEM COMPARISON ============ */
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 22px;
+    margin-bottom: 24px;
+  }
+  .compare > * { min-width: 0; overflow-wrap: break-word; }
+  .compare-panel {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+  .compare-panel__head {
+    padding: 14px 20px 12px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .compare-panel--before .compare-panel__head {
+    color: var(--rose);
+    background: var(--rose-dim);
+  }
+  .compare-panel--after .compare-panel__head {
+    color: var(--sage);
+    background: var(--sage-dim);
+  }
+  .compare-panel__body {
+    padding: 20px 22px 22px;
+    font-size: 13.5px;
+    line-height: 1.65;
+  }
+  .compare-panel__body p { font-size: 13.5px; margin-bottom: 10px; color: var(--text); }
+  .compare-panel__body p:last-child { margin-bottom: 0; }
+
+  ol.step-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    counter-reset: step;
+  }
+  ol.step-list li {
+    counter-increment: step;
+    position: relative;
+    padding-left: 34px;
+    padding-top: 2px;
+    padding-bottom: 14px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text);
+  }
+  ol.step-list li:last-child { padding-bottom: 0; }
+  ol.step-list li::before {
+    content: counter(step, decimal-leading-zero);
+    position: absolute;
+    left: 0;
+    top: 1px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    background: var(--surface-recessed);
+    padding: 3px 6px;
+    border-radius: 3px;
+    font-weight: 500;
+  }
+  .compare-panel--after ol.step-list li::before { color: var(--sage); background: var(--sage-dim); }
+  .compare-panel--before ol.step-list li::before { color: var(--rose); background: var(--rose-dim); }
+
+  /* ============ LAYER SUMMARY GRID ============ */
+  .layer-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 18px;
+    margin-bottom: 24px;
+  }
+  .layer-grid > * { min-width: 0; }
+  .layer-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--text-dim);
+    border-radius: 6px;
+    padding: 18px 20px 20px;
+    position: relative;
+  }
+  .layer-card--brain { border-left-color: var(--sage); }
+  .layer-card--session { border-left-color: var(--teal); }
+  .layer-card--foundation { border-left-color: var(--slate); }
+  .layer-card--tooling { border-left-color: var(--gold); }
+  .layer-card--harness { border-left-color: var(--crimson); }
+
+  .layer-card__hdr {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .layer-card__name {
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    color: var(--text);
+  }
+  .layer-card__idx {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    letter-spacing: 1.5px;
+  }
+  .layer-card p {
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+  }
+  .layer-card__list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .layer-card__list li {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-dim);
+    padding: 2px 0 2px 12px;
+    position: relative;
+    line-height: 1.55;
+  }
+  .layer-card__list li::before {
+    content: '›';
+    position: absolute;
+    left: 0;
+    color: var(--text-muted);
+    font-weight: 700;
+  }
+  .layer-card__list li strong {
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  /* ============ MERMAID CONTAINER ============ */
+  .diagram-shell {
+    position: relative;
+    margin-bottom: 24px;
+  }
+  .diagram-shell__hint {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+    letter-spacing: 0.3px;
+  }
+  .mermaid-wrap {
+    position: relative;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 520px;
+    cursor: grab;
+  }
+  .mermaid-wrap.is-panning { cursor: grabbing; user-select: none; }
+
+  .zoom-controls {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    display: flex;
+    gap: 2px;
+    z-index: 10;
+    background: var(--surface-elevated);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px;
+  }
+  .zoom-controls button {
+    width: 30px;
+    height: 30px;
+    border: none;
+    background: transparent;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    cursor: pointer;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, color 0.15s;
+  }
+  .zoom-controls button:hover { background: var(--gold-dim); color: var(--gold); }
+  .zoom-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    padding: 0 8px;
+    white-space: nowrap;
+  }
+  .mermaid-viewport {
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+    min-height: 480px;
+  }
+  .mermaid-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+
+  /* ============ MERMAID SVG OVERRIDES ============ */
+  .mermaid .nodeLabel {
+    font-family: var(--font-body) !important;
+    font-size: 18px !important;
+    font-weight: 500 !important;
+    color: var(--text) !important;
+  }
+  .mermaid .edgeLabel {
+    font-family: var(--font-mono) !important;
+    font-size: 12px !important;
+    color: var(--text-dim) !important;
+    background-color: var(--bg) !important;
+  }
+  .mermaid .edgeLabel rect { fill: var(--bg) !important; }
+  .mermaid .cluster-label {
+    font-family: var(--font-mono) !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    letter-spacing: 1.5px !important;
+    text-transform: uppercase !important;
+  }
+  .mermaid .node rect,
+  .mermaid .node circle,
+  .mermaid .node polygon {
+    stroke-width: 1.5px !important;
+  }
+  .mermaid .edge-pattern-solid { stroke-width: 1.8px !important; }
+  .mermaid .edge-pattern-dotted { stroke-width: 1.3px !important; }
+  .mermaid .actor { stroke-width: 1.5px !important; }
+  .mermaid .messageText {
+    font-family: var(--font-mono) !important;
+    font-size: 12px !important;
+  }
+  .mermaid .actor text tspan {
+    font-family: var(--font-body) !important;
+    font-size: 14px !important;
+    font-weight: 600 !important;
+  }
+
+  /* ============ CODE BLOCKS ============ */
+  .code-file {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 16px;
+    background: var(--surface-recessed);
+  }
+  .code-file__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 11px 18px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .code-file__path {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .code-file__path b {
+    color: var(--text);
+    font-weight: 500;
+  }
+  .code-file__tag {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 3px;
+    background: var(--gold-dim);
+    color: var(--gold);
+  }
+  .code-file__tag--new { background: var(--sage-dim); color: var(--sage); }
+  .code-file__tag--mod { background: var(--amber-dim); color: var(--amber); }
+  .code-file__body {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.68;
+    padding: 18px 22px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+    max-height: 640px;
+    overflow: auto;
+  }
+  .code-file__body .kw { color: var(--gold); font-weight: 500; }
+  .code-file__body .ty { color: var(--sage); }
+  .code-file__body .str { color: var(--teal); }
+  .code-file__body .cm { color: var(--text-muted); font-style: italic; }
+  .code-file__body .fn { color: var(--slate); }
+
+  .two-col-code {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .two-col-code > * { min-width: 0; }
+  @media (max-width: 1100px) {
+    .two-col-code { grid-template-columns: 1fr; }
+  }
+
+  /* ============ TABLES ============ */
+  .table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 20px;
+  }
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+  .data-table thead th {
+    background: var(--surface-elevated);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-dim);
+    text-align: left;
+    padding: 13px 16px;
+    border-bottom: 2px solid var(--border-bright);
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+  }
+  .data-table td {
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    color: var(--text);
+  }
+  .data-table tbody tr:nth-child(even) td { background: var(--gold-dim); }
+  .data-table tbody tr:last-child td { border-bottom: none; }
+  .data-table code {
+    font-size: 11px;
+    white-space: normal;
+  }
+  .data-table small {
+    display: block;
+    color: var(--text-dim);
+    font-size: 11px;
+    margin-top: 3px;
+    line-height: 1.5;
+  }
+  .data-table strong {
+    color: var(--text);
+    font-weight: 700;
+  }
+
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    padding: 3px 9px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    white-space: nowrap;
+  }
+  .status--risk-low { background: var(--sage-dim); color: var(--sage); }
+  .status--risk-med { background: var(--amber-dim); color: var(--amber); }
+  .status--risk-high { background: var(--crimson-dim); color: var(--crimson); }
+  .status--risk-none { background: var(--slate-dim); color: var(--slate); }
+  .status--gate { background: var(--gold-dim); color: var(--gold); }
+
+  /* ============ CALLOUTS ============ */
+  .callout {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--gold);
+    border-radius: 0 6px 6px 0;
+    padding: 18px 22px;
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--text-dim);
+    margin-bottom: 16px;
+  }
+  .callout--warn { border-left-color: var(--amber); }
+  .callout--risk { border-left-color: var(--crimson); }
+  .callout--info { border-left-color: var(--slate); }
+  .callout strong { color: var(--text); font-weight: 700; }
+  .callout code { white-space: normal; }
+  .callout__label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    color: var(--gold);
+  }
+  .callout--warn .callout__label { color: var(--amber); }
+  .callout--risk .callout__label { color: var(--crimson); }
+  .callout--info .callout__label { color: var(--slate); }
+
+  .callout-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  .callout-grid > * { min-width: 0; }
+
+  /* ============ LEGEND ============ */
+  .legend {
+    display: flex;
+    gap: 22px;
+    flex-wrap: wrap;
+    padding: 14px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 20px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-dim);
+  }
+  .legend-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    border: 1px solid var(--border-bright);
+  }
+
+  /* ============ DIRECTORY TREE ============ */
+  .dir-tree {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.78;
+    background: var(--surface-recessed);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 20px 24px;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--text);
+    margin-bottom: 20px;
+  }
+  .dir-tree .ann { color: var(--text-muted); font-size: 10.5px; font-style: italic; }
+  .dir-tree .hl { color: var(--gold); font-weight: 600; }
+  .dir-tree .new { color: var(--sage); font-weight: 600; }
+  .dir-tree .del { color: var(--rose); font-weight: 600; }
+  .dir-tree .mod { color: var(--amber); font-weight: 600; }
+
+  /* ============ DECISIONS GRID ============ */
+  .decisions {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 18px;
+    margin-bottom: 24px;
+  }
+  .decisions > * { min-width: 0; }
+  .decision {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 18px 22px;
+    position: relative;
+  }
+  .decision__num {
+    position: absolute;
+    top: 16px;
+    right: 20px;
+    font-family: var(--font-mono);
+    font-size: 28px;
+    font-weight: 400;
+    color: var(--gold-dim);
+    line-height: 1;
+  }
+  .decision h4 {
+    font-family: var(--font-body);
+    font-size: 14px;
+    font-weight: 700;
+    text-transform: none;
+    letter-spacing: -0.2px;
+    color: var(--text);
+    margin: 0 40px 8px 0;
+  }
+  .decision p {
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--text-dim);
+    margin: 0;
+  }
+  .decision__answer {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    padding: 3px 9px;
+    border-radius: 4px;
+    background: var(--sage-dim);
+    color: var(--sage);
+    margin-top: 10px;
+    letter-spacing: 0.5px;
+  }
+
+  /* ============ NON-GOALS ============ */
+  .non-goals {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 22px 28px;
+    margin-bottom: 20px;
+  }
+  .non-goals-list {
+    columns: 2;
+    column-gap: 40px;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .non-goals-list li {
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--text-dim);
+    padding: 5px 0 5px 24px;
+    position: relative;
+    break-inside: avoid;
+  }
+  .non-goals-list li::before {
+    content: '×';
+    position: absolute;
+    left: 0;
+    top: 3px;
+    font-family: var(--font-mono);
+    font-size: 15px;
+    color: var(--rose);
+    font-weight: 700;
+  }
+  .non-goals-list li strong { color: var(--text); font-weight: 600; }
+  @media (max-width: 900px) {
+    .non-goals-list { columns: 1; }
+  }
+
+  /* ============ PILL LIST ============ */
+  .pill-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 12px 0;
+  }
+  .pill {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    padding: 4px 10px;
+    background: var(--gold-dim);
+    color: var(--gold);
+    border-radius: 4px;
+    letter-spacing: 0.3px;
+  }
+
+  /* ============ RESPONSIVE ============ */
+  @media (max-width: 1100px) {
+    .wrap { grid-template-columns: 1fr; gap: 0; }
+    .toc {
+      position: sticky;
+      top: 0;
+      z-index: 200;
+      display: flex;
+      gap: 4px;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 0;
+      margin: -48px -40px 24px;
+      padding-left: 40px;
+      padding-right: 40px;
+      grid-row: auto;
+      max-height: none;
+    }
+    .toc::-webkit-scrollbar { display: none; }
+    .toc-title { display: none; }
+    .toc a {
+      white-space: nowrap;
+      flex-shrink: 0;
+      border-left: none;
+      border-bottom: 2px solid transparent;
+      border-radius: 4px 4px 0 0;
+      padding: 7px 10px;
+    }
+    .toc a.active {
+      border-left: none;
+      border-bottom-color: var(--gold);
+      background: var(--surface);
+    }
+    .sec-head { scroll-margin-top: 58px; }
+    .hero-grid { grid-template-columns: 1fr; }
+    .compare { grid-template-columns: 1fr; }
+    .decisions { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 700px) {
+    body { padding: 32px 20px 64px; }
+    h1 { font-size: 34px; }
+    .hero { padding: 24px; }
+    .hero-cell { padding-left: 0; padding-top: 32px; }
+    .hero-cell__num { top: 0; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <nav class="toc" id="toc">
+    <div class="toc-title">Contents</div>
+    <a href="#s0">00 · Summary</a>
+    <a href="#s1">01 · Problem</a>
+    <a href="#s2">02 · The 5 Layers</a>
+    <a href="#s3">03 · Architecture</a>
+    <a href="#s4">04 · Request Flow</a>
+    <a href="#s5">05 · Tool Trait</a>
+    <a href="#s6">06 · Message Abstraction</a>
+    <a href="#s7">07 · Module Topology</a>
+    <a href="#s8">08 · Phase Plan</a>
+    <a href="#s9">09 · Phase 1 Gate</a>
+    <a href="#s10">10 · Risks &amp; Decisions</a>
+    <a href="#s11">11 · Non-goals</a>
+  </nav>
+
+  <div class="main">
+
+    <!-- ============ HEADER ============ -->
+    <header class="hdr animate" style="--i:0">
+      <div class="hdr-label">Implementation Spec &nbsp;·&nbsp; v2 Amended</div>
+      <h1>Kenjaku <em>Layered</em><br>Architecture Refactor</h1>
+      <p class="hdr-sub">
+        Make external tool-calling a <code>plugin layer</code> so document RAG, Brave web search,
+        future price quotes, FAQ retrieval, and Agents/Skills all land through one trait —
+        without a single edit to the harness or the brain.
+      </p>
+      <div class="hdr-meta">
+        <span><strong>branch</strong><code>refactor/layered-architecture</code></span>
+        <span><strong>builds on</strong><code>cab2292</code></span>
+        <span><strong>status</strong>design · 2 commits</span>
+        <span><strong>phases</strong>5, each revert-safe</span>
+        <span><strong>phase 1</strong>~500 LOC</span>
+      </div>
+    </header>
+
+    <!-- ============ 0. EXEC SUMMARY ============ -->
+    <div id="s0" class="sec-head animate" style="--i:1">
+      <span class="num">00</span> Exec Summary <span class="body-label">— the three decisions that bear weight</span>
+    </div>
+
+    <div class="hero animate" style="--i:2">
+      <p class="hero-lead">
+        Today <code>SearchService::search</code> is a 200-line procedure that owns intent
+        classification, translation, retrieval, web fallback, LLM generation, suggestions, trending,
+        and conversation persistence. Adding a price-quote tool today requires edits in
+        <code>SearchService</code>, <code>AppState</code>, the config loader, and a new trait. The refactor
+        eliminates the 3-4-places edit pain.
+      </p>
+      <div class="hero-grid">
+        <div class="hero-cell">
+          <div class="hero-cell__num">01</div>
+          <h4>A single <code>Tool</code> trait</h4>
+          <p>
+            Contract: <code>(ToolRequest, CancellationToken) → Result&lt;ToolOutput, ToolError&gt;</code>.
+            <code>HybridRetriever</code>, <code>BraveSearchProvider</code>, and every future plugin implement it. Self-gating via <code>should_fire</code>.
+          </p>
+        </div>
+        <div class="hero-cell">
+          <div class="hero-cell__num">02</div>
+          <h4>A core <code>Message</code> abstraction</h4>
+          <p>
+            LLM-agnostic message type in <code>kenjaku-core</code>. Providers implement
+            <code>messages_to_wire</code> internally. The <code>ConversationAssembler</code> runs in parallel with tool fan-out. Multi-LLM ready.
+          </p>
+        </div>
+        <div class="hero-cell">
+          <div class="hero-cell__num">03</div>
+          <h4>Harness owns the lifecycle</h4>
+          <p>
+            <code>SearchOrchestrator</code> replaces the body of <code>SearchService</code>. Fan-out via <code>join_all&lt;Result&gt;</code> (never short-circuit). Per-request <code>CancellationToken</code> cascades on client disconnect.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 1. PROBLEM ============ -->
+    <div id="s1" class="sec-head animate" style="--i:3">
+      <span class="num">01</span> The Problem <span class="body-label">— where the edit pain lives</span>
+    </div>
+
+    <div class="compare">
+      <div class="compare-panel compare-panel--before animate" style="--i:4">
+        <div class="compare-panel__head">
+          <span>Before · today</span>
+          <span>search.rs · 689 lines</span>
+        </div>
+        <div class="compare-panel__body">
+          <p class="dim">Adding a price-quote tool needs edits in 4 places:</p>
+          <ol class="step-list">
+            <li>Add concrete <code>PriceQuoteClient</code> in <code>kenjaku-infra</code></li>
+            <li>Thread <code>Arc&lt;PriceQuoteClient&gt;</code> through <code>AppState</code> and <code>SearchService::new</code> (15 args)</li>
+            <li>Inline the ticker-trigger logic into <code>SearchService::should_price_query()</code> alongside <code>should_web_search()</code></li>
+            <li>Splice a <code>tokio::join!</code> arm into the existing retrieval parallelism</li>
+            <li>Hand-merge <code>PriceQuote</code> facts into the Gemini context string via a new <code>if let Some(quote)</code> branch</li>
+            <li>Add new config section, bootstrap wiring, observability spans — repeat next tool</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="compare-panel compare-panel--after animate" style="--i:5">
+        <div class="compare-panel__head">
+          <span>After · refactor</span>
+          <span>tools/price_quote.rs · ~150 lines</span>
+        </div>
+        <div class="compare-panel__body">
+          <p class="dim">Adding a price-quote tool = one file, one registry line:</p>
+          <ol class="step-list">
+            <li>Create <code>tools/price_quote.rs</code> — single file, implements <code>Tool</code></li>
+            <li><code>should_fire</code> owns the ticker regex locally — no global router</li>
+            <li><code>invoke</code> takes <code>&amp;CancellationToken</code>, returns <code>ToolOutput::Structured</code></li>
+            <li>Add one line to the tool registry in <code>tools/mod.rs</code></li>
+            <li>Add one config section with <code>enabled</code> + <code>rollout_pct</code> for % canary</li>
+            <li>Harness, brain, and core are untouched. That's the validation test for Phase 5.</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 2. FIVE LAYERS ============ -->
+    <div id="s2" class="sec-head animate" style="--i:6">
+      <span class="num">02</span> The Five Layers <span class="body-label">— responsibilities, not file paths</span>
+    </div>
+
+    <div class="layer-grid">
+      <div class="layer-card layer-card--brain animate" style="--i:7">
+        <div class="layer-card__hdr">
+          <div class="layer-card__name">Brain</div>
+          <div class="layer-card__idx">L·01</div>
+        </div>
+        <p>All LLM-facing concerns. Translation, intent classification, prompt templates, answer generation — model quirks stay here.</p>
+        <ul class="layer-card__list">
+          <li><strong>Translator</strong> — normalize + detect locale</li>
+          <li><strong>IntentClassifier</strong> — cheap utility call</li>
+          <li><strong>PromptBuilder</strong> — system + user turn text</li>
+          <li><strong>AnswerGenerator</strong> — stream + non-stream</li>
+          <li><strong>ConversationAssembler</strong> — Vec of Message</li>
+          <li><strong>SuggestionGen</strong> — follow-ups</li>
+        </ul>
+      </div>
+
+      <div class="layer-card layer-card--session animate" style="--i:8">
+        <div class="layer-card__hdr">
+          <div class="layer-card__name">Session</div>
+          <div class="layer-card__idx">L·02</div>
+        </div>
+        <p>Conversation memory. Redis for short-term, Postgres for long-term via mpsc → batch insert. No LLM coupling.</p>
+        <ul class="layer-card__list">
+          <li><strong>SessionHistoryStore</strong> — Redis, 2h TTL</li>
+          <li><strong>LocaleMemory</strong> — sticky per-device</li>
+          <li><strong>ConversationService</strong> — mpsc → batch</li>
+          <li><strong>FeedbackService</strong> — upsert like/dislike</li>
+        </ul>
+      </div>
+
+      <div class="layer-card layer-card--foundation animate" style="--i:9">
+        <div class="layer-card__hdr">
+          <div class="layer-card__name">Foundation</div>
+          <div class="layer-card__idx">L·03</div>
+        </div>
+        <p>Cross-cutting infrastructure. Workers, tracing, guardian checks, rate limiting — runs regardless of tool.</p>
+        <ul class="layer-card__list">
+          <li><strong>quality::is_gibberish</strong> — guardian</li>
+          <li><strong>rate limit / validation</strong></li>
+          <li><strong>OTel tracing</strong> — #[instrument] everywhere</li>
+          <li><strong>TrendingFlushWorker</strong> — SCAN + flush</li>
+          <li><strong>ConversationFlushWorker</strong> — 64/flush</li>
+          <li><strong>SuggestionRefreshWorker</strong> — cron + fingerprint</li>
+        </ul>
+      </div>
+
+      <div class="layer-card layer-card--tooling animate" style="--i:10">
+        <div class="layer-card__hdr">
+          <div class="layer-card__name">Tooling</div>
+          <div class="layer-card__idx">L·04</div>
+        </div>
+        <p><strong>The crown jewel.</strong> External execution plugins. One trait, one file per tool, self-gating.</p>
+        <ul class="layer-card__list">
+          <li><strong>DocRagTool</strong> — Qdrant + BM25 + RRF</li>
+          <li><strong>BraveWebTool</strong> — trigger regex + fallback</li>
+          <li><strong>GoogleSearchTool</strong> — built-in grounding</li>
+          <li><strong>PriceQuoteTool</strong> <em>(future)</em></li>
+          <li><strong>FaqTool</strong> <em>(future)</em></li>
+          <li><strong>Agent + Skills</strong> <em>(Phase 6+)</em></li>
+        </ul>
+      </div>
+
+      <div class="layer-card layer-card--harness animate" style="--i:11">
+        <div class="layer-card__hdr">
+          <div class="layer-card__name">Harness</div>
+          <div class="layer-card__idx">L·05</div>
+        </div>
+        <p>Coordinator. Picks tools, fans them out, merges outputs, manages the cancellation lifecycle.</p>
+        <ul class="layer-card__list">
+          <li><strong>SearchOrchestrator</strong> — replaces search.rs body</li>
+          <li><strong>routing</strong> — intent → Vec of ToolId</li>
+          <li><strong>fanout</strong> — join_all + degrade → Empty</li>
+          <li><strong>context</strong> — ToolOutput → ToolContext merge</li>
+          <li><strong>title_resolver</strong> — post-generation step</li>
+          <li><strong>CancellationToken</strong> — parent scope</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ============ 3. LAYER DIAGRAM ============ -->
+    <div id="s3" class="sec-head animate" style="--i:12">
+      <span class="num">03</span> Architecture Topology <span class="body-label">— how the layers connect</span>
+    </div>
+
+    <section class="diagram-shell animate" style="--i:13">
+      <p class="diagram-shell__hint">
+        Ctrl/Cmd + wheel to zoom. Drag to pan. Double-click to fit. Click ⛶ to open full size in a new tab.
+      </p>
+      <div class="mermaid-wrap">
+        <div class="zoom-controls">
+          <button type="button" data-action="zoom-in" title="Zoom in">+</button>
+          <button type="button" data-action="zoom-out" title="Zoom out">&minus;</button>
+          <button type="button" data-action="zoom-fit" title="Smart fit">&#8634;</button>
+          <button type="button" data-action="zoom-one" title="1:1 zoom">1:1</button>
+          <button type="button" data-action="zoom-expand" title="Open full size">&#x26F6;</button>
+          <span class="zoom-label">Loading...</span>
+        </div>
+        <div class="mermaid-viewport">
+          <div class="mermaid mermaid-canvas"></div>
+        </div>
+      </div>
+      <script type="text/plain" class="diagram-source">
+flowchart TB
+  API["API Handler<br/>POST search · SSE"]:::api
+
+  subgraph H ["HARNESS · L·05"]
+    direction TB
+    ORC["SearchOrchestrator<br/>routing · fan-out · cancel"]:::harness
+    FAN["fanout · join_all of Result<br/>degrade · Empty"]:::harness
+    TR["TitleResolver<br/>post-generation"]:::harness
+  end
+
+  subgraph B ["BRAIN · L·01"]
+    direction TB
+    ASM["ConversationAssembler<br/>parallel Vec of Message"]:::brain
+    PRO["PromptBuilder<br/>system + user turn"]:::brain
+    GEN["AnswerGenerator<br/>stream + non-stream"]:::brain
+  end
+
+  subgraph T ["TOOLING · L·04"]
+    direction LR
+    T1["DocRagTool"]:::tool
+    T2["BraveWebTool"]:::tool
+    T3["GoogleSearchTool"]:::toolOpt
+    T4["PriceQuoteTool · future"]:::toolFut
+    T5["FaqTool · future"]:::toolFut
+  end
+
+  subgraph S ["SESSION · L·02"]
+    HIST["History + LocaleMemory<br/>Feedback + Conversation"]:::session
+  end
+
+  subgraph F ["FOUNDATION · L·03"]
+    FND["quality · rate limit · OTel<br/>Workers · Guardian"]:::foundation
+  end
+
+  API --> ORC
+  ORC -->|"classify + translate"| B
+  ORC -->|"select + fanout"| FAN
+  FAN -->|"Tool invoke + cancel"| T
+  ORC -->|"history"| HIST
+  ASM -->|"Vec of Message"| GEN
+  GEN -->|"stream"| ORC
+  ORC -->|"resolve titles"| TR
+  TR -->|"enriched sources"| API
+  ORC -.->|"record"| HIST
+  ORC -.->|"guard"| FND
+  T -.->|"span"| FND
+  B -.->|"span"| FND
+
+  classDef api fill:#b8892a22,stroke:#b8892a,stroke-width:2px
+  classDef harness fill:#8a2e2e22,stroke:#8a2e2e,stroke-width:1.8px
+  classDef brain fill:#4d7a3c22,stroke:#4d7a3c,stroke-width:1.8px
+  classDef session fill:#2d7a7022,stroke:#2d7a70,stroke-width:1.8px
+  classDef foundation fill:#3e5a8022,stroke:#3e5a80,stroke-width:1.8px
+  classDef tool fill:#b8892a33,stroke:#b8892a,stroke-width:2px
+  classDef toolOpt fill:#b8892a15,stroke:#b8892a,stroke-width:1.3px,stroke-dasharray: 4 3
+  classDef toolFut fill:#b8892a0a,stroke:#6a7d94,stroke-width:1px,stroke-dasharray: 3 3
+      </script>
+    </section>
+
+    <div class="legend animate" style="--i:14">
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--sage)"></div>Brain L·01</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--teal)"></div>Session L·02</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--slate)"></div>Foundation L·03</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--gold)"></div>Tooling L·04</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--crimson)"></div>Harness L·05</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:transparent;border:1.5px dashed var(--gold)"></div>Conditional · optional</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:transparent;border:1px dashed var(--text-muted)"></div>Future · not yet built</div>
+    </div>
+
+    <!-- ============ 4. SEQUENCE ============ -->
+    <div id="s4" class="sec-head animate" style="--i:15">
+      <span class="num">04</span> Request Flow <span class="body-label">— /search streaming end-to-end</span>
+    </div>
+
+    <p class="dim animate" style="--i:16">
+      Two things worth noting: <code>ConversationAssembler</code> runs <strong>in parallel</strong> with tool
+      fan-out because it only needs history + query, not tool outputs. <code>BraveWebTool</code> is <strong>NOT</strong>
+      parallel with <code>DocRagTool</code> — its <code>should_fire</code> depends on <code>prior_chunk_count</code>.
+      Client disconnect triggers <code>token.cancel()</code> which cascades through every in-flight tool + assembler + resolver.
+    </p>
+
+    <section class="diagram-shell animate" style="--i:17">
+      <p class="diagram-shell__hint">
+        Ctrl/Cmd + wheel to zoom. Drag to pan.
+      </p>
+      <div class="mermaid-wrap" style="min-height:580px">
+        <div class="zoom-controls">
+          <button type="button" data-action="zoom-in" title="Zoom in">+</button>
+          <button type="button" data-action="zoom-out" title="Zoom out">&minus;</button>
+          <button type="button" data-action="zoom-fit" title="Smart fit">&#8634;</button>
+          <button type="button" data-action="zoom-one" title="1:1 zoom">1:1</button>
+          <button type="button" data-action="zoom-expand" title="Open full size">&#x26F6;</button>
+          <span class="zoom-label">Loading...</span>
+        </div>
+        <div class="mermaid-viewport">
+          <div class="mermaid mermaid-canvas"></div>
+        </div>
+      </div>
+      <script type="text/plain" class="diagram-source">
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant H as API Handler
+  participant O as Orchestrator
+  participant B as Brain
+  participant ASM as ConversationAssembler
+  participant T1 as DocRagTool
+  participant T2 as BraveWebTool
+  participant TR as TitleResolver
+  participant S as Session
+
+  C->>H: POST search SSE
+  H->>O: search_stream cancel_token
+  Note over O: Owns CancellationToken for this request
+  par intent + translate
+    O->>B: classify
+    O->>B: translate
+  end
+  B-->>O: intent · normalized · locale
+  O->>S: snapshot_history
+  S-->>O: Vec of ConversationTurn
+
+  Note over O,T2: CRITICAL PATH FAN-OUT
+  par ConversationAssembler · parallel
+    O->>ASM: build · history · query · locale
+  and Tier 1 · dep-free tools
+    O->>T1: invoke · token
+    T1-->>O: ToolOutput Chunks
+  end
+  Note over O: tier-1 done · prior_count known
+  alt should_fire · req · prior_count
+    O->>T2: invoke · token
+    T2-->>O: ToolOutput WebHits
+  end
+  ASM-->>O: Vec of Message
+
+  O->>O: merge · ToolContext + messages
+  O->>B: generate_stream · messages · token
+  B-->>H: event start
+  loop tokens
+    B-->>H: event delta
+  end
+  B-->>O: final + grounding
+
+  O->>TR: resolve · urls · token
+  TR-->>O: titled sources
+  O->>S: record conversation · mpsc
+  O->>H: event done · merged sources
+  H-->>C: SSE complete
+
+  Note over C,O: IF CLIENT DISCONNECTS
+  C--xH: disconnect
+  H->>O: drop stream · token.cancel
+  O->>T1: cancelled
+  O->>T2: cancelled
+  O->>ASM: cancelled
+  O->>TR: cancelled
+      </script>
+    </section>
+
+    <!-- ============ 5. TOOL TRAIT ============ -->
+    <div id="s5" class="sec-head animate" style="--i:18">
+      <span class="num">05</span> The <code>Tool</code> Trait <span class="body-label">— the crown jewel</span>
+    </div>
+
+    <p class="animate" style="--i:19">
+      Four types + one trait in <code>kenjaku-core</code>. Every existing tier fits this shape; every future tool
+      lands as a single file in <code>tools/</code>. Self-gating keeps ordering dependencies local (Brave's
+      dependence on <code>prior_chunk_count</code> lives with Brave, not in a global router).
+    </p>
+
+    <div class="code-file animate" style="--i:20">
+      <div class="code-file__header">
+        <div class="code-file__path"><b>kenjaku-core/src/types/tool.rs</b> · new</div>
+        <div class="code-file__tag code-file__tag--new">new file</div>
+      </div>
+<pre class="code-file__body"><span class="cm">/// What the Harness hands a tool on invocation. Owned (not borrowed)
+/// so tools can spawn work onto other tasks without lifetime gymnastics.
+/// collection_name added in v2 — Harness stays multi-collection-aware.</span>
+<span class="kw">pub struct</span> <span class="ty">ToolRequest</span> {
+    <span class="kw">pub</span> query_raw: <span class="ty">String</span>,
+    <span class="kw">pub</span> query_normalized: <span class="ty">String</span>,
+    <span class="kw">pub</span> locale: <span class="ty">Locale</span>,
+    <span class="kw">pub</span> intent: <span class="ty">Intent</span>,
+    <span class="kw">pub</span> collection_name: <span class="ty">String</span>,
+    <span class="kw">pub</span> top_k: <span class="ty">usize</span>,
+    <span class="kw">pub</span> request_id: <span class="ty">String</span>,
+    <span class="kw">pub</span> session_id: <span class="ty">String</span>,
+}
+
+<span class="cm">/// Tagged enum. Non-document tools don't shoehorn into chunk shape.</span>
+<span class="kw">pub enum</span> <span class="ty">ToolOutput</span> {
+    <span class="ty">Chunks</span>    { chunks: <span class="ty">Vec</span>&lt;<span class="ty">RetrievedChunk</span>&gt;, provider: <span class="ty">String</span> },
+    <span class="ty">WebHits</span>   { hits:   <span class="ty">Vec</span>&lt;<span class="ty">LlmSource</span>&gt;,     provider: <span class="ty">String</span> },
+    <span class="ty">Structured</span> { facts: serde_json::<span class="ty">Value</span>,   provider: <span class="ty">String</span> },
+    <span class="ty">Empty</span>,  <span class="cm">// ran, nothing to contribute — Harness won't warn</span>
+}
+
+<span class="cm">/// Distinct from kenjaku_core::Error so the Harness decides
+/// whether to degrade (→ Empty) or propagate (→ user-facing).</span>
+<span class="kw">pub enum</span> <span class="ty">ToolError</span> {
+    <span class="ty">Disabled</span>,                     <span class="cm">// config or rollout</span>
+    <span class="ty">Timeout</span>(<span class="ty">u64</span>),               <span class="cm">// millis</span>
+    <span class="ty">Upstream</span>(<span class="ty">String</span>),            <span class="cm">// log at warn, degrade</span>
+    <span class="ty">BadRequest</span>(<span class="ty">String</span>),          <span class="cm">// propagate as Validation</span>
+    <span class="ty">Cancelled</span>,                    <span class="cm">// SSE client disconnect · NEW in v2</span>
+}
+
+<span class="cm">/// Per-tool rollout policy. Uniform across every tool;
+/// tool-specific knobs (api_key, trigger_regex, etc.) live
+/// in the tool's own extension struct.</span>
+<span class="kw">pub struct</span> <span class="ty">ToolConfig</span> {
+    <span class="kw">pub</span> enabled: <span class="ty">bool</span>,
+    <span class="kw">pub</span> rollout_pct: <span class="ty">Option</span>&lt;<span class="ty">f32</span>&gt;,  <span class="cm">// deterministic hash on request_id</span>
+}</pre>
+    </div>
+
+    <div class="code-file animate" style="--i:21">
+      <div class="code-file__header">
+        <div class="code-file__path"><b>kenjaku-core/src/traits/tool.rs</b> · new</div>
+        <div class="code-file__tag code-file__tag--new">new file</div>
+      </div>
+<pre class="code-file__body"><span class="kw">use</span> tokio_util::sync::<span class="ty">CancellationToken</span>;
+
+<span class="cm">#[async_trait]</span>
+<span class="kw">pub trait</span> <span class="ty">Tool</span>: <span class="ty">Send</span> + <span class="ty">Sync</span> {
+    <span class="kw">fn</span> <span class="fn">id</span>(&amp;<span class="kw">self</span>) -&gt; <span class="ty">ToolId</span>;
+    <span class="kw">fn</span> <span class="fn">config</span>(&amp;<span class="kw">self</span>) -&gt; &amp;<span class="ty">ToolConfig</span>;
+
+    <span class="cm">/// Is this tool relevant for this request? Self-gating.
+    /// Cheap, synchronous, no I/O. Calls config.should_fire_for first,
+    /// then layers tool-specific logic (trigger regex, retrieval depth).</span>
+    <span class="kw">fn</span> <span class="fn">should_fire</span>(
+        &amp;<span class="kw">self</span>,
+        req: &amp;<span class="ty">ToolRequest</span>,
+        prior_chunk_count: <span class="ty">usize</span>,
+    ) -&gt; <span class="ty">bool</span>;
+
+    <span class="cm">/// Execute. MUST honor cancel.cancelled() at every I/O await point.
+    /// Harness wraps with tokio::time::timeout(tool_budget_ms) as
+    /// belt-and-braces for tools that ignore the token.</span>
+    <span class="kw">async fn</span> <span class="fn">invoke</span>(
+        &amp;<span class="kw">self</span>,
+        req: &amp;<span class="ty">ToolRequest</span>,
+        cancel: &amp;<span class="ty">CancellationToken</span>,
+    ) -&gt; <span class="ty">Result</span>&lt;<span class="ty">ToolOutput</span>, <span class="ty">ToolError</span>&gt;;
+
+    <span class="cm">/// Render Structured payload into a text fact block.
+    /// Chunks/WebHits bypass this via [Source N] machinery.</span>
+    <span class="kw">fn</span> <span class="fn">render_fact</span>(&amp;<span class="kw">self</span>, facts: &amp;serde_json::<span class="ty">Value</span>) -&gt; <span class="ty">String</span> {
+        serde_json::<span class="fn">to_string_pretty</span>(facts).<span class="fn">unwrap_or_default</span>()
+    }
+}</pre>
+    </div>
+
+    <div class="callout callout--info animate" style="--i:22">
+      <span class="callout__label">why in-tool gating</span>
+      <strong>Gating lives on the tool</strong>, not in a central router. Three reasons, all verified against the current code:
+      Brave's trigger already bundles pattern-match + <code>fallback_min_chunks</code> + enabled flag (<code>search.rs:108-120</code>) — self-gating keeps that coupling local;
+      a price-quote tool's trigger is "ticker symbol matches regex" and belongs with the tool; adding an Agent/Skill later = one file, not a router edit.
+    </div>
+
+    <!-- ============ 6. MESSAGE ABSTRACTION ============ -->
+    <div id="s6" class="sec-head animate" style="--i:23">
+      <span class="num">06</span> The <code>Message</code> Abstraction <span class="body-label">— Brain stays LLM-agnostic</span>
+    </div>
+
+    <p class="animate" style="--i:24">
+      The v1 design hit a DAG wall: <code>build_multi_turn_contents</code> in Gemini coupled
+      <code>ConversationTurn</code> to <code>GeminiContent</code>, which is an infra type. Moving prompt construction
+      to the service layer would have meant importing infra upward — forbidden. v2 fix: introduce a core
+      <code>Message</code> type. Providers implement <code>messages_to_wire</code> internally. The
+      <code>ConversationAssembler</code> runs in parallel with tool fan-out.
+    </p>
+
+    <div class="two-col-code">
+      <div class="code-file animate" style="--i:25">
+        <div class="code-file__header">
+          <div class="code-file__path"><b>core/src/types/message.rs</b> · new</div>
+          <div class="code-file__tag code-file__tag--new">new file</div>
+        </div>
+<pre class="code-file__body"><span class="kw">pub enum</span> <span class="ty">Role</span> { <span class="ty">System</span>, <span class="ty">User</span>, <span class="ty">Assistant</span> }
+
+<span class="kw">pub enum</span> <span class="ty">ContentPart</span> {
+    <span class="ty">Text</span>(<span class="ty">String</span>),
+    <span class="cm">// Additive extension points — Phase 6+:
+    // ToolCall   { id, name, args }
+    // ToolResult { id, content }
+    // Image      { url, mime }</span>
+}
+
+<span class="kw">pub struct</span> <span class="ty">Message</span> {
+    <span class="kw">pub</span> role:  <span class="ty">Role</span>,
+    <span class="kw">pub</span> parts: <span class="ty">Vec</span>&lt;<span class="ty">ContentPart</span>&gt;,
+}
+
+<span class="kw">impl</span> <span class="ty">Message</span> {
+    <span class="kw">pub fn</span> <span class="fn">user_text</span>(s: <span class="kw">impl</span> <span class="ty">Into</span>&lt;<span class="ty">String</span>&gt;) -&gt; <span class="ty">Self</span> { <span class="cm">// ...</span> }
+    <span class="kw">pub fn</span> <span class="fn">assistant_text</span>(s: <span class="kw">impl</span> <span class="ty">Into</span>&lt;<span class="ty">String</span>&gt;) -&gt; <span class="ty">Self</span> { <span class="cm">// ...</span> }
+    <span class="kw">pub fn</span> <span class="fn">system_text</span>(s: <span class="kw">impl</span> <span class="ty">Into</span>&lt;<span class="ty">String</span>&gt;) -&gt; <span class="ty">Self</span> { <span class="cm">// ...</span> }
+}</pre>
+      </div>
+
+      <div class="code-file animate" style="--i:26">
+        <div class="code-file__header">
+          <div class="code-file__path"><b>core/src/traits/brain.rs</b> · new</div>
+          <div class="code-file__tag code-file__tag--new">new file</div>
+        </div>
+<pre class="code-file__body"><span class="cm">#[async_trait]</span>
+<span class="kw">pub trait</span> <span class="ty">Brain</span>: <span class="ty">Send</span> + <span class="ty">Sync</span> {
+    <span class="kw">async fn</span> <span class="fn">classify_intent</span>(
+        &amp;<span class="kw">self</span>, query: &amp;<span class="ty">str</span>, cancel: &amp;<span class="ty">CancellationToken</span>,
+    ) -&gt; <span class="ty">Result</span>&lt;<span class="ty">IntentClassification</span>&gt;;
+
+    <span class="kw">async fn</span> <span class="fn">translate</span>(
+        &amp;<span class="kw">self</span>, query: &amp;<span class="ty">str</span>, cancel: &amp;<span class="ty">CancellationToken</span>,
+    ) -&gt; <span class="ty">Result</span>&lt;<span class="ty">TranslationResult</span>&gt;;
+
+    <span class="kw">async fn</span> <span class="fn">generate_stream</span>(
+        &amp;<span class="kw">self</span>,
+        messages: &amp;[<span class="ty">Message</span>],   <span class="cm">// ← LLM-agnostic</span>
+        ctx: &amp;<span class="ty">ToolContext</span>&lt;<span class="kw">'_</span>&gt;,
+        cancel: &amp;<span class="ty">CancellationToken</span>,
+    ) -&gt; <span class="ty">Result</span>&lt;<span class="ty">TokenStream</span>&gt;;
+}
+
+<span class="cm">// Each LlmProvider implements this internally:
+//   fn messages_to_wire(&amp;[Message]) -&gt; Vec&lt;GeminiContent&gt;
+// GeminiContent NEVER appears in service layer.</span></pre>
+      </div>
+    </div>
+
+    <div class="callout callout--warn animate" style="--i:27">
+      <span class="callout__label">load-bearing · Phase 3 risk</span>
+      Prompt templates are load-bearing — commit <code>cab2292</code> showed a one-word change in
+      the system instruction changes refusal rates materially. Phase 3 mitigation: snapshot-test the exact
+      prompt strings emitted for <strong>10 canonical queries × 5 locales = 50 snapshots</strong>, plus
+      byte-identical <code>messages_to_wire</code> output against the current inline
+      <code>build_multi_turn_contents</code>. Staging canary on 10% of traffic for 24h before rollout.
+    </div>
+
+    <!-- ============ 7. MODULE TOPOLOGY ============ -->
+    <div id="s7" class="sec-head animate" style="--i:28">
+      <span class="num">07</span> Module Topology <span class="body-label">— no new crates</span>
+    </div>
+
+    <p class="animate" style="--i:29">
+      Layers become module trees inside existing crates. Adding crates would break the
+      <code>core ← infra ← service</code> DAG. Revisit at Phase 5 — if <code>kenjaku-service</code>
+      crosses ~5000 LOC, split <code>tools/</code> into its own crate before adding a sixth tool.
+    </p>
+
+    <pre class="dir-tree animate" style="--i:30">kenjaku-core/src/
+├── traits/
+│   ├── <span class="new">tool.rs</span>          <span class="ann">new · the Tool trait</span>
+│   ├── <span class="new">brain.rs</span>         <span class="ann">new · Brain trait over Message</span>
+│   ├── llm.rs          <span class="ann">kept · low-level wire contract</span>
+│   ├── retriever.rs    <span class="ann">deprecated in Phase 4</span>
+│   └── web_search.rs   <span class="ann">deprecated in Phase 4</span>
+└── types/
+    ├── <span class="new">tool.rs</span>          <span class="ann">new · ToolId · ToolRequest · ToolOutput · ToolError · ToolConfig</span>
+    └── <span class="new">message.rs</span>       <span class="ann">new · Role · ContentPart · Message</span>
+
+kenjaku-infra/src/
+├── llm/<span class="mod">gemini.rs</span>       <span class="ann">loses prompt builders · gains messages_to_wire</span>
+├── web_search/brave.rs <span class="ann">WebSearchProvider impl through Phase 3</span>
+├── title_resolver.rs   <span class="ann">kept · accessed via trait in Phase 2</span>
+└── qdrant/             <span class="ann">unchanged</span>
+
+kenjaku-service/src/
+├── <span class="new">brain/</span>
+│   ├── mod.rs          <span class="ann">Brain trait impl</span>
+│   ├── <span class="new">assembler.rs</span>     <span class="ann">new · ConversationAssembler · parallel Vec of Message</span>
+│   ├── translator.rs   <span class="ann">moved from translation.rs</span>
+│   ├── classifier.rs   <span class="ann">moved from intent.rs</span>
+│   ├── <span class="new">prompt.rs</span>        <span class="ann">new · system + user turn text builders</span>
+│   └── generator.rs    <span class="ann">wraps LlmProvider over Message[]</span>
+├── <span class="new">tools/</span>
+│   ├── mod.rs          <span class="ann">re-exports + ToolRegistry</span>
+│   ├── <span class="new">config.rs</span>        <span class="ann">new · ToolConfig defaults + rollout hash</span>
+│   ├── <span class="new">doc_rag.rs</span>       <span class="ann">new · wraps HybridRetriever · impl Tool</span>
+│   ├── <span class="new">brave_web.rs</span>     <span class="ann">new · wraps BraveSearchProvider · impl Tool</span>
+│   ├── gemini_grounding.rs <span class="ann">built-in google_search shim</span>
+│   ├── price_quote.rs  <span class="ann">future · Phase 5</span>
+│   └── faq.rs          <span class="ann">future · Phase 5</span>
+├── <span class="new">session/</span>          <span class="ann">conversation · history · locale_memory · feedback</span>
+├── <span class="new">foundation/</span>       <span class="ann">quality + workers move here</span>
+└── <span class="new">harness/</span>
+    ├── mod.rs          <span class="ann">SearchOrchestrator · replaces SearchService body</span>
+    ├── routing.rs      <span class="ann">intent → Vec of ToolId · rollout gating</span>
+    ├── <span class="new">fanout.rs</span>        <span class="ann">new · join_all of Result → Empty mapper</span>
+    ├── context.rs      <span class="ann">ToolOutput → ToolContext merger</span>
+    └── <span class="new">title_resolver.rs</span> <span class="ann">new · service-layer trait wrapper</span></pre>
+
+    <!-- ============ 8. PHASE PLAN ============ -->
+    <div id="s8" class="sec-head animate" style="--i:31">
+      <span class="num">08</span> Phase Plan <span class="body-label">— five phases, each revert-safe</span>
+    </div>
+
+    <div class="table-wrap animate" style="--i:32">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Phase</th>
+              <th>Scope</th>
+              <th>Risk</th>
+              <th>Done criterion</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <strong>1 · Land the trait</strong>
+                <small>~500 LOC · one PR</small>
+              </td>
+              <td>
+                Add <code>core/types/{tool,message}.rs</code> + <code>traits/tool.rs</code>.
+                Add <code>service/tools/{mod,config,doc_rag,brave_web}.rs</code> as shadow wrappers.
+                <code>SearchService</code> keeps its current shape — shadow impls exercised by
+                hard-gate tests, not by the live path.
+                <small>New dep: <code>tokio-util</code> with <code>sync</code> feature (transitive from tokio already).</small>
+              </td>
+              <td><span class="status status--risk-low">low</span></td>
+              <td>
+                <strong>Hard gate.</strong> Three unit tests green:
+                <code>doc_rag_tool_matches_live_retriever</code>,
+                <code>brave_web_tool_should_fire</code>,
+                <code>brave_web_tool_cancel</code>.
+                <small>Compile-only shadow = dead code. Byte-equivalence with the live path is the only thing that proves the trait shape works.</small>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <strong>2 · Harness-ify</strong>
+                <small>one PR</small>
+              </td>
+              <td>
+                Introduce <code>SearchOrchestrator</code> behind the existing <code>SearchService</code>
+                facade. Move body of <code>search()</code>/<code>search_stream()</code>, rewrite tool
+                invocations to go through <code>fanout_tools</code>. Wire a per-request
+                <code>CancellationToken</code>. Add <code>title_resolver</code> service-layer trait.
+                Keep <code>LlmProvider</code> calls direct.
+              </td>
+              <td><span class="status status--risk-med">med</span></td>
+              <td>
+                Integration test: <code>/search</code> byte-identical for a fixed seed. Latency
+                histogram within 5% on local bench. Cancellation smoke test: simulate disconnect at
+                t=50ms, all in-flight tool tasks observe cancel within 100ms.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <strong>3 · Brain facade</strong>
+                <small>one PR · needs canary</small>
+              </td>
+              <td>
+                Add <code>core/types/message.rs</code>. Add <code>Brain</code> trait + <code>GeminiBrain</code>
+                impl. Extend <code>LlmProvider::generate</code> to take <code>&amp;[Message]</code>; add
+                <code>messages_to_wire</code>. Move <code>build_search_prompt</code> +
+                system-instruction text to <code>brain/prompt.rs</code>. Wire
+                <code>ConversationAssembler</code> into parallel fan-out.
+              </td>
+              <td><span class="status status--risk-high">high</span></td>
+              <td>
+                50 prompt snapshots (10 queries × 5 locales). 50 <code>messages_to_wire</code>
+                byte snapshots. Manual smoke through 5 locales. <code>grep -r "GeminiContent" crates/kenjaku-service</code> returns empty. 10% staging canary for 24h, alert on &gt;5% answer-length or refusal-rate delta.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <strong>4 · Retire legacy traits</strong>
+                <small>one PR · pure deletion</small>
+              </td>
+              <td>
+                Delete <code>traits/retriever.rs</code> and <code>traits/web_search.rs</code> from core.
+                <code>HybridRetriever</code> becomes a private impl detail inside
+                <code>tools/doc_rag.rs</code>. <code>BraveSearchProvider</code> likewise.
+              </td>
+              <td><span class="status status--risk-low">low</span></td>
+              <td>
+                <code>grep -r "dyn Retriever\|dyn WebSearchProvider" crates/kenjaku-{core,service}</code>
+                returns empty.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <strong>5 · First new tool</strong>
+                <small>validation phase</small>
+              </td>
+              <td>
+                Implement <code>PriceQuoteTool</code> or <code>FaqTool</code>. Must land without a
+                single edit to <code>harness/</code>, <code>brain/</code>, or <code>core/traits/</code>.
+                If it doesn't, the trait is wrong — go back and fix Phase 1.
+                Revisit: if <code>kenjaku-service</code> &gt; ~5000 LOC, split <code>tools/</code> into a crate.
+              </td>
+              <td><span class="status status--risk-none">validation</span></td>
+              <td>
+                ~150 LOC new file in <code>tools/</code>, ~5-line registry entry, one config section.
+                Zero edits to harness/brain/core.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ 9. PHASE 1 GATE ============ -->
+    <div id="s9" class="sec-head animate" style="--i:33">
+      <span class="num">09</span> Phase 1 Hard Gate <span class="body-label">— dead code ≠ working code</span>
+    </div>
+
+    <p class="animate" style="--i:34">
+      A shadow implementation that compiles is not a validated shape — the compiler only checks signatures.
+      Phase 1 must ship with three unit tests that prove the trait actually covers the real work. Any one
+      fails, Phase 1 doesn't merge.
+    </p>
+
+    <div class="callout-grid">
+      <div class="callout animate" style="--i:35">
+        <span class="callout__label">test · 1</span>
+        <strong><code>doc_rag_tool_matches_live_retriever</code></strong><br>
+        Wraps the real <code>HybridRetriever</code> in <code>DocRagTool</code>. Runs a fixed seed query. Asserts the returned <code>ToolOutput::Chunks</code> is byte-identical to what <code>SearchService::retrieve</code> returns today.
+        <br><small style="color:var(--text-muted);margin-top:8px;display:block;">Catches: <code>collection_name</code> plumbing gaps, RRF score drift, ordering differences.</small>
+      </div>
+
+      <div class="callout animate" style="--i:36">
+        <span class="callout__label">test · 2</span>
+        <strong><code>brave_web_tool_should_fire</code></strong><br>
+        With the live <code>trigger_patterns</code> config. Asserts <code>should_fire(req, 0)</code> fires for <em>"market today"</em> but not for <em>"reset password"</em>. Asserts <code>should_fire(req, 10)</code> does NOT fire when <code>fallback_min_chunks=2</code>.
+        <br><small style="color:var(--text-muted);margin-top:8px;display:block;">Catches: trigger regex compilation bugs, inverted fallback logic.</small>
+      </div>
+
+      <div class="callout animate" style="--i:37">
+        <span class="callout__label">test · 3</span>
+        <strong><code>brave_web_tool_cancel</code></strong><br>
+        Invokes <code>BraveWebTool</code> with a pre-cancelled <code>CancellationToken</code>. Asserts <code>Err(ToolError::Cancelled)</code> returned within 5ms.
+        <br><small style="color:var(--text-muted);margin-top:8px;display:block;">Catches: tools that ignore the token, blocking I/O that doesn't yield on cancel.</small>
+      </div>
+    </div>
+
+    <div class="code-file animate" style="--i:38">
+      <div class="code-file__header">
+        <div class="code-file__path"><b>harness/fanout.rs</b> · sketch of the <code>join_all&lt;Result&gt;</code> policy</div>
+        <div class="code-file__tag code-file__tag--new">new file</div>
+      </div>
+<pre class="code-file__body"><span class="cm">// Harness error policy: Upstream / Timeout / Cancelled → Empty (degrade).
+// BadRequest → fail the request. Disabled → silent skip.
+// NEVER use try_join_all — it short-circuits on first error and fights
+// the degradation policy.</span>
+<span class="kw">pub async fn</span> <span class="fn">fanout_tools</span>(
+    tools: &amp;[<span class="ty">Arc</span>&lt;<span class="kw">dyn</span> <span class="ty">Tool</span>&gt;],
+    req: &amp;<span class="ty">ToolRequest</span>,
+    cancel: &amp;<span class="ty">CancellationToken</span>,
+    tool_budget_ms: <span class="ty">u64</span>,
+) -&gt; <span class="ty">Result</span>&lt;<span class="ty">Vec</span>&lt;<span class="ty">ToolOutput</span>&gt;&gt; {
+    <span class="kw">let</span> futs = tools.iter()
+        .filter(|t| t.<span class="fn">should_fire</span>(req, <span class="ty">0</span>))
+        .map(|t| {
+            <span class="kw">let</span> t = <span class="ty">Arc</span>::clone(t);
+            <span class="kw">let</span> req = req.clone();
+            <span class="kw">let</span> cancel = cancel.clone();
+            <span class="kw">async move</span> {
+                <span class="kw">match</span> tokio::time::<span class="fn">timeout</span>(
+                    <span class="ty">Duration</span>::from_millis(tool_budget_ms),
+                    t.<span class="fn">invoke</span>(&amp;req, &amp;cancel),
+                ).<span class="kw">await</span> {
+                    <span class="ty">Ok</span>(<span class="ty">Ok</span>(out))                       =&gt; out,
+                    <span class="ty">Ok</span>(<span class="ty">Err</span>(<span class="ty">ToolError</span>::<span class="ty">BadRequest</span>(_))) =&gt; <span class="kw">return</span> <span class="ty">Err</span>(t.<span class="fn">id</span>()),
+                    <span class="ty">Ok</span>(<span class="ty">Err</span>(_))                      =&gt; <span class="ty">ToolOutput</span>::<span class="ty">Empty</span>,  <span class="cm">// degrade</span>
+                    <span class="ty">Err</span>(_timeout)                    =&gt; <span class="ty">ToolOutput</span>::<span class="ty">Empty</span>,  <span class="cm">// degrade</span>
+                }
+            }
+        });
+    <span class="kw">let</span> outputs: <span class="ty">Vec</span>&lt;_&gt; = futures::future::<span class="fn">join_all</span>(futs).<span class="kw">await</span>;
+    <span class="cm">// map any BadRequest errors to core::Error::Validation</span>
+    <span class="ty">Ok</span>(outputs)
+}</pre>
+    </div>
+
+    <!-- ============ 10. RISKS + DECISIONS ============ -->
+    <div id="s10" class="sec-head animate" style="--i:39">
+      <span class="num">10</span> Risks &amp; Decisions <span class="body-label">— locked in v2</span>
+    </div>
+
+    <h3 class="animate" style="--i:40">Risks addressed in v2</h3>
+
+    <div class="table-wrap animate" style="--i:41">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Risk</th>
+              <th>Severity</th>
+              <th>Mitigation</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <strong>Latency regression</strong>
+                <small><code>join_all</code> over <code>Vec&lt;Arc&lt;dyn Tool&gt;&gt;</code> ~2-5μs slower per tool than <code>tokio::join!</code>.</small>
+              </td>
+              <td><span class="status status--risk-low">noise</span></td>
+              <td>Against 30-300ms tool latency, negligible. <code>ToolRequest</code> clones ~200 bytes × 3 tools × 60 req/min = ~180 allocs/min. Do not micro-optimize back to macros.</td>
+            </tr>
+            <tr>
+              <td>
+                <strong>Trait object overhead</strong>
+                <small><code>async_trait</code> boxes each <code>invoke</code> call — heap alloc per tool per request.</small>
+              </td>
+              <td><span class="status status--risk-low">defer</span></td>
+              <td>Post-Phase-5, if profiling shows it matters, migrate to native async-fn-in-trait (MSRV 1.88 supports it). Punted.</td>
+            </tr>
+            <tr>
+              <td>
+                <strong>Cancellation propagation</strong>
+                <small>Current code drops SSE stream but in-flight Brave HTTP runs to completion.</small>
+              </td>
+              <td><span class="status status--risk-med">fixing</span></td>
+              <td>Every <code>Tool::invoke</code> takes <code>&amp;CancellationToken</code>. Harness creates parent token; SSE handler triggers <code>.cancel()</code> on disconnect. <code>tokio::time::timeout</code> as belt-and-braces for tools that ignore it.</td>
+            </tr>
+            <tr>
+              <td>
+                <strong>Phase 3 prompt fragility</strong>
+                <small>Moving <code>build_search_prompt</code> + <code>build_multi_turn_contents</code> out of <code>gemini.rs</code>.</small>
+              </td>
+              <td><span class="status status--risk-high">canary</span></td>
+              <td>50 prompt snapshot tests + 50 <code>messages_to_wire</code> snapshot tests. 10% staging canary for 24h before rollout. Alert on &gt;5% answer-length or refusal-rate delta.</td>
+            </tr>
+            <tr>
+              <td>
+                <strong>Speculative <code>ToolOutput::Structured</code></strong>
+                <small>No tool emits this today.</small>
+              </td>
+              <td><span class="status status--risk-low">defended</span></td>
+              <td>Zero-cost enum variant; Phase 5 tools need it. <strong>Kill condition specified:</strong> <code>StructuredFact</code> in <code>ToolContext</code> deleted at end of Phase 3 if unused, re-added at Phase 5.</td>
+            </tr>
+            <tr>
+              <td>
+                <strong>Dependency risk</strong>
+                <small>New <code>tokio-util</code> feature for <code>CancellationToken</code>.</small>
+              </td>
+              <td><span class="status status--risk-none">none</span></td>
+              <td>Already a transitive dep of <code>tokio::net</code>. Zero new supply-chain surface. No new crates introduced by the refactor.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <h3 class="animate" style="--i:42">Decisions locked</h3>
+
+    <div class="decisions">
+      <div class="decision animate" style="--i:43">
+        <div class="decision__num">01</div>
+        <h4><code>collection_name</code> placement</h4>
+        <p>Field on <code>ToolRequest</code>, not captured in <code>DocRagTool::new</code>. Harness stays collection-aware so multi-collection routing can't silently drop.</p>
+        <span class="decision__answer">field on ToolRequest</span>
+      </div>
+
+      <div class="decision animate" style="--i:44">
+        <div class="decision__num">02</div>
+        <h4><code>build_multi_turn_contents</code> ownership</h4>
+        <p>New <code>Message</code> abstraction in <code>kenjaku-core</code>. Each LLM provider implements <code>messages_to_wire</code>. Enables parallel content-addon assembly + multi-LLM readiness.</p>
+        <span class="decision__answer">Message type in core</span>
+      </div>
+
+      <div class="decision animate" style="--i:45">
+        <div class="decision__num">03</div>
+        <h4>Cancellation token in Phase 1</h4>
+        <p>Yes — threaded through <code>Tool::invoke</code> and the harness fan-out. Cascades through every tool, the assembler, and the title resolver on SSE client disconnect.</p>
+        <span class="decision__answer">Phase 1 scope</span>
+      </div>
+
+      <div class="decision animate" style="--i:46">
+        <div class="decision__num">04</div>
+        <h4>Rollout + test mocking in design</h4>
+        <p>Both folded in. <code>ToolConfig {enabled, rollout_pct}</code> with deterministic <code>request_id</code> hash. Tools take <code>Arc&lt;dyn Trait&gt;</code> deps so mocks are cheap.</p>
+        <span class="decision__answer">in §7.1 and §7.2</span>
+      </div>
+    </div>
+
+    <!-- ============ 11. NON-GOALS ============ -->
+    <div id="s11" class="sec-head animate" style="--i:47">
+      <span class="num">11</span> Non-Goals <span class="body-label">— keeping scope tight</span>
+    </div>
+
+    <div class="non-goals animate" style="--i:48">
+      <ul class="non-goals-list">
+        <li><strong>No embedding provider changes</strong> · Qdrant client + RRF reranker unchanged</li>
+        <li><strong>No SSE wire protocol rewrite</strong> · <code>start</code>/<code>delta</code>/<code>done</code> events stay</li>
+        <li><strong>No actor framework</strong> · fan-out stays <code>tokio::join</code>-based</li>
+        <li><strong>No new config format</strong> · <code>config/base.yaml</code> intact</li>
+        <li><strong>No edits to <code>kenjaku-ingest</code></strong></li>
+        <li><strong>No <code>async_trait</code> → native migration</strong> · punted to post-Phase-5</li>
+        <li><strong>No locale detection changes</strong> · translator semantics unchanged</li>
+        <li><strong>No Foundation worker logic changes</strong> · files move, code doesn't</li>
+        <li><strong>No agent loop</strong> · design leaves extension points but agent is Phase 6+</li>
+        <li><strong>No rate-limit / <code>tower_governor</code> changes</strong></li>
+      </ul>
+    </div>
+
+    <div class="callout animate" style="--i:49" style="margin-top:40px">
+      <span class="callout__label">next action</span>
+      <strong>Hand Phase 1 to the <code>dev</code> agent</strong> with this plan + design doc as context.
+      Scope: introduce <code>Tool</code> trait + <code>Message</code> types, implement <code>DocRagTool</code>
+      and <code>BraveWebTool</code> as shadow wrappers, land the three hard-gate unit tests.
+      Zero behavior change in <code>SearchService</code>. Estimated one focused session. <code>cargo test --workspace</code> green before merge.
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /wrap -->
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+  const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
+
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'base',
+    look: 'classic',
+    themeVariables: {
+      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif",
+      fontSize: '18px',
+      primaryColor:       isDark ? '#17283f' : '#fbf9f1',
+      primaryBorderColor: isDark ? '#d4a73a' : '#b8892a',
+      primaryTextColor:   isDark ? '#e8f0fc' : '#1e3a5f',
+      secondaryColor:       isDark ? '#1b2a3b' : '#f0eee0',
+      secondaryBorderColor: isDark ? '#8cb365' : '#4d7a3c',
+      secondaryTextColor:   isDark ? '#e8f0fc' : '#1e3a5f',
+      tertiaryColor:       isDark ? '#25202b' : '#f5f2e8',
+      tertiaryBorderColor: isDark ? '#c86060' : '#8a2e2e',
+      tertiaryTextColor:   isDark ? '#e8f0fc' : '#1e3a5f',
+      lineColor:      isDark ? '#7b93bd' : '#6a7d94',
+      textColor:      isDark ? '#e8f0fc' : '#1e3a5f',
+      mainBkg:        isDark ? '#17283f' : '#fbf9f1',
+      noteBkgColor:   isDark ? '#1b2a3b' : '#fefce8',
+      noteTextColor:  isDark ? '#e8f0fc' : '#1e3a5f',
+      noteBorderColor: isDark ? '#d4a73a' : '#b8892a',
+      actorBkg:        isDark ? '#17283f' : '#fbf9f1',
+      actorBorder:     isDark ? '#d4a73a' : '#b8892a',
+      actorTextColor:  isDark ? '#e8f0fc' : '#1e3a5f',
+      signalColor:     isDark ? '#7b93bd' : '#6a7d94',
+      signalTextColor: isDark ? '#93a6c4' : '#6a7d94',
+      labelBoxBkgColor:  isDark ? '#1b2a3b' : '#f0eee0',
+      labelBoxBorderColor: isDark ? '#d4a73a' : '#b8892a',
+      labelTextColor:    isDark ? '#e8f0fc' : '#1e3a5f',
+      loopTextColor:     isDark ? '#e8f0fc' : '#1e3a5f',
+      activationBkgColor:    isDark ? '#25202b' : '#f5f2e8',
+      activationBorderColor: isDark ? '#d4a73a' : '#b8892a',
+      clusterBkg: isDark ? '#0e1e30' : '#f5f2e8',
+      clusterBorder: isDark ? '#d4a73a55' : '#b8892a55',
+    }
+  });
+
+  // ============ ZOOM / PAN ENGINE ============
+  const config = {
+    fitPadding: 28,
+    minHeight: 360,
+    maxHeightPx: 1000,
+    maxHeightVh: 0.88,
+    maxInitialZoom: 2.0,
+    minZoom: 0.08,
+    maxZoom: 8,
+    zoomStep: 0.14,
+    readabilityFloor: 0.58
+  };
+
+  const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+  let activeDrag = null;
+  addEventListener('mousemove', (e) => activeDrag?.onMove(e));
+  addEventListener('mouseup', () => { activeDrag?.onEnd(); activeDrag = null; });
+
+  function initDiagram(shell) {
+    const wrap = shell.querySelector('.mermaid-wrap');
+    const viewport = shell.querySelector('.mermaid-viewport');
+    const canvas = shell.querySelector('.mermaid-canvas');
+    const source = shell.querySelector('.diagram-source');
+    const label = shell.querySelector('.zoom-label');
+    if (!wrap || !viewport || !canvas || !source || !label) return;
+
+    let zoom = 1, fitMode = 'contain', panX = 0, panY = 0, svgW = 0, svgH = 0;
+    let sx = 0, sy = 0, spx = 0, spy = 0, touchDist = 0, touchCx = 0, touchCy = 0;
+
+    function constrainPan() {
+      const vpW = viewport.clientWidth, vpH = viewport.clientHeight;
+      const rW = svgW * zoom, rH = svgH * zoom, pad = config.fitPadding;
+      panX = (rW + pad * 2 <= vpW) ? (vpW - rW) / 2 : clamp(panX, vpW - rW - pad, pad);
+      panY = (rH + pad * 2 <= vpH) ? (vpH - rH) / 2 : clamp(panY, vpH - rH - pad, pad);
+    }
+    function applyTransform() {
+      const svg = canvas.querySelector('svg');
+      if (!svg || !svgW) return;
+      constrainPan();
+      svg.style.width = (svgW * zoom) + 'px';
+      svg.style.height = (svgH * zoom) + 'px';
+      canvas.style.transform = `translate(${panX}px, ${panY}px)`;
+      label.textContent = Math.round(zoom * 100) + '% — ' + fitMode;
+    }
+    function canPan() {
+      const rW = svgW * zoom, rH = svgH * zoom;
+      return rW + config.fitPadding * 2 > viewport.clientWidth
+          || rH + config.fitPadding * 2 > viewport.clientHeight;
+    }
+    function computeSmartFit() {
+      const vpW = viewport.clientWidth, vpH = viewport.clientHeight;
+      const aW = Math.max(80, vpW - config.fitPadding * 2);
+      const aH = Math.max(80, vpH - config.fitPadding * 2);
+      const contain = Math.min(aW / svgW, aH / svgH);
+      let z = contain, mode = 'contain';
+      if (contain < config.readabilityFloor) {
+        const chartR = svgH / svgW, vpR = vpH / Math.max(vpW, 1);
+        if (chartR >= vpR) { z = aW / svgW; mode = 'width-priority'; }
+        else { z = aH / svgH; mode = 'height-priority'; }
+      }
+      return { zoom: clamp(z, config.minZoom, config.maxInitialZoom), mode };
+    }
+    function fitDiagram() {
+      if (!svgW) return;
+      const fit = computeSmartFit();
+      zoom = fit.zoom; fitMode = fit.mode;
+      panX = (viewport.clientWidth - svgW * zoom) / 2;
+      panY = (viewport.clientHeight - svgH * zoom) / 2;
+      applyTransform();
+    }
+    function setOneToOne() {
+      zoom = clamp(1, config.minZoom, config.maxZoom); fitMode = '1:1';
+      panX = (viewport.clientWidth - svgW * zoom) / 2;
+      panY = (viewport.clientHeight - svgH * zoom) / 2;
+      applyTransform();
+    }
+    function zoomAround(factor, cx, cy) {
+      const next = clamp(zoom * factor, config.minZoom, config.maxZoom);
+      const ratio = next / zoom;
+      panX = cx - ratio * (cx - panX);
+      panY = cy - ratio * (cy - panY);
+      zoom = next; fitMode = 'custom'; applyTransform();
+    }
+    function readSvgNaturalSize(svg) {
+      let w = 0, h = 0;
+      if (svg.viewBox?.baseVal?.width > 0) { w = svg.viewBox.baseVal.width; h = svg.viewBox.baseVal.height; }
+      if (!w) { w = parseFloat(svg.getAttribute('width')) || 0; h = parseFloat(svg.getAttribute('height')) || 0; }
+      if (!w) { const b = svg.getBBox(); w = b.width; h = b.height; }
+      if (!w) { const r = svg.getBoundingClientRect(); w = r.width || 1000; h = r.height || 700; }
+      if (!svg.getAttribute('viewBox')) svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+      return { w, h };
+    }
+    function setAdaptiveHeight() {
+      if (!svgW) return;
+      const usableW = Math.max(280, wrap.getBoundingClientRect().width - 2);
+      const idealH = (svgH / svgW) * usableW + config.fitPadding * 2;
+      const maxVp = Math.floor(innerHeight * config.maxHeightVh);
+      const hardMax = Math.min(config.maxHeightPx, Math.max(config.minHeight + 40, maxVp));
+      wrap.style.height = Math.round(clamp(idealH, config.minHeight, hardMax)) + 'px';
+    }
+    function openInNewTab() {
+      const svg = canvas.querySelector('svg');
+      if (!svg) return;
+      const clone = svg.cloneNode(true);
+      clone.style.width = ''; clone.style.height = '';
+      const bg = isDark ? '#0b1828' : '#f5f2e8';
+      const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Diagram</title><style>
+      body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+      background:${bg};padding:40px;box-sizing:border-box}
+      svg{max-width:100%;max-height:90vh;height:auto}
+      </style></head><body>${clone.outerHTML}</body></html>`;
+      open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+    }
+    async function render() {
+      try {
+        const code = source.textContent.trim();
+        if (!code) { label.textContent = 'Error: Empty source'; return; }
+        const id = 'diagram-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+        const { svg } = await mermaid.render(id, code);
+        canvas.innerHTML = svg;
+        const svgNode = canvas.querySelector('svg');
+        if (!svgNode) { label.textContent = 'Error: No SVG'; return; }
+        const size = readSvgNaturalSize(svgNode);
+        svgW = size.w; svgH = size.h;
+        svgNode.removeAttribute('width'); svgNode.removeAttribute('height');
+        svgNode.style.maxWidth = 'none'; svgNode.style.display = 'block';
+        setAdaptiveHeight();
+        fitDiagram();
+      } catch (err) {
+        console.error('Mermaid render failed:', err);
+        label.textContent = 'Error: ' + (err.message || 'Render failed');
+      }
+    }
+    const actions = {
+      'zoom-in':  () => zoomAround(1 + config.zoomStep, viewport.clientWidth / 2, viewport.clientHeight / 2),
+      'zoom-out': () => zoomAround(1 / (1 + config.zoomStep), viewport.clientWidth / 2, viewport.clientHeight / 2),
+      'zoom-fit': fitDiagram,
+      'zoom-one': setOneToOne,
+      'zoom-expand': openInNewTab
+    };
+    Object.entries(actions).forEach(([action, handler]) => {
+      wrap.querySelector(`[data-action="${action}"]`)?.addEventListener('click', handler);
+    });
+    viewport.addEventListener('dblclick', fitDiagram);
+    viewport.addEventListener('wheel', (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const rect = viewport.getBoundingClientRect();
+        const factor = e.deltaY < 0 ? 1 + config.zoomStep : 1 / (1 + config.zoomStep);
+        zoomAround(factor, e.clientX - rect.left, e.clientY - rect.top);
+        return;
+      }
+      if (canPan()) {
+        e.preventDefault();
+        panX -= e.deltaX; panY -= e.deltaY;
+        applyTransform();
+      }
+    }, { passive: false });
+    viewport.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.zoom-controls') || !canPan()) return;
+      wrap.classList.add('is-panning');
+      sx = e.clientX; sy = e.clientY; spx = panX; spy = panY;
+      e.preventDefault();
+      activeDrag = {
+        onMove: (ev) => {
+          panX = spx + (ev.clientX - sx);
+          panY = spy + (ev.clientY - sy);
+          applyTransform();
+        },
+        onEnd: () => { wrap.classList.remove('is-panning'); }
+      };
+    });
+    viewport.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1) {
+        sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+        spx = panX; spy = panY;
+      } else if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        touchDist = Math.sqrt(dx * dx + dy * dy);
+        const r = viewport.getBoundingClientRect();
+        touchCx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - r.left;
+        touchCy = (e.touches[0].clientY + e.touches[1].clientY) / 2 - r.top;
+      }
+    }, { passive: true });
+    viewport.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 1 && canPan()) {
+        if (touchDist > 0) {
+          sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+          spx = panX; spy = panY; touchDist = 0;
+        }
+        e.preventDefault();
+        panX = spx + (e.touches[0].clientX - sx);
+        panY = spy + (e.touches[0].clientY - sy);
+        applyTransform();
+      } else if (e.touches.length === 2 && touchDist > 0) {
+        e.preventDefault();
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        zoomAround(d / touchDist, touchCx, touchCy);
+        touchDist = d;
+      }
+    }, { passive: false });
+    new ResizeObserver(() => {
+      if (svgW) { setAdaptiveHeight(); fitDiagram(); }
+    }).observe(wrap);
+    render();
+  }
+
+  document.querySelectorAll('.diagram-shell').forEach(initDiagram);
+
+  // ============ TOC scroll-spy ============
+  const sections = document.querySelectorAll('[id^="s"]');
+  const tocLinks = document.querySelectorAll('.toc a');
+  const obs = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (entry.isIntersecting) {
+        tocLinks.forEach((l) => l.classList.remove('active'));
+        const active = document.querySelector(`.toc a[href="#${entry.target.id}"]`);
+        active?.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-30% 0px -60% 0px' });
+  sections.forEach((s) => obs.observe(s));
+</script>
+
+</body>
+</html>
