@@ -31,7 +31,7 @@ use kenjaku_service::refresh_worker::SuggestionRefreshWorker;
 use kenjaku_service::retriever::HybridRetriever;
 use kenjaku_service::search::SearchService;
 use kenjaku_service::suggestion::{ServiceRng, SuggestionService};
-use kenjaku_service::tools::{BraveWebTool, DocRagTool};
+use kenjaku_service::tools::{BraveWebTool, DocRagTool, FaqTool, FaqToolConfig};
 use kenjaku_service::trending::TrendingService;
 use kenjaku_service::worker::TrendingFlushWorker;
 
@@ -192,7 +192,31 @@ async fn main() -> anyhow::Result<()> {
         config.web_search.limit,
     ));
 
-    let tools: Vec<Arc<dyn Tool>> = vec![doc_rag, brave_web];
+    let mut tools: Vec<Arc<dyn Tool>> = vec![doc_rag, brave_web];
+
+    // FAQ tool — disabled by default, enabled via config for plugin
+    // architecture validation.
+    if config.faq.enabled {
+        let faq_entries = config
+            .faq
+            .entries
+            .iter()
+            .map(|e| kenjaku_service::tools::faq::FaqEntry {
+                question: e.question.clone(),
+                answer: e.answer.clone(),
+                keywords: e.keywords.clone(),
+            })
+            .collect();
+        let faq_tool: Arc<dyn Tool> = Arc::new(FaqTool::new(FaqToolConfig {
+            base: ToolConfig {
+                enabled: true,
+                rollout_pct: None,
+            },
+            entries: faq_entries,
+        }));
+        tools.push(faq_tool);
+        info!("FAQ tool enabled with {} entries", config.faq.entries.len());
+    }
 
     let search_service = SearchService::new(
         brain,
