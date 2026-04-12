@@ -21,6 +21,8 @@ pub struct BraveWebTool {
     /// Compiled trigger regexes.
     trigger_patterns: Vec<Regex>,
     fallback_min_chunks: usize,
+    /// Max results to request from the web search provider.
+    limit: usize,
 }
 
 impl std::fmt::Debug for BraveWebTool {
@@ -30,6 +32,7 @@ impl std::fmt::Debug for BraveWebTool {
             .field("config", &self.config)
             .field("trigger_patterns", &self.trigger_pattern_strings)
             .field("fallback_min_chunks", &self.fallback_min_chunks)
+            .field("limit", &self.limit)
             .finish()
     }
 }
@@ -43,6 +46,7 @@ impl BraveWebTool {
         config: ToolConfig,
         trigger_pattern_strings: Vec<String>,
         fallback_min_chunks: usize,
+        limit: usize,
     ) -> Self {
         let trigger_patterns = trigger_pattern_strings
             .iter()
@@ -61,6 +65,7 @@ impl BraveWebTool {
             trigger_pattern_strings,
             trigger_patterns,
             fallback_min_chunks,
+            limit,
         }
     }
 }
@@ -112,7 +117,7 @@ impl Tool for BraveWebTool {
             .ok_or(ToolError::Disabled)?;
 
         let results = provider
-            .search(&req.query_normalized, req.top_k)
+            .search(&req.query_normalized, self.limit)
             .await
             .map_err(|e| ToolError::Upstream(e.to_string()))?;
 
@@ -178,6 +183,7 @@ mod tests {
             ToolConfig::default(),
             default_trigger_patterns(),
             2,
+            5,
         );
         // "market today" matches both trigger patterns
         let req = make_request("market today");
@@ -191,6 +197,7 @@ mod tests {
             ToolConfig::default(),
             default_trigger_patterns(),
             2,
+            5,
         );
         // "reset password" does not match trigger patterns
         // and prior_chunk_count=10 >= fallback_min_chunks=2
@@ -205,6 +212,7 @@ mod tests {
             ToolConfig::default(),
             default_trigger_patterns(),
             2,
+            5,
         );
         // No pattern match but prior_chunk_count=0 < fallback_min_chunks=2
         let req = make_request("reset password");
@@ -218,6 +226,7 @@ mod tests {
             ToolConfig::default(),
             default_trigger_patterns(),
             2,
+            5,
         );
         let req = make_request("market today");
         assert!(!tool.should_fire(&req, 0));
@@ -233,6 +242,7 @@ mod tests {
             },
             default_trigger_patterns(),
             2,
+            5,
         );
         let req = make_request("market today");
         assert!(!tool.should_fire(&req, 0));
@@ -245,6 +255,7 @@ mod tests {
             ToolConfig::default(),
             default_trigger_patterns(),
             2,
+            5,
         );
         let req = make_request("market today");
         let cancel = CancellationToken::new();
@@ -271,6 +282,7 @@ mod tests {
             ToolConfig::default(),
             default_trigger_patterns(),
             2,
+            5,
         );
         let req = make_request("market today");
         let cancel = CancellationToken::new();

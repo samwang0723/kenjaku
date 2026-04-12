@@ -71,6 +71,7 @@ impl SearchService {
             },
             web_search_config.trigger_patterns.clone(),
             web_search_config.fallback_min_chunks,
+            web_search_config.limit,
         ));
 
         let tools: Vec<Arc<dyn Tool>> = vec![doc_rag, brave_web];
