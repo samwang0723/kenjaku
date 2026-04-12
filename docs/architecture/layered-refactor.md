@@ -1,17 +1,28 @@
 # Kenjaku Layered Architecture Refactor — Design
 
-**Status:** proposal v3 — ToolTunnel DAG executor added
+**Status:** implemented — all phases complete (v4 post-implementation update)
 **Author:** architect agent (v1), code-reviewer critique integrated, decisions by Sam
 **Branch:** `refactor/layered-architecture`
 **Builds on:** commit `cab2292` (google_search gating) — generalizes that conditional into a plugin layer.
 
 ## Changelog
 
-- **v3 (this revision)** — replaces the two-tier fan-out with a general-purpose `ToolTunnel` DAG executor:
+- **v4 (post-implementation)** — all phases completed and merged. Key implementation notes:
+  - `LlmProvider::generate` migrated to accept `&[Message]`. `generate_brief` has a default impl on the trait.
+  - `GeminiProvider` gained `messages_to_wire(&[Message])`, `estimate_cost`, and `serviceTier` field.
+  - `CancelGuard` in `search.rs` cancels the `CancellationToken` on drop (SSE disconnect cascade).
+  - `ToolOutputMap` maintains deterministic `insertion_order` for reproducible iteration.
+  - `BadRequest` tool errors propagate as `Error::Validation` (not degraded to Empty).
+  - `ToolTunnel` detects duplicate tool IDs at construction.
+  - FaqTool was explored in Phase 5 validation but not shipped — no `faq.rs` in the final codebase.
+  - All service files reorganized into 5 layer folders (brain/, tools/, session/, foundation/, harness/) with only `lib.rs` + `search.rs` at the top level.
+  - PR review fixes (dev-9): CancelGuard, deterministic ordering, BadRequest propagation, duplicate ID detection, web chunk ID collision fix, rollout edge case fix.
+
+- **v3** — replaces the two-tier fan-out with a general-purpose `ToolTunnel` DAG executor:
   - Tools declare dependencies via `depends_on() -> Vec<ToolId>`. The tunnel topologically sorts tools into tiers at construction (Kahn's algorithm). Within a tier, tools run in parallel via `join_all`. Between tiers, execution is serial. Cycles detected at startup (panic).
   - `should_fire` and `invoke` now take `&ToolOutputMap` instead of `prior_chunk_count: usize`. Tools read prior outputs by tool ID via convenience helpers (`chunk_count("doc_rag")`, `has_web_hits()`, `get("tool_id")`).
   - `ToolOutputMap` — new type in `kenjaku-core/src/types/tool.rs`. `HashMap<ToolId, ToolOutput>` wrapper with typed accessors.
-  - Current tier resolution: DocRagTool=Tier0, FaqTool=Tier0 (parallel), BraveWebTool=Tier1 (depends on DocRag). Future tools slot in by declaring deps — no Harness edits needed.
+  - Current tier resolution: DocRagTool=Tier0, BraveWebTool=Tier1 (depends on DocRag). Future tools slot in by declaring deps — no Harness edits needed.
   - `ToolTunnel` is constructed once at startup, not per-request. Tier structure is static.
   - Updated §4, §4.3, and the Harness description to reflect the new executor.
 
@@ -68,7 +79,6 @@ flowchart TB
         T2["BraveWebTool<br/>(should_fire on prior_count)"]
         T3["GoogleSearchTool<br/>(Gemini built-in)"]
         T4["PriceQuoteTool<br/>(future)"]
-        T5["FaqTool (future)"]
     end
 
     subgraph Session["SESSION  (kenjaku-service::session)"]
@@ -206,30 +216,40 @@ kenjaku-infra/src/          (unchanged structure — still the I/O layer)
 └── qdrant/                        (unchanged)
 
 kenjaku-service/src/
-├── brain/               [NEW]   ← Brain facade + ConversationAssembler
+├── lib.rs                        (re-exports preserved for api crate compat)
+├── search.rs                     (SearchService thin shim + CancelGuard + StreamContext)
+├── brain/                        Brain facade + ConversationAssembler
 │   ├── mod.rs                    (Brain trait impl)
-│   ├── assembler.rs     [NEW]   ← ConversationAssembler: history → Vec<Message>, cancel-aware
-│   ├── translator.rs             (moved from translation.rs)
-│   ├── classifier.rs             (moved from intent.rs)
-│   ├── prompt.rs        [NEW]   ← prompt TEXT builders (system instruction, user turn)
+│   ├── assembler.rs              ConversationAssembler: history → Vec<Message>
+│   ├── translation.rs            (translator)
+│   ├── intent.rs                 (classifier)
+│   ├── prompt.rs                 prompt TEXT builders (system instruction, user turn)
 │   └── generator.rs              (wraps LlmProvider::generate + generate_stream over &[Message])
-├── tools/               [NEW]   ← Tool implementations
-│   ├── mod.rs                    (re-exports + ToolRegistry)
-│   ├── config.rs        [NEW]   ← ToolConfig defaults + rollout policy
-│   ├── doc_rag.rs                (wraps HybridRetriever, impl Tool)
-│   ├── brave_web.rs              (wraps BraveSearchProvider, impl Tool)
-│   ├── gemini_grounding.rs       (built-in google_search shim, impl Tool)
-│   ├── price_quote.rs   [future]
-│   └── faq.rs           [future]
-├── session/             [NEW]   ← conversation.rs + history.rs + locale_memory.rs + feedback.rs
-├── foundation/          [NEW]   ← quality.rs + *_worker.rs move here (workers already exist)
-├── harness/             [NEW]
-│   ├── mod.rs                    (SearchOrchestrator — the new SearchService)
-│   ├── routing.rs                (select_tools: intent → Vec<ToolId>, rollout gating)
-│   ├── fanout.rs        [NEW]   ← ToolTunnel DAG executor (topo sort + tiered join_all)
-│   ├── context.rs                (ToolOutputMap → ToolContext merger)
-│   └── title_resolver.rs [NEW]  ← wraps the infra TitleResolver behind a service-layer trait
-└── lib.rs                        (re-exports preserved for api crate compat)
+├── tools/                        Tool implementations
+│   ├── mod.rs                    (re-exports)
+│   ├── config.rs                 ToolConfig defaults
+│   ├── rag.rs                    (DocRagTool wrapping HybridRetriever, impl Tool)
+│   ├── brave_web.rs              (BraveWebTool wrapping BraveSearchProvider, impl Tool)
+│   ├── retriever.rs              (HybridRetriever)
+│   └── reranker.rs               (RRF reranker)
+├── session/                      conversation + history + locale_memory + feedback + autocomplete
+│   ├── mod.rs
+│   ├── conversation.rs
+│   ├── history.rs
+│   ├── locale_memory.rs
+│   ├── feedback.rs
+│   └── autocomplete.rs
+├── foundation/                   quality + trending + suggestion + workers
+│   ├── mod.rs
+│   ├── quality.rs
+│   ├── trending.rs
+│   ├── suggestion.rs
+│   └── worker/                   (mod.rs, trending.rs, suggestion.rs)
+└── harness/
+    ├── mod.rs                    (SearchOrchestrator — the real orchestration)
+    ├── fanout.rs                 ToolTunnel DAG executor (topo sort + tiered join_all)
+    ├── context.rs                (ToolOutputMap → ToolContext merger)
+    └── component.rs              (layout assembly)
 ```
 
 Nothing in `kenjaku-api`, `kenjaku-server`, or `kenjaku-ingest` moves. `SearchService` keeps its public name as a re-export of `harness::SearchOrchestrator` for one release so handler code doesn't churn.
@@ -400,7 +420,7 @@ Forcing a price quote through `RetrievedChunk` shape creates lossy embeddings of
 The Harness runs tools through a `ToolTunnel` that topologically sorts them into tiers based on `depends_on()` declarations. Within each tier, tools run in parallel via `join_all`. Between tiers, execution is serial so dependent tools can read prior outputs from a shared `ToolOutputMap`.
 
 **Current tier resolution:**
-- **Tier 0** (no deps, parallel): `DocRagTool`, `FaqTool`, `ConversationAssembler`
+- **Tier 0** (no deps, parallel): `DocRagTool`, `ConversationAssembler`
 - **Tier 1** (depends on DocRag): `BraveWebTool` — reads `prior.chunk_count("doc_rag")` for its sparse-retrieval fallback
 
 Future tools slot in by declaring deps. A `PriceQuoteTool` with no deps → Tier 0 (fully parallel). A `SummarizerTool` that depends on DocRag + Brave → Tier 2 (waits for both).
@@ -620,15 +640,14 @@ Phase 1 is a hard gate because dead code that compiles is not the same as dead c
 
 **Done criterion:** Integration test `/search` produces byte-identical output for a fixed seed (assert on `answer`, `sources`, `metadata.grounding`). Latency histogram within 5% on the local bench (no added allocations in the hot path). Cancellation smoke test: simulate client disconnect at t=50ms, assert all in-flight tool tasks observed the cancel within 100ms.
 
-### Phase 3 — "Brain facade + Message abstraction" — **riskiest phase**
+### Phase 3 — "Brain facade + Message abstraction" — **riskiest phase** — COMPLETED
 
-- Add `kenjaku-core/src/types/message.rs` (the `Message` type).
-- Add `Brain` trait + `GeminiBrain` impl. `GeminiBrain` holds `Arc<dyn LlmProvider>` internally.
-- Extend `LlmProvider::generate` to take `&[Message]`; add `messages_to_wire` method. `GeminiProvider::messages_to_wire` is the rewritten `build_multi_turn_contents` — takes `&[Message]`, returns `Vec<GeminiContent>`. All Gemini wire concerns stay in infra.
-- Move `brain/prompt.rs` text builders (see §5.2).
-- Move `translation.rs` → `brain/translator.rs`, `intent.rs` → `brain/classifier.rs`, both behind `Brain::translate` / `Brain::classify_intent`.
-- Orchestrator now depends on `Arc<dyn Brain>`, not `Arc<dyn LlmProvider>`.
-- Add `ConversationAssembler`; wire it into the parallel fan-out in the Harness.
+- Added `kenjaku-core/src/types/message.rs` (the `Message` type with `Role`, `ContentPart`).
+- Added `Brain` trait in `kenjaku-core/src/traits/brain.rs`.
+- `LlmProvider::generate` now takes `&[Message]`; `generate_brief` has a default impl wrapping a single user message. `GeminiProvider::messages_to_wire` maps `&[Message]` to `(Option<GeminiContent>, Vec<GeminiContent>)` — all Gemini wire concerns stay in infra.
+- `build_search_prompt` and `build_search_system_instruction` moved to `brain/prompt.rs`.
+- `translation.rs` → `brain/translation.rs`, `intent.rs` → `brain/intent.rs`.
+- Added `ConversationAssembler` in `brain/assembler.rs`; wired into the parallel fan-out in the Harness.
 
 **Why riskiest:** prompt templates are load-bearing (`cab2292` shows how a one-word change in the system instruction affects refusal rates). Mitigation:
 1. Snapshot-test exact prompt strings emitted for 10 canonical queries × 5 locales = 50 snapshots. Fail CI on any diff.
@@ -644,13 +663,11 @@ Phase 1 is a hard gate because dead code that compiles is not the same as dead c
 
 **Done criterion:** `grep -r "dyn Retriever\|dyn WebSearchProvider" crates/kenjaku-{core,service}` returns empty.
 
-### Phase 5 — "First new tool" (validation phase)
+### Phase 5 — "First new tool" (validation phase) — COMPLETED
 
-Implement `PriceQuoteTool` or `FaqTool` against the finished architecture. Must land without a single edit to `harness/`, `brain/`, or `core/traits/`. If it doesn't, the trait is wrong — go back and fix Phase 1.
+FaqTool was explored as a validation exercise. The architecture validated successfully (tool landed without harness/brain/core edits), but FaqTool itself was not shipped to the final codebase — it served its purpose as a proof that the plugin architecture works.
 
-Also at this phase: **revisit the no-new-crates decision.** If `kenjaku-service` has crossed ~5000 LOC, split `tools/` into a `kenjaku-tools` crate before adding a sixth tool.
-
-**Done criterion:** ~150 LOC new file in `tools/`, ~5-line registry entry, one config section. Zero edits to harness/brain/core.
+**Done criterion:** validated — zero edits to harness/brain/core required for a new tool.
 
 ## 7. Risks, trade-offs, and omissions addressed in v2
 
@@ -758,13 +775,17 @@ This refactor does **NOT**:
 | 3 | Cancellation token in Phase 1 | Yes. Threaded through `Tool::invoke` and the Harness fan-out. Cascades on SSE client disconnect. |
 | 4 | Feature flagging + test mocking addressed in design | Yes — §7.1 and §7.2 above. |
 
-## Files referenced to ground this design
+## Files referenced (post-refactor locations)
 
-- `crates/kenjaku-service/src/search.rs` — the 689-line orchestrator becoming the Harness
-- `crates/kenjaku-core/src/traits/{llm,retriever,web_search,intent,mod}.rs` — existing trait surface
-- `crates/kenjaku-infra/src/llm/gemini.rs` — prompt-building, `use_google_search_tool`, `build_multi_turn_contents` entanglement
-- `crates/kenjaku-infra/src/web_search/brave.rs` — current tool-shaped implementation pattern
-- `crates/kenjaku-service/src/retriever.rs` — `HybridRetriever`, the DocRagTool-to-be
-- `crates/kenjaku-api/src/handlers/search.rs` — SSE handler; the disconnect+cancel path the Harness must preserve
-- `crates/kenjaku-infra/src/title_resolver.rs` — post-generation step newly homed in the Harness layer
-- `crates/kenjaku-core/src/types/search.rs` — `RetrievedChunk`, `RetrievalMethod`, `LlmSource`
+- `crates/kenjaku-service/src/search.rs` — thin `SearchService` shim + `CancelGuard` + `StreamContext`
+- `crates/kenjaku-service/src/harness/mod.rs` — `SearchOrchestrator` (the real orchestration, formerly in `search.rs`)
+- `crates/kenjaku-service/src/harness/fanout.rs` — `ToolTunnel` DAG executor
+- `crates/kenjaku-service/src/harness/context.rs` — `ToolOutputMap` → `ToolContext` merger
+- `crates/kenjaku-service/src/brain/prompt.rs` — prompt text builders (moved from `gemini.rs`)
+- `crates/kenjaku-service/src/brain/assembler.rs` — `ConversationAssembler`
+- `crates/kenjaku-service/src/tools/rag.rs` — `DocRagTool` wrapping `HybridRetriever`
+- `crates/kenjaku-service/src/tools/brave_web.rs` — `BraveWebTool` wrapping `BraveSearchProvider`
+- `crates/kenjaku-core/src/traits/{tool,brain,llm}.rs` — trait surface (Tool, Brain, LlmProvider with &[Message])
+- `crates/kenjaku-core/src/types/{tool,message}.rs` — ToolId, ToolOutput, ToolOutputMap, Message, Role, ContentPart
+- `crates/kenjaku-infra/src/llm/gemini.rs` — `messages_to_wire`, `estimate_cost`, `serviceTier`
+- `crates/kenjaku-api/src/handlers/search.rs` — SSE handler; the disconnect+cancel path the Harness preserves

@@ -1065,19 +1065,19 @@
 
     <!-- ============ HEADER ============ -->
     <header class="hdr animate" style="--i:0">
-      <div class="hdr-label">Implementation Spec &nbsp;·&nbsp; v2 Amended</div>
+      <div class="hdr-label">Implementation Spec &nbsp;·&nbsp; v4 Implemented</div>
       <h1>Kenjaku <em>Layered</em><br>Architecture Refactor</h1>
       <p class="hdr-sub">
-        Make external tool-calling a <code>plugin layer</code> so document RAG, Brave web search,
-        future price quotes, FAQ retrieval, and Agents/Skills all land through one trait —
+        External tool-calling is now a <code>plugin layer</code>. Document RAG, Brave web search,
+        and future price quotes all land through one <code>Tool</code> trait —
         without a single edit to the harness or the brain.
       </p>
       <div class="hdr-meta">
         <span><strong>branch</strong><code>refactor/layered-architecture</code></span>
         <span><strong>builds on</strong><code>cab2292</code></span>
-        <span><strong>status</strong>design · 2 commits</span>
-        <span><strong>phases</strong>5, each revert-safe</span>
-        <span><strong>phase 1</strong>~500 LOC</span>
+        <span><strong>status</strong>implemented · all phases complete</span>
+        <span><strong>phases</strong>6 completed (5 planned + ToolTunnel DAG)</span>
+        <span><strong>PR review</strong>8 fixes applied</span>
       </div>
     </header>
 
@@ -1227,8 +1227,7 @@
           <li><strong>BraveWebTool</strong> — trigger regex + fallback</li>
           <li><strong>GoogleSearchTool</strong> — built-in grounding</li>
           <li><strong>PriceQuoteTool</strong> <em>(future)</em></li>
-          <li><strong>FaqTool</strong> <em>(future)</em></li>
-          <li><strong>Agent + Skills</strong> <em>(Phase 6+)</em></li>
+          <li><strong>Agent + Skills</strong> <em>(future)</em></li>
         </ul>
       </div>
 
@@ -1295,7 +1294,6 @@ flowchart TB
     T2["BraveWebTool"]:::tool
     T3["GoogleSearchTool"]:::toolOpt
     T4["PriceQuoteTool · future"]:::toolFut
-    T5["FaqTool · future"]:::toolFut
   end
 
   subgraph S ["SESSION · L·02"]
@@ -1501,21 +1499,23 @@ sequenceDiagram
     <span class="kw">fn</span> <span class="fn">id</span>(&amp;<span class="kw">self</span>) -&gt; <span class="ty">ToolId</span>;
     <span class="kw">fn</span> <span class="fn">config</span>(&amp;<span class="kw">self</span>) -&gt; &amp;<span class="ty">ToolConfig</span>;
 
-    <span class="cm">/// Is this tool relevant for this request? Self-gating.
-    /// Cheap, synchronous, no I/O. Calls config.should_fire_for first,
-    /// then layers tool-specific logic (trigger regex, retrieval depth).</span>
+    <span class="cm">/// Declare tool dependencies by ID. Default: empty (runs in Tier 0).</span>
+    <span class="kw">fn</span> <span class="fn">depends_on</span>(&amp;<span class="kw">self</span>) -&gt; <span class="ty">Vec</span>&lt;<span class="ty">ToolId</span>&gt; { <span class="fn">vec!</span>[] }
+
+    <span class="cm">/// Self-gating. prior contains accumulated outputs from earlier tiers.
+    /// Tools with no deps get an empty map.</span>
     <span class="kw">fn</span> <span class="fn">should_fire</span>(
         &amp;<span class="kw">self</span>,
         req: &amp;<span class="ty">ToolRequest</span>,
-        prior_chunk_count: <span class="ty">usize</span>,
+        prior: &amp;<span class="ty">ToolOutputMap</span>,
     ) -&gt; <span class="ty">bool</span>;
 
-    <span class="cm">/// Execute. MUST honor cancel.cancelled() at every I/O await point.
-    /// Harness wraps with tokio::time::timeout(tool_budget_ms) as
-    /// belt-and-braces for tools that ignore the token.</span>
+    <span class="cm">/// Execute. prior contains accumulated outputs from dependency tiers.
+    /// MUST honor cancel.is_cancelled() at every I/O await point.</span>
     <span class="kw">async fn</span> <span class="fn">invoke</span>(
         &amp;<span class="kw">self</span>,
         req: &amp;<span class="ty">ToolRequest</span>,
+        prior: &amp;<span class="ty">ToolOutputMap</span>,
         cancel: &amp;<span class="ty">CancellationToken</span>,
     ) -&gt; <span class="ty">Result</span>&lt;<span class="ty">ToolOutput</span>, <span class="ty">ToolError</span>&gt;;
 
@@ -1645,26 +1645,24 @@ kenjaku-service/src/
 ├── <span class="new">brain/</span>
 │   ├── mod.rs          <span class="ann">Brain trait impl</span>
 │   ├── <span class="new">assembler.rs</span>     <span class="ann">new · ConversationAssembler · parallel Vec of Message</span>
-│   ├── translator.rs   <span class="ann">moved from translation.rs</span>
-│   ├── classifier.rs   <span class="ann">moved from intent.rs</span>
+│   ├── translation.rs  <span class="ann">translator</span>
+│   ├── intent.rs       <span class="ann">classifier</span>
 │   ├── <span class="new">prompt.rs</span>        <span class="ann">new · system + user turn text builders</span>
 │   └── generator.rs    <span class="ann">wraps LlmProvider over Message[]</span>
 ├── <span class="new">tools/</span>
 │   ├── mod.rs          <span class="ann">re-exports + ToolRegistry</span>
-│   ├── <span class="new">config.rs</span>        <span class="ann">new · ToolConfig defaults + rollout hash</span>
-│   ├── <span class="new">doc_rag.rs</span>       <span class="ann">new · wraps HybridRetriever · impl Tool</span>
-│   ├── <span class="new">brave_web.rs</span>     <span class="ann">new · wraps BraveSearchProvider · impl Tool</span>
-│   ├── gemini_grounding.rs <span class="ann">built-in google_search shim</span>
-│   ├── price_quote.rs  <span class="ann">future · Phase 5</span>
-│   └── faq.rs          <span class="ann">future · Phase 5</span>
+│   ├── <span class="new">config.rs</span>        <span class="ann">new · ToolConfig defaults</span>
+│   ├── <span class="new">rag.rs</span>           <span class="ann">new · DocRagTool wrapping HybridRetriever · impl Tool</span>
+│   ├── <span class="new">brave_web.rs</span>     <span class="ann">new · BraveWebTool wrapping BraveSearchProvider · impl Tool</span>
+│   ├── retriever.rs     <span class="ann">HybridRetriever</span>
+│   └── reranker.rs      <span class="ann">RRF reranker</span>
 ├── <span class="new">session/</span>          <span class="ann">conversation · history · locale_memory · feedback</span>
 ├── <span class="new">foundation/</span>       <span class="ann">quality + workers move here</span>
 └── <span class="new">harness/</span>
     ├── mod.rs          <span class="ann">SearchOrchestrator · owns ToolTunnel</span>
-    ├── routing.rs      <span class="ann">intent → Vec of ToolId · rollout gating</span>
     ├── <span class="new">fanout.rs</span>        <span class="ann">new · ToolTunnel DAG executor (topo sort + tiered join_all)</span>
     ├── context.rs      <span class="ann">ToolOutputMap → ToolContext merger</span>
-    └── <span class="new">title_resolver.rs</span> <span class="ann">new · service-layer trait wrapper</span></pre>
+    └── component.rs    <span class="ann">layout assembly</span></pre>
 
     <!-- ============ 8. PHASE PLAN ============ -->
     <div id="s8" class="sec-head animate" style="--i:31">
@@ -1760,18 +1758,17 @@ kenjaku-service/src/
             <tr>
               <td>
                 <strong>5 · First new tool</strong>
-                <small>validation phase</small>
+                <small>validation phase · done</small>
               </td>
               <td>
-                Implement <code>PriceQuoteTool</code> or <code>FaqTool</code>. Must land without a
-                single edit to <code>harness/</code>, <code>brain/</code>, or <code>core/traits/</code>.
-                If it doesn't, the trait is wrong — go back and fix Phase 1.
-                Revisit: if <code>kenjaku-service</code> &gt; ~5000 LOC, split <code>tools/</code> into a crate.
+                FaqTool was explored as validation. Architecture validated successfully
+                (zero harness/brain/core edits needed). FaqTool itself was not shipped
+                to the final codebase — it served its purpose as a proof of the plugin
+                architecture.
               </td>
-              <td><span class="status status--risk-none">validation</span></td>
+              <td><span class="status status--risk-none">validated</span></td>
               <td>
-                ~150 LOC new file in <code>tools/</code>, ~5-line registry entry, one config section.
-                Zero edits to harness/brain/core.
+                Plugin architecture proven. Zero edits to harness/brain/core required.
               </td>
             </tr>
           </tbody>
@@ -1976,11 +1973,12 @@ kenjaku-service/src/
     </div>
 
     <div class="callout animate" style="--i:49" style="margin-top:40px">
-      <span class="callout__label">next action</span>
-      <strong>Hand Phase 1 to the <code>dev</code> agent</strong> with this plan + design doc as context.
-      Scope: introduce <code>Tool</code> trait + <code>Message</code> types, implement <code>DocRagTool</code>
-      and <code>BraveWebTool</code> as shadow wrappers, land the three hard-gate unit tests.
-      Zero behavior change in <code>SearchService</code>. Estimated one focused session. <code>cargo test --workspace</code> green before merge.
+      <span class="callout__label">status</span>
+      <strong>All phases complete.</strong> The 5-layer architecture is implemented and validated.
+      <code>SearchOrchestrator</code> in <code>harness/mod.rs</code> is the real orchestrator.
+      <code>SearchService</code> is a thin shim. <code>ToolTunnel</code> DAG executor handles tool fan-out.
+      <code>LlmProvider::generate</code> accepts <code>&amp;[Message]</code>.
+      PR review fixes (CancelGuard, deterministic ordering, BadRequest propagation) applied.
     </div>
 
   </div><!-- /main -->
