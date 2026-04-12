@@ -10,7 +10,7 @@ pub mod tools;
 pub use brain::intent;
 pub use brain::translation;
 pub use foundation::quality;
-pub use foundation::refresh_worker;
+pub use foundation::worker::suggestion as refresh_worker;
 pub use foundation::suggestion;
 pub use foundation::trending;
 pub use foundation::worker;
