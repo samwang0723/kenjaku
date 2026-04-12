@@ -1,3 +1,4 @@
+pub mod brain;
 pub mod clusterer;
 pub mod embedding;
 pub mod intent;

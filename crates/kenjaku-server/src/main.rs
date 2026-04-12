@@ -27,7 +27,6 @@ use kenjaku_service::refresh_worker::SuggestionRefreshWorker;
 use kenjaku_service::retriever::HybridRetriever;
 use kenjaku_service::search::SearchService;
 use kenjaku_service::suggestion::{ServiceRng, SuggestionService};
-use kenjaku_service::translation::TranslationService;
 use kenjaku_service::trending::TrendingService;
 use kenjaku_service::worker::TrendingFlushWorker;
 
@@ -91,7 +90,6 @@ async fn main() -> anyhow::Result<()> {
     let intent_classifier = Arc::new(LlmIntentClassifier::new(llm_provider.clone()));
 
     let component_service = ComponentService::new(config.search.component_layout.clone());
-    let translation_service = TranslationService::new(llm_provider.clone());
     let trending_service = TrendingService::new(
         redis.clone(),
         trending_repo.clone(),
@@ -173,7 +171,6 @@ async fn main() -> anyhow::Result<()> {
         llm_provider.clone(),
         intent_classifier,
         component_service,
-        translation_service,
         trending_service.clone(),
         conversation_service,
         Some(title_resolver),
@@ -183,6 +180,7 @@ async fn main() -> anyhow::Result<()> {
         config.web_search.clone(),
         config.qdrant.collection_name.clone(),
         config.search.suggestion_count,
+        use_google_search_tool,
     );
 
     // Spawn background workers

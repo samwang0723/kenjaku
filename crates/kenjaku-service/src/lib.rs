@@ -1,4 +1,5 @@
 pub mod autocomplete;
+pub mod brain;
 pub mod component;
 pub mod conversation;
 pub mod feedback;

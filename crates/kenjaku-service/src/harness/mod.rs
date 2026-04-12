@@ -9,8 +9,7 @@ use tracing::{info, instrument, warn};
 
 use kenjaku_core::config::WebSearchConfig;
 use kenjaku_core::error::Result;
-use kenjaku_core::traits::intent::IntentClassifier;
-use kenjaku_core::traits::llm::LlmProvider;
+use kenjaku_core::traits::brain::Brain;
 use kenjaku_core::traits::tool::Tool;
 use kenjaku_core::types::component::SuggestionSource;
 use kenjaku_core::types::conversation::{ConversationTurn, CreateConversation};
@@ -21,22 +20,20 @@ use kenjaku_core::types::search::{
 };
 use kenjaku_core::types::tool::ToolRequest;
 
+use crate::brain::ConversationAssembler;
 use crate::component::ComponentService;
 use crate::conversation::ConversationService;
 use crate::history::SessionHistoryStore;
 use crate::locale_memory::LocaleMemory;
 use crate::quality::prettify_title;
-use crate::search::{resolve_translation, SearchStreamOutput, StreamContext};
-use crate::translation::TranslationService;
+use crate::search::{SearchStreamOutput, StreamContext, resolve_translation};
 use crate::trending::TrendingService;
 
 /// Internal orchestrator behind `SearchService`. Owns the full RAG pipeline
 /// but is not exported to the API crate.
 pub(crate) struct SearchOrchestrator {
-    llm: Arc<dyn LlmProvider>,
-    intent_classifier: Arc<dyn IntentClassifier>,
+    brain: Arc<dyn Brain>,
     component_service: ComponentService,
-    translation_service: TranslationService,
     trending_service: TrendingService,
     conversation_service: ConversationService,
     title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
@@ -49,15 +46,17 @@ pub(crate) struct SearchOrchestrator {
     suggestion_count: usize,
     /// Per-tool timeout in milliseconds.
     tool_budget_ms: u64,
+    /// Whether the Brain has Gemini's built-in `google_search` tool.
+    /// Used by the `ConversationAssembler` to select the correct system
+    /// instruction variant.
+    has_web_grounding: bool,
 }
 
 impl SearchOrchestrator {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        llm: Arc<dyn LlmProvider>,
-        intent_classifier: Arc<dyn IntentClassifier>,
+        brain: Arc<dyn Brain>,
         component_service: ComponentService,
-        translation_service: TranslationService,
         trending_service: TrendingService,
         conversation_service: ConversationService,
         title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
@@ -67,12 +66,11 @@ impl SearchOrchestrator {
         web_search_config: &WebSearchConfig,
         collection_name: String,
         suggestion_count: usize,
+        has_web_grounding: bool,
     ) -> Self {
         Self {
-            llm,
-            intent_classifier,
+            brain,
             component_service,
-            translation_service,
             trending_service,
             conversation_service,
             title_resolver,
@@ -82,6 +80,7 @@ impl SearchOrchestrator {
             collection_name,
             suggestion_count,
             tool_budget_ms: web_search_config.timeout_ms,
+            has_web_grounding,
         }
     }
 
@@ -101,8 +100,8 @@ impl SearchOrchestrator {
         // in parallel. Both are independent LLM calls, so we save ~1s by
         // issuing them together.
         let (intent_result, translate_result) = tokio::join!(
-            self.intent_classifier.classify(&req.query),
-            self.translation_service.translate(&req.query),
+            self.brain.classify_intent(&req.query, &cancel),
+            self.brain.translate(&req.query, &cancel),
         );
 
         let intent = match intent_result {
@@ -169,14 +168,27 @@ impl SearchOrchestrator {
         let history_key = device_session_id.unwrap_or(&req.session_id);
         let history = self.history_store.snapshot_for_llm(history_key);
 
-        // Step 4: Generate LLM response in the detected locale.
+        // Build the message sequence via ConversationAssembler.
+        let messages = ConversationAssembler::build(
+            &history,
+            &search_query,
+            detected_locale,
+            self.has_web_grounding,
+            &chunks,
+        );
+
+        // Step 4: Generate LLM response in the detected locale via Brain.
         let llm_response = self
-            .llm
-            .generate(&search_query, &chunks, &history, detected_locale)
+            .brain
+            .generate(&messages, &chunks, detected_locale, &cancel)
             .await?;
 
         // Step 5: Get suggestions (LLM first, fallback to Qdrant titles)
-        let suggestions = match self.llm.suggest(&search_query, &llm_response.answer).await {
+        let suggestions = match self
+            .brain
+            .suggest(&search_query, &llm_response.answer, &cancel)
+            .await
+        {
             Ok(s) if s.len() >= self.suggestion_count => s[..self.suggestion_count].to_vec(),
             _ => chunks
                 .iter()
@@ -292,8 +304,8 @@ impl SearchOrchestrator {
         // Step 1 + 2: Classify intent AND translate/normalize+detect-locale
         // in parallel.
         let (intent_result, translate_result) = tokio::join!(
-            self.intent_classifier.classify(&req.query),
-            self.translation_service.translate(&req.query),
+            self.brain.classify_intent(&req.query, &cancel),
+            self.brain.translate(&req.query, &cancel),
         );
         let intent = intent_result.map(|c| c.intent).unwrap_or(Intent::Unknown);
         let (search_query, detected_locale, locale_source) =
@@ -360,10 +372,19 @@ impl SearchOrchestrator {
         let history_key = device_session_id.unwrap_or(&req.session_id);
         let history = self.history_store.snapshot_for_llm(history_key);
 
-        // Step 4: Open the LLM stream pinned to the detected locale.
+        // Build the message sequence via ConversationAssembler.
+        let messages = ConversationAssembler::build(
+            &history,
+            &search_query,
+            detected_locale,
+            self.has_web_grounding,
+            &chunks,
+        );
+
+        // Step 4: Open the LLM stream pinned to the detected locale via Brain.
         let stream = self
-            .llm
-            .generate_stream(&search_query, &chunks, &history, detected_locale)
+            .brain
+            .generate_stream(&messages, &chunks, detected_locale, &cancel)
             .await?;
 
         // Step 5: Record trending (fire-and-forget).
@@ -415,7 +436,12 @@ impl SearchOrchestrator {
         grounding_sources: Vec<LlmSource>,
     ) -> StreamDoneMetadata {
         let grounding_sources_was_empty = grounding_sources.is_empty();
-        let suggestions = match self.llm.suggest(&ctx.query, accumulated_answer).await {
+        let cancel = CancellationToken::new();
+        let suggestions = match self
+            .brain
+            .suggest(&ctx.query, accumulated_answer, &cancel)
+            .await
+        {
             Ok(s) if s.len() >= self.suggestion_count => s[..self.suggestion_count].to_vec(),
             Ok(s) => s,
             Err(_) => Vec::new(),

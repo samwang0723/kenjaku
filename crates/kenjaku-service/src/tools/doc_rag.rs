@@ -16,11 +16,7 @@ pub struct DocRagTool {
 }
 
 impl DocRagTool {
-    pub fn new(
-        retriever: Arc<dyn Retriever>,
-        collection_name: String,
-        config: ToolConfig,
-    ) -> Self {
+    pub fn new(retriever: Arc<dyn Retriever>, collection_name: String, config: ToolConfig) -> Self {
         Self {
             retriever,
             collection_name,

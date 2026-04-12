@@ -7,6 +7,7 @@ use tracing::warn;
 
 use kenjaku_core::config::WebSearchConfig;
 use kenjaku_core::error::Result;
+use kenjaku_core::traits::brain::Brain;
 use kenjaku_core::traits::intent::IntentClassifier;
 use kenjaku_core::traits::llm::LlmProvider;
 use kenjaku_core::traits::retriever::Retriever;
@@ -20,20 +21,21 @@ use kenjaku_core::types::search::{
 };
 use kenjaku_core::types::tool::ToolConfig;
 
+use crate::brain::GeminiBrain;
 use crate::component::ComponentService;
 use crate::conversation::ConversationService;
 use crate::harness::SearchOrchestrator;
 use crate::history::SessionHistoryStore;
 use crate::locale_memory::LocaleMemory;
 use crate::tools::{BraveWebTool, DocRagTool};
-use crate::translation::TranslationService;
 use crate::trending::TrendingService;
 
 /// Orchestrates the full RAG search pipeline.
 ///
 /// Public interface consumed by `kenjaku-api` handlers. Internally
 /// delegates to `SearchOrchestrator` which routes through the `Tool`
-/// trait for retrieval and web search.
+/// trait for retrieval and web search, and through the `Brain` trait
+/// for all LLM interactions.
 pub struct SearchService {
     orchestrator: SearchOrchestrator,
 }
@@ -45,7 +47,6 @@ impl SearchService {
         llm: Arc<dyn LlmProvider>,
         intent_classifier: Arc<dyn IntentClassifier>,
         component_service: ComponentService,
-        translation_service: TranslationService,
         trending_service: TrendingService,
         conversation_service: ConversationService,
         title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
@@ -55,7 +56,11 @@ impl SearchService {
         web_search_config: WebSearchConfig,
         collection_name: String,
         suggestion_count: usize,
+        has_web_grounding: bool,
     ) -> Self {
+        // Build the Brain facade that wraps LLM + intent classifier.
+        let brain: Arc<dyn Brain> = Arc::new(GeminiBrain::new(llm, intent_classifier));
+
         // Build tools from the existing dependencies.
         let doc_rag: Arc<dyn Tool> = Arc::new(DocRagTool::new(
             retriever,
@@ -77,10 +82,8 @@ impl SearchService {
         let tools: Vec<Arc<dyn Tool>> = vec![doc_rag, brave_web];
 
         let orchestrator = SearchOrchestrator::new(
-            llm,
-            intent_classifier,
+            brain,
             component_service,
-            translation_service,
             trending_service,
             conversation_service,
             title_resolver,
@@ -90,6 +93,7 @@ impl SearchService {
             &web_search_config,
             collection_name,
             suggestion_count,
+            has_web_grounding,
         );
 
         Self { orchestrator }
@@ -115,7 +119,9 @@ impl SearchService {
         req: &SearchRequest,
         device_session_id: Option<&str>,
     ) -> Result<SearchStreamOutput> {
-        self.orchestrator.search_stream(req, device_session_id).await
+        self.orchestrator
+            .search_stream(req, device_session_id)
+            .await
     }
 
     /// Called by the handler after the token stream finishes. Produces the

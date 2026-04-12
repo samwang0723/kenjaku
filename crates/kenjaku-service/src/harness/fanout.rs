@@ -83,9 +83,7 @@ async fn invoke_with_timeout(
     let tool_id = tool.id();
     match tokio::time::timeout(timeout, tool.invoke(req, cancel)).await {
         Ok(Ok(out)) => Ok(out),
-        Ok(Err(ToolError::BadRequest(msg))) => {
-            Err(kenjaku_core::error::Error::Validation(msg))
-        }
+        Ok(Err(ToolError::BadRequest(msg))) => Err(kenjaku_core::error::Error::Validation(msg)),
         Ok(Err(ToolError::Disabled)) => {
             // Silent skip per error policy.
             Ok(ToolOutput::Empty)

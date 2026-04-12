@@ -111,10 +111,7 @@ impl Tool for BraveWebTool {
             return Err(ToolError::Cancelled);
         }
 
-        let provider = self
-            .provider
-            .as_ref()
-            .ok_or(ToolError::Disabled)?;
+        let provider = self.provider.as_ref().ok_or(ToolError::Disabled)?;
 
         let results = provider
             .search(&req.query_normalized, self.limit)
