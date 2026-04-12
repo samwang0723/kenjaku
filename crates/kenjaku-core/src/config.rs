@@ -135,7 +135,7 @@ pub struct LlmConfig {
 }
 
 /// Gemini inference tier. Controls latency/cost trade-off.
-/// Serialized as ALL CAPS in the API request (`STANDARD`, `FLEX`, `PRIORITY`).
+/// Sent lowercase in the API request body (`standard`, `flex`, `priority`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceTier {
@@ -145,12 +145,12 @@ pub enum ServiceTier {
 }
 
 impl ServiceTier {
-    /// Returns the ALL-CAPS string for the Gemini `serviceTier` request field.
+    /// Returns the lowercase string for the Gemini `serviceTier` request field.
     pub fn as_api_value(&self) -> &'static str {
         match self {
-            Self::Standard => "STANDARD",
-            Self::Flex => "FLEX",
-            Self::Priority => "PRIORITY",
+            Self::Standard => "standard",
+            Self::Flex => "flex",
+            Self::Priority => "priority",
         }
     }
 
