@@ -16,7 +16,6 @@ use kenjaku_core::types::search::RetrievedChunk;
 /// Build the context string from retrieved chunks.
 ///
 /// Produces the `[Source N]` block that gets embedded in the user turn.
-/// Byte-identical to the former `GeminiProvider::build_context`.
 pub fn build_context(chunks: &[RetrievedChunk]) -> String {
     chunks
         .iter()
@@ -43,7 +42,6 @@ pub fn build_context(chunks: &[RetrievedChunk]) -> String {
 /// negative cue that nudges the model toward refusal, whereas omitting
 /// it leaves the model free to reach for `google_search`.
 ///
-/// Byte-identical to the former `GeminiProvider::build_search_prompt`.
 pub fn build_search_prompt(query: &str, context: &str, answer_locale: Locale) -> String {
     let display = answer_locale.display_name();
     let tag = answer_locale.as_str();
@@ -80,8 +78,6 @@ pub fn build_search_prompt(query: &str, context: &str, answer_locale: Locale) ->
 /// `Message::system_text(...)` or passes it to the LLM provider's
 /// wire format converter.
 ///
-/// Byte-identical to the former `GeminiProvider::build_search_system_instruction`
-/// (minus the `GeminiContent` wrapper).
 pub fn build_search_system_instruction(
     answer_locale: Locale,
     has_builtin_web_tool: bool,
@@ -126,8 +122,7 @@ mod tests {
     use super::*;
 
     // ---------------------------------------------------------------
-    // Snapshot tests: verify prompt builders produce byte-identical
-    // output to the former GeminiProvider inline methods.
+    // Snapshot tests: verify prompt builders produce known-good output.
     // ---------------------------------------------------------------
 
     #[test]
@@ -254,10 +249,8 @@ mod tests {
         assert!(text.contains("Write the final answer in 简体中文 (BCP-47 `zh`)"));
     }
 
-    // Exact byte-equivalence test: the system instruction text produced by
-    // our prompt builder must match the text that the former
-    // GeminiProvider::build_search_system_instruction produced (minus the
-    // GeminiContent wrapper).
+    // Exact byte-equivalence tests: the system instruction text must match
+    // the canonical form captured during the initial extraction.
     #[test]
     fn system_instruction_byte_equivalence_en_with_tool() {
         // This is the EXACT text from GeminiProvider, captured verbatim.
@@ -280,7 +273,7 @@ mod tests {
         let actual = build_search_system_instruction(Locale::En, true);
         assert_eq!(
             actual, expected,
-            "System instruction text diverged from GeminiProvider baseline"
+            "System instruction text diverged from known-good baseline"
         );
     }
 
@@ -305,7 +298,7 @@ mod tests {
         let actual = build_search_system_instruction(Locale::En, false);
         assert_eq!(
             actual, expected,
-            "System instruction text diverged from GeminiProvider baseline"
+            "System instruction text diverged from known-good baseline"
         );
     }
 
@@ -320,7 +313,7 @@ mod tests {
         let actual = build_search_prompt("what is bitcoin", context, Locale::En);
         assert_eq!(
             actual, expected,
-            "Search prompt text diverged from GeminiProvider baseline"
+            "Search prompt text diverged from known-good baseline"
         );
     }
 
@@ -332,7 +325,7 @@ mod tests {
         let actual = build_search_prompt("what is bitcoin", "", Locale::En);
         assert_eq!(
             actual, expected,
-            "Search prompt text diverged from GeminiProvider baseline"
+            "Search prompt text diverged from known-good baseline"
         );
     }
 

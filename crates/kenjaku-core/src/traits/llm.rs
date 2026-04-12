@@ -4,42 +4,42 @@ use async_trait::async_trait;
 use futures::Stream;
 
 use crate::error::{Error, Result};
-use crate::types::conversation::ConversationTurn;
-use crate::types::locale::Locale;
-use crate::types::search::{LlmResponse, RetrievedChunk, StreamChunk, TranslationResult};
+use crate::types::message::Message;
+use crate::types::search::{LlmResponse, StreamChunk, TranslationResult};
 use crate::types::suggestion::ClusterQuestions;
 
 /// Trait for LLM providers. Implementations can use Gemini, OpenAI, Claude, etc.
+///
+/// The two main generation methods (`generate` and `generate_stream`) accept
+/// a pre-assembled `&[Message]` conversation. The caller (typically `Brain`
+/// via `ConversationAssembler`) is responsible for building the system
+/// instruction, injecting retrieved-context chunks, and interleaving
+/// conversation history. The provider maps the LLM-agnostic `Message`
+/// sequence to its native wire format internally (e.g. `messages_to_wire`
+/// for Gemini).
+///
+/// Utility methods (`generate_brief`, `translate`, `suggest`,
+/// `generate_cluster_questions`) remain single-shot convenience endpoints
+/// that build their own prompts internally.
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
-    /// Generate a complete response given a query and retrieved context.
+    /// Generate a complete response from a pre-assembled message sequence.
     ///
-    /// `answer_locale` is the locale the model must respond in — used to
-    /// build the per-request `systemInstruction` so the answer is rendered
-    /// in the user's source language regardless of the context language.
+    /// The `messages` slice follows the convention:
+    /// - `messages[0]` with `Role::System` — the system instruction
+    /// - Alternating `Role::User` / `Role::Assistant` — conversation history
+    /// - Final `Role::User` — the current turn (query + retrieved context)
     ///
-    /// `history` is a chronological list of prior turns in the same session
-    /// (oldest first). Implementations should map each turn into a pair of
-    /// user/model `Content` entries so Gemini's multi-turn handling carries
-    /// follow-up context. An empty slice means stateless call (e.g. intent
-    /// classifier, suggestion call) — implementations MUST treat it as
-    /// "no history" and not fabricate turns.
-    async fn generate(
-        &self,
-        query: &str,
-        context: &[RetrievedChunk],
-        history: &[ConversationTurn],
-        answer_locale: Locale,
-    ) -> Result<LlmResponse>;
+    /// Implementations map this to their native wire format and attach
+    /// provider-specific tools (e.g. Gemini's `google_search`) based on
+    /// their own configuration.
+    async fn generate(&self, messages: &[Message]) -> Result<LlmResponse>;
 
-    /// Generate a streaming response. See `generate` for `answer_locale`
-    /// and `history` semantics.
+    /// Generate a streaming response from a pre-assembled message sequence.
+    /// See `generate` for the `messages` convention.
     async fn generate_stream(
         &self,
-        query: &str,
-        context: &[RetrievedChunk],
-        history: &[ConversationTurn],
-        answer_locale: Locale,
+        messages: &[Message],
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>>;
 
     /// Fast, stateless, tool-less completion — used for intent
@@ -47,11 +47,11 @@ pub trait LlmProvider: Send + Sync {
     /// response is short, English, and doesn't need grounding. Skipping
     /// the google_search tool drops latency by several seconds.
     ///
-    /// Default impl calls `generate` with empty context/history and the
-    /// English locale — correct but slow. Real providers (Gemini) should
-    /// override to cap max_tokens and skip the grounding tool entirely.
+    /// Default impl wraps the prompt in a single user message and calls
+    /// `generate`. Real providers (Gemini) should override to cap
+    /// max_tokens and skip the grounding tool entirely.
     async fn generate_brief(&self, prompt: &str) -> Result<LlmResponse> {
-        self.generate(prompt, &[], &[], Locale::En).await
+        self.generate(&[Message::user_text(prompt)]).await
     }
 
     /// Normalize a query into canonical English AND detect its source

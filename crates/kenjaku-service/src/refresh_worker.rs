@@ -622,9 +622,7 @@ mod tests {
     use kenjaku_core::error::Error as CoreError;
     use kenjaku_core::traits::llm::LlmProvider;
     use kenjaku_core::types::locale::Locale;
-    use kenjaku_core::types::search::{
-        LlmResponse, RetrievedChunk, StreamChunk, TranslationResult,
-    };
+    use kenjaku_core::types::search::{LlmResponse, StreamChunk, TranslationResult};
     use kenjaku_core::types::suggestion::ClusterQuestions;
 
     /// Mock that errors on the first `fail_first` calls then succeeds.
@@ -637,19 +635,13 @@ mod tests {
     impl LlmProvider for MockLlm {
         async fn generate(
             &self,
-            _q: &str,
-            _c: &[RetrievedChunk],
-            _h: &[kenjaku_core::types::conversation::ConversationTurn],
-            _l: Locale,
+            _messages: &[kenjaku_core::types::message::Message],
         ) -> kenjaku_core::error::Result<LlmResponse> {
             unimplemented!()
         }
         async fn generate_stream(
             &self,
-            _q: &str,
-            _c: &[RetrievedChunk],
-            _h: &[kenjaku_core::types::conversation::ConversationTurn],
-            _l: Locale,
+            _messages: &[kenjaku_core::types::message::Message],
         ) -> kenjaku_core::error::Result<
             Pin<Box<dyn Stream<Item = kenjaku_core::error::Result<StreamChunk>> + Send>>,
         > {
@@ -741,19 +733,13 @@ mod tests {
     impl LlmProvider for DenyOnlyLlm {
         async fn generate(
             &self,
-            _q: &str,
-            _c: &[RetrievedChunk],
-            _h: &[kenjaku_core::types::conversation::ConversationTurn],
-            _l: Locale,
+            _messages: &[kenjaku_core::types::message::Message],
         ) -> kenjaku_core::error::Result<LlmResponse> {
             unimplemented!()
         }
         async fn generate_stream(
             &self,
-            _q: &str,
-            _c: &[RetrievedChunk],
-            _h: &[kenjaku_core::types::conversation::ConversationTurn],
-            _l: Locale,
+            _messages: &[kenjaku_core::types::message::Message],
         ) -> kenjaku_core::error::Result<
             Pin<Box<dyn Stream<Item = kenjaku_core::error::Result<StreamChunk>> + Send>>,
         > {
@@ -848,19 +834,13 @@ mod tests {
     impl LlmProvider for SleepingLlm {
         async fn generate(
             &self,
-            _q: &str,
-            _c: &[RetrievedChunk],
-            _h: &[kenjaku_core::types::conversation::ConversationTurn],
-            _l: Locale,
+            _messages: &[kenjaku_core::types::message::Message],
         ) -> kenjaku_core::error::Result<LlmResponse> {
             unimplemented!()
         }
         async fn generate_stream(
             &self,
-            _q: &str,
-            _c: &[RetrievedChunk],
-            _h: &[kenjaku_core::types::conversation::ConversationTurn],
-            _l: Locale,
+            _messages: &[kenjaku_core::types::message::Message],
         ) -> kenjaku_core::error::Result<
             Pin<Box<dyn Stream<Item = kenjaku_core::error::Result<StreamChunk>> + Send>>,
         > {
