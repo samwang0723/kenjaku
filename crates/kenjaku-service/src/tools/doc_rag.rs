@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 use kenjaku_core::traits::retriever::Retriever;
 use kenjaku_core::traits::tool::Tool;
-use kenjaku_core::types::tool::{ToolConfig, ToolError, ToolId, ToolOutput, ToolRequest};
+use kenjaku_core::types::tool::{ToolConfig, ToolError, ToolId, ToolOutput, ToolOutputMap, ToolRequest};
 
 /// Wraps the existing `HybridRetriever` (or any `dyn Retriever`) as a
 /// `Tool`. Phase 1: shadow implementation exercised only by tests.
@@ -35,13 +35,14 @@ impl Tool for DocRagTool {
         &self.config
     }
 
-    fn should_fire(&self, req: &ToolRequest, _prior_chunk_count: usize) -> bool {
+    fn should_fire(&self, req: &ToolRequest, _prior: &ToolOutputMap) -> bool {
         self.config.should_fire_for(&req.request_id)
     }
 
     async fn invoke(
         &self,
         req: &ToolRequest,
+        _prior: &ToolOutputMap,
         cancel: &CancellationToken,
     ) -> Result<ToolOutput, ToolError> {
         if cancel.is_cancelled() {
@@ -104,7 +105,7 @@ mod tests {
             ToolConfig::default(),
         );
         let req = make_request();
-        assert!(tool.should_fire(&req, 0));
+        assert!(tool.should_fire(&req, &ToolOutputMap::new()));
     }
 
     #[test]
@@ -118,7 +119,7 @@ mod tests {
             },
         );
         let req = make_request();
-        assert!(!tool.should_fire(&req, 0));
+        assert!(!tool.should_fire(&req, &ToolOutputMap::new()));
     }
 
     #[tokio::test]
@@ -130,7 +131,7 @@ mod tests {
         );
         let req = make_request();
         let cancel = CancellationToken::new();
-        let result = tool.invoke(&req, &cancel).await;
+        let result = tool.invoke(&req, &ToolOutputMap::new(), &cancel).await;
         assert!(result.is_ok());
         match result.unwrap() {
             ToolOutput::Chunks { chunks, provider } => {
@@ -151,7 +152,7 @@ mod tests {
         let req = make_request();
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = tool.invoke(&req, &cancel).await;
+        let result = tool.invoke(&req, &ToolOutputMap::new(), &cancel).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             ToolError::Cancelled => {}

@@ -1,113 +1,190 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{error, warn};
 
 use kenjaku_core::traits::tool::Tool;
-use kenjaku_core::types::tool::{ToolError, ToolOutput, ToolRequest};
+use kenjaku_core::types::tool::{ToolError, ToolId, ToolOutput, ToolOutputMap, ToolRequest};
 
-/// Fan out tool invocations with per-tool timeout and graceful degradation.
+/// Dependency-aware DAG executor for tool fan-out.
 ///
-/// Two-tier execution:
-/// - **Tier 1** (index 0): `DocRagTool` always runs first. Its output
-///   determines `prior_chunk_count` for tier-2 tools.
-/// - **Tier 2** (indices 1..): Evaluated with `should_fire(req, prior_chunk_count)`
-///   after tier 1 completes. Tools that pass fire via `join_all` (NOT
-///   `try_join_all`) so one failure degrades to `ToolOutput::Empty` instead
-///   of aborting the entire fan-out.
+/// Tools declare dependencies via `Tool::depends_on()`. The tunnel resolves
+/// execution tiers via topological sort (Kahn's algorithm) at construction
+/// time. Within a tier, tools run in parallel via `join_all`. Between tiers,
+/// execution is sequential so that tier N tools can read tier 0..N-1 outputs
+/// via the `ToolOutputMap`.
 ///
-/// Error policy (per design doc SS4.3):
-/// - `ToolError::Upstream | Timeout | Cancelled` -> `ToolOutput::Empty`
-/// - `ToolError::Disabled` -> silent skip (not even logged)
-/// - `ToolError::BadRequest` -> propagated as `kenjaku_core::Error::Validation`
-pub async fn fanout_tools(
-    tools: &[Arc<dyn Tool>],
-    req: &ToolRequest,
-    cancel: &CancellationToken,
-    tool_budget_ms: u64,
-) -> kenjaku_core::error::Result<Vec<ToolOutput>> {
-    let timeout_dur = Duration::from_millis(tool_budget_ms);
-    let mut outputs: Vec<ToolOutput> = Vec::with_capacity(tools.len());
+/// Error policy:
+/// - `ToolError::Upstream | Timeout | Cancelled | Disabled` -> `ToolOutput::Empty`
+/// - `ToolError::BadRequest` -> logged as error, degrades to `ToolOutput::Empty`
+///   (the harness can inspect the map if it needs to propagate)
+pub struct ToolTunnel {
+    /// Tools grouped by execution tier. Tier 0 has no deps, Tier 1 depends
+    /// on Tier 0 outputs, etc. Within a tier, tools run in parallel.
+    tiers: Vec<Vec<Arc<dyn Tool>>>,
+}
 
-    // --- Tier 1: first tool (DocRagTool) runs unconditionally ---------------
-    if let Some(tier1) = tools.first()
-        && tier1.should_fire(req, 0)
-    {
-        let out = invoke_with_timeout(tier1.as_ref(), req, cancel, timeout_dur).await?;
-        outputs.push(out);
-    }
-
-    // Compute prior_chunk_count from tier-1 outputs for tier-2 gating.
-    let prior_chunk_count = chunk_count_from_outputs(&outputs);
-
-    // --- Tier 2: remaining tools, gated by should_fire(prior_chunk_count) ---
-    if tools.len() > 1 {
-        let tier2_futs: Vec<_> = tools[1..]
+impl ToolTunnel {
+    /// Build from a flat tool list. Topologically sorts by `depends_on()`.
+    /// Panics on dependency cycles. Logs a warning for unregistered deps
+    /// (tool will see `None` in the output map -- can decide to skip).
+    pub fn new(tools: Vec<Arc<dyn Tool>>) -> Self {
+        // Build lookup: tool_id -> index
+        let id_to_idx: HashMap<String, usize> = tools
             .iter()
-            .filter(|t| t.should_fire(req, prior_chunk_count))
-            .map(|t| {
-                let t = Arc::clone(t);
-                let req = req.clone();
-                let cancel = cancel.clone();
-                async move { invoke_with_timeout(t.as_ref(), &req, &cancel, timeout_dur).await }
-            })
+            .enumerate()
+            .map(|(i, t)| (t.id().0.clone(), i))
             .collect();
 
-        let tier2_results = futures::future::join_all(tier2_futs).await;
-        for result in tier2_results {
-            match result {
-                Ok(out) => outputs.push(out),
-                Err(e) => {
-                    // BadRequest already propagated from invoke_with_timeout;
-                    // this branch handles it if it somehow reaches here.
-                    return Err(e);
+        let n = tools.len();
+
+        // Build adjacency and in-degree.
+        // edge: dependency -> dependent (dep must complete before dependent)
+        let mut in_degree = vec![0usize; n];
+        let mut dependents: Vec<Vec<usize>> = vec![vec![]; n];
+
+        for (idx, tool) in tools.iter().enumerate() {
+            for dep_id in tool.depends_on() {
+                if let Some(&dep_idx) = id_to_idx.get(&dep_id.0) {
+                    dependents[dep_idx].push(idx);
+                    in_degree[idx] += 1;
+                } else {
+                    warn!(
+                        tool = %tool.id().0,
+                        dependency = %dep_id.0,
+                        "tool depends on unregistered tool; dependency will be absent from output map"
+                    );
                 }
             }
         }
+
+        // Kahn's algorithm: peel layers of in-degree 0 nodes.
+        let mut tiers: Vec<Vec<Arc<dyn Tool>>> = Vec::new();
+        let mut remaining = n;
+        let mut current_in_degree = in_degree;
+
+        loop {
+            let tier_indices: Vec<usize> = (0..n)
+                .filter(|&i| current_in_degree[i] == 0)
+                .collect();
+
+            if tier_indices.is_empty() {
+                break;
+            }
+
+            // Mark these as processed by setting in-degree to usize::MAX.
+            for &idx in &tier_indices {
+                current_in_degree[idx] = usize::MAX;
+                remaining -= 1;
+                // Decrement dependents' in-degree.
+                for &dep_idx in &dependents[idx] {
+                    if current_in_degree[dep_idx] != usize::MAX {
+                        current_in_degree[dep_idx] -= 1;
+                    }
+                }
+            }
+
+            let tier: Vec<Arc<dyn Tool>> = tier_indices
+                .into_iter()
+                .map(|i| Arc::clone(&tools[i]))
+                .collect();
+            tiers.push(tier);
+        }
+
+        assert!(
+            remaining == 0,
+            "ToolTunnel: dependency cycle detected among {} tools; \
+             remaining tools could not be placed in any tier",
+            remaining,
+        );
+
+        Self { tiers }
     }
 
-    Ok(outputs)
-}
-
-/// Invoke a single tool with timeout + degradation.
-///
-/// Returns `Ok(ToolOutput)` on success or graceful degradation.
-/// Returns `Err` only for `BadRequest` (which should fail the request).
-async fn invoke_with_timeout(
-    tool: &dyn Tool,
-    req: &ToolRequest,
-    cancel: &CancellationToken,
-    timeout: Duration,
-) -> kenjaku_core::error::Result<ToolOutput> {
-    let tool_id = tool.id();
-    match tokio::time::timeout(timeout, tool.invoke(req, cancel)).await {
-        Ok(Ok(out)) => Ok(out),
-        Ok(Err(ToolError::BadRequest(msg))) => Err(kenjaku_core::error::Error::Validation(msg)),
-        Ok(Err(ToolError::Disabled)) => {
-            // Silent skip per error policy.
-            Ok(ToolOutput::Empty)
-        }
-        Ok(Err(e)) => {
-            warn!(tool = %tool_id.0, error = %e, "tool failed; degrading to empty");
-            Ok(ToolOutput::Empty)
-        }
-        Err(_elapsed) => {
-            warn!(tool = %tool_id.0, timeout_ms = timeout.as_millis(), "tool timed out; degrading to empty");
-            Ok(ToolOutput::Empty)
-        }
+    /// Number of tiers resolved.
+    #[cfg(test)]
+    pub fn tier_count(&self) -> usize {
+        self.tiers.len()
     }
-}
 
-/// Count chunks across all outputs so far.
-fn chunk_count_from_outputs(outputs: &[ToolOutput]) -> usize {
-    outputs
-        .iter()
-        .map(|o| match o {
-            ToolOutput::Chunks { chunks, .. } => chunks.len(),
-            _ => 0,
-        })
-        .sum()
+    /// Tool IDs in a given tier (for testing).
+    #[cfg(test)]
+    pub fn tier_tool_ids(&self, tier: usize) -> Vec<String> {
+        self.tiers
+            .get(tier)
+            .map(|t| t.iter().map(|tool| tool.id().0.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Execute all tiers sequentially, tools within each tier in parallel.
+    /// Returns the accumulated output map.
+    pub async fn execute(
+        &self,
+        req: &ToolRequest,
+        cancel: &CancellationToken,
+        tool_budget_ms: u64,
+    ) -> ToolOutputMap {
+        let timeout_dur = Duration::from_millis(tool_budget_ms);
+        let mut accumulated = ToolOutputMap::new();
+
+        for tier in &self.tiers {
+            let firing: Vec<_> = tier
+                .iter()
+                .filter(|t| t.should_fire(req, &accumulated))
+                .collect();
+
+            if firing.is_empty() {
+                continue;
+            }
+
+            let results: Vec<(ToolId, ToolOutput)> = futures::future::join_all(firing.iter().map(
+                |t| {
+                    let t = Arc::clone(t);
+                    let req = req.clone();
+                    let prior = accumulated.clone();
+                    let cancel = cancel.clone();
+                    async move {
+                        let id = t.id();
+                        let output = match tokio::time::timeout(
+                            timeout_dur,
+                            t.invoke(&req, &prior, &cancel),
+                        )
+                        .await
+                        {
+                            Ok(Ok(out)) => out,
+                            Ok(Err(ToolError::BadRequest(msg))) => {
+                                error!(tool = %id.0, error = %msg, "tool bad request");
+                                ToolOutput::Empty
+                            }
+                            Ok(Err(ToolError::Disabled)) => ToolOutput::Empty,
+                            Ok(Err(e)) => {
+                                warn!(tool = %id.0, error = %e, "tool degraded to empty");
+                                ToolOutput::Empty
+                            }
+                            Err(_) => {
+                                warn!(
+                                    tool = %id.0,
+                                    budget_ms = tool_budget_ms,
+                                    "tool timed out"
+                                );
+                                ToolOutput::Empty
+                            }
+                        };
+                        (id, output)
+                    }
+                },
+            ))
+            .await;
+
+            for (id, output) in results {
+                accumulated.insert(id, output);
+            }
+        }
+
+        accumulated
+    }
 }
 
 #[cfg(test)]
@@ -117,7 +194,8 @@ mod tests {
     use kenjaku_core::types::intent::Intent;
     use kenjaku_core::types::locale::Locale;
     use kenjaku_core::types::search::{LlmSource, RetrievedChunk};
-    use kenjaku_core::types::tool::{ToolConfig, ToolId};
+    use kenjaku_core::types::tool::ToolConfig;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // ---- helpers -----------------------------------------------------------
 
@@ -134,31 +212,65 @@ mod tests {
         }
     }
 
+    static TOOL_CONFIG: ToolConfig = ToolConfig {
+        enabled: true,
+        rollout_pct: None,
+    };
+
     // ---- mock tools --------------------------------------------------------
 
-    /// A tool that always succeeds with the given output.
-    struct SuccessTool {
+    /// A tool with configurable id, deps, output, and fire behavior.
+    struct MockTool {
+        tool_id: String,
+        deps: Vec<ToolId>,
         output: ToolOutput,
         fire: bool,
     }
 
-    #[async_trait]
-    impl Tool for SuccessTool {
-        fn id(&self) -> ToolId {
-            ToolId("success".into())
-        }
-        fn config(&self) -> &ToolConfig {
-            &ToolConfig {
-                enabled: true,
-                rollout_pct: None,
+    impl MockTool {
+        fn new(id: &str) -> Self {
+            Self {
+                tool_id: id.into(),
+                deps: vec![],
+                output: ToolOutput::Empty,
+                fire: true,
             }
         }
-        fn should_fire(&self, _req: &ToolRequest, _prior: usize) -> bool {
+
+        fn with_deps(mut self, deps: Vec<&str>) -> Self {
+            self.deps = deps.into_iter().map(|d| ToolId(d.into())).collect();
+            self
+        }
+
+        fn with_output(mut self, output: ToolOutput) -> Self {
+            self.output = output;
+            self
+        }
+
+        fn with_fire(mut self, fire: bool) -> Self {
+            self.fire = fire;
+            self
+        }
+    }
+
+    #[async_trait]
+    impl Tool for MockTool {
+        fn id(&self) -> ToolId {
+            ToolId(self.tool_id.clone())
+        }
+        fn config(&self) -> &ToolConfig {
+            &TOOL_CONFIG
+        }
+        fn depends_on(&self) -> Vec<ToolId> {
+            self.deps.clone()
+        }
+        fn should_fire(&self, _req: &ToolRequest, _prior: &ToolOutputMap) -> bool {
             self.fire
         }
         async fn invoke(
             &self,
             _req: &ToolRequest,
+            _prior: &ToolOutputMap,
             _cancel: &CancellationToken,
         ) -> Result<ToolOutput, ToolError> {
             Ok(self.output.clone())
@@ -166,32 +278,69 @@ mod tests {
     }
 
     /// A tool that always returns an Upstream error.
-    struct FailTool;
+    struct FailTool {
+        tool_id: String,
+    }
 
     #[async_trait]
     impl Tool for FailTool {
         fn id(&self) -> ToolId {
-            ToolId("fail".into())
+            ToolId(self.tool_id.clone())
         }
         fn config(&self) -> &ToolConfig {
-            &ToolConfig {
-                enabled: true,
-                rollout_pct: None,
-            }
+            &TOOL_CONFIG
         }
-        fn should_fire(&self, _req: &ToolRequest, _prior: usize) -> bool {
+        fn should_fire(&self, _req: &ToolRequest, _prior: &ToolOutputMap) -> bool {
             true
         }
         async fn invoke(
             &self,
             _req: &ToolRequest,
+            _prior: &ToolOutputMap,
             _cancel: &CancellationToken,
         ) -> Result<ToolOutput, ToolError> {
             Err(ToolError::Upstream("boom".into()))
         }
     }
 
-    /// A tool that only fires when prior_chunk_count < threshold.
+    /// A tool that records its invocation order via an atomic counter.
+    struct OrderTool {
+        tool_id: String,
+        deps: Vec<ToolId>,
+        counter: Arc<AtomicUsize>,
+        order: Arc<std::sync::Mutex<Vec<(String, usize)>>>,
+    }
+
+    #[async_trait]
+    impl Tool for OrderTool {
+        fn id(&self) -> ToolId {
+            ToolId(self.tool_id.clone())
+        }
+        fn config(&self) -> &ToolConfig {
+            &TOOL_CONFIG
+        }
+        fn depends_on(&self) -> Vec<ToolId> {
+            self.deps.clone()
+        }
+        fn should_fire(&self, _req: &ToolRequest, _prior: &ToolOutputMap) -> bool {
+            true
+        }
+        async fn invoke(
+            &self,
+            _req: &ToolRequest,
+            _prior: &ToolOutputMap,
+            _cancel: &CancellationToken,
+        ) -> Result<ToolOutput, ToolError> {
+            let seq = self.counter.fetch_add(1, Ordering::SeqCst);
+            self.order
+                .lock()
+                .unwrap()
+                .push((self.tool_id.clone(), seq));
+            Ok(ToolOutput::Empty)
+        }
+    }
+
+    /// A tool that only fires when doc_rag returned < threshold chunks.
     struct ConditionalTool {
         threshold: usize,
     }
@@ -202,17 +351,18 @@ mod tests {
             ToolId("conditional".into())
         }
         fn config(&self) -> &ToolConfig {
-            &ToolConfig {
-                enabled: true,
-                rollout_pct: None,
-            }
+            &TOOL_CONFIG
         }
-        fn should_fire(&self, _req: &ToolRequest, prior: usize) -> bool {
-            prior < self.threshold
+        fn depends_on(&self) -> Vec<ToolId> {
+            vec![ToolId("doc_rag".into())]
+        }
+        fn should_fire(&self, _req: &ToolRequest, prior: &ToolOutputMap) -> bool {
+            prior.chunk_count("doc_rag") < self.threshold
         }
         async fn invoke(
             &self,
             _req: &ToolRequest,
+            _prior: &ToolOutputMap,
             _cancel: &CancellationToken,
         ) -> Result<ToolOutput, ToolError> {
             Ok(ToolOutput::WebHits {
@@ -226,68 +376,143 @@ mod tests {
         }
     }
 
-    // ---- tests -------------------------------------------------------------
+    // ---- ToolTunnel construction tests ------------------------------------
 
-    #[tokio::test]
-    async fn fanout_tools_degrades_on_error() {
-        // Tier 1 tool fails with Upstream error -> should degrade to Empty
-        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(FailTool)];
-        let req = make_request();
-        let cancel = CancellationToken::new();
-        let outputs = fanout_tools(&tools, &req, &cancel, 5000).await.unwrap();
-        assert_eq!(outputs.len(), 1);
-        assert!(matches!(outputs[0], ToolOutput::Empty));
+    #[test]
+    fn tunnel_resolves_tiers_correctly() {
+        // A (no deps), C (no deps) -> Tier 0
+        // B (depends on A) -> Tier 1
+        let a = Arc::new(MockTool::new("a")) as Arc<dyn Tool>;
+        let b = Arc::new(MockTool::new("b").with_deps(vec!["a"])) as Arc<dyn Tool>;
+        let c = Arc::new(MockTool::new("c")) as Arc<dyn Tool>;
+
+        let tunnel = ToolTunnel::new(vec![a, b, c]);
+        assert_eq!(tunnel.tier_count(), 2);
+
+        let tier0 = tunnel.tier_tool_ids(0);
+        assert!(tier0.contains(&"a".to_string()));
+        assert!(tier0.contains(&"c".to_string()));
+        assert_eq!(tier0.len(), 2);
+
+        let tier1 = tunnel.tier_tool_ids(1);
+        assert_eq!(tier1, vec!["b".to_string()]);
+    }
+
+    #[test]
+    #[should_panic(expected = "dependency cycle detected")]
+    fn tunnel_detects_cycle() {
+        let a = Arc::new(MockTool::new("a").with_deps(vec!["b"])) as Arc<dyn Tool>;
+        let b = Arc::new(MockTool::new("b").with_deps(vec!["a"])) as Arc<dyn Tool>;
+        ToolTunnel::new(vec![a, b]);
+    }
+
+    #[test]
+    fn tunnel_warns_missing_dep() {
+        // B depends on "nonexistent" -- should not panic, B lands in Tier 0
+        // because unregistered deps are warned but not counted as in-degree.
+        let b = Arc::new(MockTool::new("b").with_deps(vec!["nonexistent"])) as Arc<dyn Tool>;
+        let tunnel = ToolTunnel::new(vec![b]);
+        assert_eq!(tunnel.tier_count(), 1);
+        assert_eq!(tunnel.tier_tool_ids(0), vec!["b".to_string()]);
     }
 
     #[tokio::test]
-    async fn fanout_tools_respects_should_fire() {
-        // Tier 1 tool with fire=false should produce no output
-        let tier1 = Arc::new(SuccessTool {
-            output: ToolOutput::Chunks {
-                chunks: vec![],
-                provider: "rag".into(),
-            },
-            fire: false,
+    async fn tunnel_executes_tiers_in_order() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let a = Arc::new(OrderTool {
+            tool_id: "a".into(),
+            deps: vec![],
+            counter: counter.clone(),
+            order: order.clone(),
         }) as Arc<dyn Tool>;
 
-        // Tier 2 conditional tool with high threshold should still not fire
-        // because there are 0 prior chunks but the tier-1 didn't fire
-        let tier2 = Arc::new(ConditionalTool { threshold: 0 }) as Arc<dyn Tool>;
+        let b = Arc::new(OrderTool {
+            tool_id: "b".into(),
+            deps: vec![ToolId("a".into())],
+            counter: counter.clone(),
+            order: order.clone(),
+        }) as Arc<dyn Tool>;
 
-        let tools: Vec<Arc<dyn Tool>> = vec![tier1, tier2];
+        let tunnel = ToolTunnel::new(vec![a, b]);
         let req = make_request();
         let cancel = CancellationToken::new();
-        let outputs = fanout_tools(&tools, &req, &cancel, 5000).await.unwrap();
-        // Neither fired
+        tunnel.execute(&req, &cancel, 5000).await;
+
+        let log = order.lock().unwrap();
+        // "a" must have a lower sequence number than "b"
+        let a_seq = log.iter().find(|(id, _)| id == "a").unwrap().1;
+        let b_seq = log.iter().find(|(id, _)| id == "b").unwrap().1;
+        assert!(a_seq < b_seq, "Tier 0 tool 'a' must execute before Tier 1 tool 'b'");
+    }
+
+    #[tokio::test]
+    async fn tunnel_parallel_within_tier() {
+        // Two tier-0 tools: both should execute and appear in the output map.
+        let a = Arc::new(MockTool::new("a").with_output(ToolOutput::Empty)) as Arc<dyn Tool>;
+        let b = Arc::new(MockTool::new("b").with_output(ToolOutput::Empty)) as Arc<dyn Tool>;
+
+        let tunnel = ToolTunnel::new(vec![a, b]);
+        let req = make_request();
+        let cancel = CancellationToken::new();
+        let outputs = tunnel.execute(&req, &cancel, 5000).await;
+
+        assert_eq!(outputs.len(), 2);
+        assert!(outputs.get("a").is_some());
+        assert!(outputs.get("b").is_some());
+    }
+
+    #[tokio::test]
+    async fn tunnel_degrades_on_error() {
+        let fail = Arc::new(FailTool {
+            tool_id: "fail".into(),
+        }) as Arc<dyn Tool>;
+
+        let tunnel = ToolTunnel::new(vec![fail]);
+        let req = make_request();
+        let cancel = CancellationToken::new();
+        let outputs = tunnel.execute(&req, &cancel, 5000).await;
+
+        assert_eq!(outputs.len(), 1);
+        assert!(matches!(outputs.get("fail"), Some(ToolOutput::Empty)));
+    }
+
+    #[tokio::test]
+    async fn tunnel_respects_should_fire() {
+        let a = Arc::new(MockTool::new("a").with_fire(false)) as Arc<dyn Tool>;
+        let tunnel = ToolTunnel::new(vec![a]);
+        let req = make_request();
+        let cancel = CancellationToken::new();
+        let outputs = tunnel.execute(&req, &cancel, 5000).await;
         assert!(outputs.is_empty());
     }
 
     #[tokio::test]
-    async fn fanout_tools_tier2_fires_when_few_chunks() {
-        // Tier 1 returns 0 chunks
-        let tier1 = Arc::new(SuccessTool {
-            output: ToolOutput::Chunks {
-                chunks: vec![],
-                provider: "rag".into(),
-            },
-            fire: true,
-        }) as Arc<dyn Tool>;
+    async fn tunnel_tier2_fires_when_few_chunks() {
+        // doc_rag returns 0 chunks -> conditional (threshold=2) should fire
+        let doc_rag = Arc::new(MockTool::new("doc_rag").with_output(ToolOutput::Chunks {
+            chunks: vec![],
+            provider: "rag".into(),
+        })) as Arc<dyn Tool>;
 
-        // Tier 2 fires when prior < 2
-        let tier2 = Arc::new(ConditionalTool { threshold: 2 }) as Arc<dyn Tool>;
+        let conditional = Arc::new(ConditionalTool { threshold: 2 }) as Arc<dyn Tool>;
 
-        let tools = vec![tier1, tier2];
+        let tunnel = ToolTunnel::new(vec![doc_rag, conditional]);
         let req = make_request();
         let cancel = CancellationToken::new();
-        let outputs = fanout_tools(&tools, &req, &cancel, 5000).await.unwrap();
-        // tier1 (empty chunks) + tier2 (web hits)
+        let outputs = tunnel.execute(&req, &cancel, 5000).await;
+
         assert_eq!(outputs.len(), 2);
-        assert!(matches!(&outputs[0], ToolOutput::Chunks { chunks, .. } if chunks.is_empty()));
-        assert!(matches!(&outputs[1], ToolOutput::WebHits { hits, .. } if hits.len() == 1));
+        assert!(outputs.get("doc_rag").is_some());
+        assert!(matches!(
+            outputs.get("conditional"),
+            Some(ToolOutput::WebHits { hits, .. }) if hits.len() == 1
+        ));
     }
 
     #[tokio::test]
-    async fn fanout_tools_tier2_skipped_when_enough_chunks() {
+    async fn tunnel_tier2_skipped_when_enough_chunks() {
         let chunk = RetrievedChunk {
             doc_id: "d1".into(),
             chunk_id: "c1".into(),
@@ -298,21 +523,22 @@ mod tests {
             score: 0.9,
             retrieval_method: kenjaku_core::types::search::RetrievalMethod::Vector,
         };
-        let tier1 = Arc::new(SuccessTool {
-            output: ToolOutput::Chunks {
-                chunks: vec![chunk.clone(), chunk.clone(), chunk],
-                provider: "rag".into(),
-            },
-            fire: true,
-        }) as Arc<dyn Tool>;
 
-        // Tier 2 fires only when prior < 2 -- tier1 has 3 chunks so skip
-        let tier2 = Arc::new(ConditionalTool { threshold: 2 }) as Arc<dyn Tool>;
+        let doc_rag = Arc::new(MockTool::new("doc_rag").with_output(ToolOutput::Chunks {
+            chunks: vec![chunk.clone(), chunk.clone(), chunk],
+            provider: "rag".into(),
+        })) as Arc<dyn Tool>;
 
-        let tools = vec![tier1, tier2];
+        // Fires only when prior < 2, but doc_rag has 3 chunks
+        let conditional = Arc::new(ConditionalTool { threshold: 2 }) as Arc<dyn Tool>;
+
+        let tunnel = ToolTunnel::new(vec![doc_rag, conditional]);
         let req = make_request();
         let cancel = CancellationToken::new();
-        let outputs = fanout_tools(&tools, &req, &cancel, 5000).await.unwrap();
-        assert_eq!(outputs.len(), 1); // only tier1
+        let outputs = tunnel.execute(&req, &cancel, 5000).await;
+
+        assert_eq!(outputs.len(), 1); // only doc_rag
+        assert!(outputs.get("doc_rag").is_some());
+        assert!(outputs.get("conditional").is_none());
     }
 }

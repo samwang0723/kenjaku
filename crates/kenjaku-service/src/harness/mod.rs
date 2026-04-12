@@ -11,6 +11,7 @@ use kenjaku_core::config::WebSearchConfig;
 use kenjaku_core::error::Result;
 use kenjaku_core::traits::brain::Brain;
 use kenjaku_core::traits::tool::Tool;
+use fanout::ToolTunnel;
 use kenjaku_core::types::component::SuggestionSource;
 use kenjaku_core::types::conversation::{ConversationTurn, CreateConversation};
 use kenjaku_core::types::intent::Intent;
@@ -39,9 +40,9 @@ pub(crate) struct SearchOrchestrator {
     title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
     locale_memory: Arc<LocaleMemory>,
     history_store: SessionHistoryStore,
-    /// Ordered tool list: [DocRagTool, BraveWebTool, ...].
-    /// Tier 1 = index 0; tier 2+ = indices 1..
-    tools: Vec<Arc<dyn Tool>>,
+    /// DAG-based tool executor. Tools declare dependencies; the tunnel
+    /// resolves execution tiers at construction time via topological sort.
+    tunnel: ToolTunnel,
     collection_name: String,
     suggestion_count: usize,
     /// Per-tool timeout in milliseconds.
@@ -68,6 +69,7 @@ impl SearchOrchestrator {
         suggestion_count: usize,
         has_web_grounding: bool,
     ) -> Self {
+        let tunnel = ToolTunnel::new(tools);
         Self {
             brain,
             component_service,
@@ -76,7 +78,7 @@ impl SearchOrchestrator {
             title_resolver,
             locale_memory,
             history_store,
-            tools,
+            tunnel,
             collection_name,
             suggestion_count,
             tool_budget_ms: web_search_config.timeout_ms,
@@ -158,8 +160,10 @@ impl SearchOrchestrator {
             session_id: req.session_id.clone(),
         };
 
-        let tool_outputs =
-            fanout::fanout_tools(&self.tools, &tool_req, &cancel, self.tool_budget_ms).await?;
+        let tool_outputs = self
+            .tunnel
+            .execute(&tool_req, &cancel, self.tool_budget_ms)
+            .await;
 
         let grounding = context::grounding_from_outputs(&tool_outputs);
         let chunks = context::merge_tool_outputs(&tool_outputs);
@@ -345,8 +349,10 @@ impl SearchOrchestrator {
             session_id: req.session_id.clone(),
         };
 
-        let tool_outputs =
-            fanout::fanout_tools(&self.tools, &tool_req, &cancel, self.tool_budget_ms).await?;
+        let tool_outputs = self
+            .tunnel
+            .execute(&tool_req, &cancel, self.tool_budget_ms)
+            .await;
 
         let grounding = context::grounding_from_outputs(&tool_outputs);
         let chunks = context::merge_tool_outputs(&tool_outputs);

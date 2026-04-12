@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
@@ -111,9 +112,109 @@ impl ToolConfig {
     }
 }
 
+/// Accumulated outputs from prior tool tiers, keyed by `ToolId`.
+/// Tools in tier N can read outputs from tiers 0..N-1.
+#[derive(Debug, Clone, Default)]
+pub struct ToolOutputMap(HashMap<ToolId, ToolOutput>);
+
+impl ToolOutputMap {
+    pub fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    pub fn insert(&mut self, id: ToolId, output: ToolOutput) {
+        self.0.insert(id, output);
+    }
+
+    pub fn get(&self, id: &str) -> Option<&ToolOutput> {
+        self.0.get(&ToolId(id.to_string()))
+    }
+
+    /// Count chunks returned by a specific tool. Returns 0 if tool
+    /// didn't fire or returned a non-Chunks variant.
+    pub fn chunk_count(&self, tool_id: &str) -> usize {
+        match self.get(tool_id) {
+            Some(ToolOutput::Chunks { chunks, .. }) => chunks.len(),
+            _ => 0,
+        }
+    }
+
+    /// True if any tool returned `WebHits`.
+    pub fn has_web_hits(&self) -> bool {
+        self.0
+            .values()
+            .any(|o| matches!(o, ToolOutput::WebHits { .. }))
+    }
+
+    /// Iterate all outputs.
+    pub fn iter(&self) -> impl Iterator<Item = (&ToolId, &ToolOutput)> {
+        self.0.iter()
+    }
+
+    /// Consume into inner map.
+    pub fn into_inner(self) -> HashMap<ToolId, ToolOutput> {
+        self.0
+    }
+
+    /// Number of tool outputs stored.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// True when empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_output_map_chunk_count() {
+        let mut map = ToolOutputMap::new();
+        assert_eq!(map.chunk_count("doc_rag"), 0);
+
+        map.insert(
+            ToolId("doc_rag".into()),
+            ToolOutput::Chunks {
+                chunks: vec![],
+                provider: "rag".into(),
+            },
+        );
+        assert_eq!(map.chunk_count("doc_rag"), 0);
+        assert_eq!(map.chunk_count("nonexistent"), 0);
+    }
+
+    #[test]
+    fn tool_output_map_has_web_hits() {
+        let mut map = ToolOutputMap::new();
+        assert!(!map.has_web_hits());
+
+        map.insert(
+            ToolId("brave_web".into()),
+            ToolOutput::WebHits {
+                hits: vec![LlmSource {
+                    title: "t".into(),
+                    url: "u".into(),
+                    snippet: None,
+                }],
+                provider: "brave".into(),
+            },
+        );
+        assert!(map.has_web_hits());
+    }
+
+    #[test]
+    fn tool_output_map_len_and_iter() {
+        let mut map = ToolOutputMap::new();
+        assert!(map.is_empty());
+        map.insert(ToolId("a".into()), ToolOutput::Empty);
+        map.insert(ToolId("b".into()), ToolOutput::Empty);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.iter().count(), 2);
+    }
 
     #[test]
     fn tool_config_disabled_never_fires() {

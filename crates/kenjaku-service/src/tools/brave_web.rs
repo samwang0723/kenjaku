@@ -8,7 +8,7 @@ use tracing::warn;
 use kenjaku_core::traits::tool::Tool;
 use kenjaku_core::traits::web_search::WebSearchProvider;
 use kenjaku_core::types::search::LlmSource;
-use kenjaku_core::types::tool::{ToolConfig, ToolError, ToolId, ToolOutput, ToolRequest};
+use kenjaku_core::types::tool::{ToolConfig, ToolError, ToolId, ToolOutput, ToolOutputMap, ToolRequest};
 
 /// Wraps an optional `WebSearchProvider` (Brave, Serper, etc.) as a
 /// `Tool`. Mirrors the existing `should_web_search` + `fetch_web_chunks`
@@ -80,12 +80,16 @@ impl Tool for BraveWebTool {
         &self.config
     }
 
+    fn depends_on(&self) -> Vec<ToolId> {
+        vec![ToolId("doc_rag".into())]
+    }
+
     /// Fires when:
     /// 1. Config allows (enabled + rollout check),
     /// 2. Provider is present,
     /// 3. Query matches any trigger pattern, OR internal retrieval
     ///    returned fewer than `fallback_min_chunks`.
-    fn should_fire(&self, req: &ToolRequest, prior_chunk_count: usize) -> bool {
+    fn should_fire(&self, req: &ToolRequest, prior: &ToolOutputMap) -> bool {
         if !self.config.should_fire_for(&req.request_id) {
             return false;
         }
@@ -99,12 +103,13 @@ impl Tool for BraveWebTool {
         {
             return true;
         }
-        prior_chunk_count < self.fallback_min_chunks
+        prior.chunk_count("doc_rag") < self.fallback_min_chunks
     }
 
     async fn invoke(
         &self,
         req: &ToolRequest,
+        _prior: &ToolOutputMap,
         cancel: &CancellationToken,
     ) -> Result<ToolOutput, ToolError> {
         if cancel.is_cancelled() {
@@ -173,6 +178,32 @@ mod tests {
         ]
     }
 
+    /// Build a `ToolOutputMap` with doc_rag returning `n` chunks.
+    fn prior_with_chunks(n: usize) -> ToolOutputMap {
+        use kenjaku_core::types::search::{RetrievalMethod, RetrievedChunk};
+        let mut map = ToolOutputMap::new();
+        let chunks: Vec<RetrievedChunk> = (0..n)
+            .map(|i| RetrievedChunk {
+                doc_id: format!("d{i}"),
+                chunk_id: format!("c{i}"),
+                title: "T".into(),
+                original_content: "C".into(),
+                contextualized_content: "C".into(),
+                source_url: None,
+                score: 0.9,
+                retrieval_method: RetrievalMethod::Vector,
+            })
+            .collect();
+        map.insert(
+            ToolId("doc_rag".into()),
+            ToolOutput::Chunks {
+                chunks,
+                provider: "rag".into(),
+            },
+        );
+        map
+    }
+
     #[test]
     fn brave_web_tool_should_fire_pattern_match() {
         let tool = BraveWebTool::new(
@@ -184,7 +215,7 @@ mod tests {
         );
         // "market today" matches both trigger patterns
         let req = make_request("market today");
-        assert!(tool.should_fire(&req, 0));
+        assert!(tool.should_fire(&req, &ToolOutputMap::new()));
     }
 
     #[test]
@@ -197,9 +228,9 @@ mod tests {
             5,
         );
         // "reset password" does not match trigger patterns
-        // and prior_chunk_count=10 >= fallback_min_chunks=2
+        // and prior has 10 chunks >= fallback_min_chunks=2
         let req = make_request("reset password");
-        assert!(!tool.should_fire(&req, 10));
+        assert!(!tool.should_fire(&req, &prior_with_chunks(10)));
     }
 
     #[test]
@@ -211,9 +242,9 @@ mod tests {
             2,
             5,
         );
-        // No pattern match but prior_chunk_count=0 < fallback_min_chunks=2
+        // No pattern match but prior has 0 chunks < fallback_min_chunks=2
         let req = make_request("reset password");
-        assert!(tool.should_fire(&req, 0));
+        assert!(tool.should_fire(&req, &ToolOutputMap::new()));
     }
 
     #[test]
@@ -226,7 +257,7 @@ mod tests {
             5,
         );
         let req = make_request("market today");
-        assert!(!tool.should_fire(&req, 0));
+        assert!(!tool.should_fire(&req, &ToolOutputMap::new()));
     }
 
     #[test]
@@ -242,7 +273,7 @@ mod tests {
             5,
         );
         let req = make_request("market today");
-        assert!(!tool.should_fire(&req, 0));
+        assert!(!tool.should_fire(&req, &ToolOutputMap::new()));
     }
 
     #[tokio::test]
@@ -257,7 +288,7 @@ mod tests {
         let req = make_request("market today");
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = tool.invoke(&req, &cancel).await;
+        let result = tool.invoke(&req, &ToolOutputMap::new(), &cancel).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             ToolError::Cancelled => {}
@@ -283,7 +314,7 @@ mod tests {
         );
         let req = make_request("market today");
         let cancel = CancellationToken::new();
-        let result = tool.invoke(&req, &cancel).await.unwrap();
+        let result = tool.invoke(&req, &ToolOutputMap::new(), &cancel).await.unwrap();
         match result {
             ToolOutput::WebHits { hits, provider } => {
                 assert_eq!(hits.len(), 1);

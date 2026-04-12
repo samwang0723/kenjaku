@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 
 use kenjaku_core::traits::tool::Tool;
 use kenjaku_core::types::search::{RetrievalMethod, RetrievedChunk};
-use kenjaku_core::types::tool::{ToolConfig, ToolError, ToolId, ToolOutput, ToolRequest};
+use kenjaku_core::types::tool::{ToolConfig, ToolError, ToolId, ToolOutput, ToolOutputMap, ToolRequest};
 
 /// A single FAQ entry loaded from configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +58,7 @@ impl Tool for FaqTool {
         &self.config.base
     }
 
-    fn should_fire(&self, req: &ToolRequest, _prior_chunk_count: usize) -> bool {
+    fn should_fire(&self, req: &ToolRequest, _prior: &ToolOutputMap) -> bool {
         if !self.config.base.should_fire_for(&req.request_id) {
             return false;
         }
@@ -68,6 +68,7 @@ impl Tool for FaqTool {
     async fn invoke(
         &self,
         req: &ToolRequest,
+        _prior: &ToolOutputMap,
         cancel: &CancellationToken,
     ) -> Result<ToolOutput, ToolError> {
         if cancel.is_cancelled() {
@@ -164,7 +165,7 @@ mod tests {
         let req = make_request("reset password");
         let cancel = CancellationToken::new();
 
-        let result = tool.invoke(&req, &cancel).await.unwrap();
+        let result = tool.invoke(&req, &ToolOutputMap::new(), &cancel).await.unwrap();
         match result {
             ToolOutput::Chunks { chunks, provider } => {
                 assert_eq!(provider, "faq");
@@ -183,7 +184,7 @@ mod tests {
         let req = make_request("bitcoin price");
         let cancel = CancellationToken::new();
 
-        let result = tool.invoke(&req, &cancel).await.unwrap();
+        let result = tool.invoke(&req, &ToolOutputMap::new(), &cancel).await.unwrap();
         assert!(
             matches!(result, ToolOutput::Empty),
             "expected ToolOutput::Empty for unmatched query"
@@ -194,14 +195,14 @@ mod tests {
     fn faq_tool_should_fire_when_keyword_present() {
         let tool = make_tool(true);
         let req = make_request("how do I reset my password");
-        assert!(tool.should_fire(&req, 0));
+        assert!(tool.should_fire(&req, &ToolOutputMap::new()));
     }
 
     #[test]
     fn faq_tool_should_not_fire_when_disabled() {
         let tool = make_tool(false);
         let req = make_request("reset password");
-        assert!(!tool.should_fire(&req, 0));
+        assert!(!tool.should_fire(&req, &ToolOutputMap::new()));
     }
 
     #[tokio::test]
@@ -211,7 +212,7 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel();
 
-        let result = tool.invoke(&req, &cancel).await;
+        let result = tool.invoke(&req, &ToolOutputMap::new(), &cancel).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             ToolError::Cancelled => {}
