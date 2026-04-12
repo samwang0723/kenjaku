@@ -1,13 +1,21 @@
 # Kenjaku Layered Architecture Refactor — Design
 
-**Status:** proposal v2 — amended after independent critique
+**Status:** proposal v3 — ToolTunnel DAG executor added
 **Author:** architect agent (v1), code-reviewer critique integrated, decisions by Sam
 **Branch:** `refactor/layered-architecture`
 **Builds on:** commit `cab2292` (google_search gating) — generalizes that conditional into a plugin layer.
 
 ## Changelog
 
-- **v2 (this revision)** — integrates findings from the second-opinion critique:
+- **v3 (this revision)** — replaces the two-tier fan-out with a general-purpose `ToolTunnel` DAG executor:
+  - Tools declare dependencies via `depends_on() -> Vec<ToolId>`. The tunnel topologically sorts tools into tiers at construction (Kahn's algorithm). Within a tier, tools run in parallel via `join_all`. Between tiers, execution is serial. Cycles detected at startup (panic).
+  - `should_fire` and `invoke` now take `&ToolOutputMap` instead of `prior_chunk_count: usize`. Tools read prior outputs by tool ID via convenience helpers (`chunk_count("doc_rag")`, `has_web_hits()`, `get("tool_id")`).
+  - `ToolOutputMap` — new type in `kenjaku-core/src/types/tool.rs`. `HashMap<ToolId, ToolOutput>` wrapper with typed accessors.
+  - Current tier resolution: DocRagTool=Tier0, FaqTool=Tier0 (parallel), BraveWebTool=Tier1 (depends on DocRag). Future tools slot in by declaring deps — no Harness edits needed.
+  - `ToolTunnel` is constructed once at startup, not per-request. Tier structure is static.
+  - Updated §4, §4.3, and the Harness description to reflect the new executor.
+
+- **v2** — integrates findings from the second-opinion critique:
   - Added `collection_name` to `ToolRequest` (§4). Decision: field on request, not constructor-captured, so the Harness stays collection-aware.
   - Introduced a core `Message` abstraction (§5) and a parallel `ConversationAssembler` that runs on the critical path alongside tool fan-out. This makes the Brain trait LLM-agnostic and unlocks future multi-LLM support without touching core types.
   - Threaded `CancellationToken` through `Tool::invoke` and the Harness fan-out (§4, §7) so SSE-client disconnects cancel all in-flight tool calls and content-addon assembly, not just the LLM stream.
@@ -26,7 +34,7 @@ The refactor reshapes the same six crates around five explicit layers — **Brai
 
 1. **A single `Tool` trait in `kenjaku-core`**, owning the contract `(ToolRequest, CancellationToken) -> ToolOutput`. `HybridRetriever`, `BraveSearchProvider`, and every future plugin implement it.
 2. **A core `Message` abstraction** that the Brain facade assembles in parallel with tool fan-out. LLM providers implement `messages_to_wire(&[Message]) -> Self::Wire` internally, so multi-turn conversation assembly never leaks infra types into service layer.
-3. **The Harness owns the critical-path fan-out and cancellation lifecycle.** `SearchOrchestrator` replaces the body of `SearchService::search`, fans out tools with `futures::future::join_all` on `Result`s (never `try_join_all`, per §4.3 error policy), and propagates a `CancellationToken` so SSE-client disconnects cascade through every tool and assembler.
+3. **The Harness owns a dependency-aware `ToolTunnel` DAG executor.** Tools declare `depends_on() -> Vec<ToolId>`; the tunnel topologically sorts them into tiers at startup (Kahn's algorithm). Within each tier, tools run in parallel via `join_all`. Between tiers, execution is serial so dependent tools can read prior outputs from a shared `ToolOutputMap`. Per-tool errors degrade to `ToolOutput::Empty` (never `try_join_all`). A per-request `CancellationToken` cascades through every tool on SSE-client disconnect.
 
 This is phased, not big-bang. **Phase 1 ships in one PR**, ~500 LOC, behind a hard gate: a unit test asserting byte-equivalence between `DocRagTool::invoke` and the live `HybridRetriever::retrieve` output. Subsequent phases peel responsibilities off `SearchService` one at a time, each phase revert-safe and green.
 
@@ -41,7 +49,7 @@ flowchart TB
     end
 
     subgraph Harness["HARNESS  (kenjaku-service::harness)"]
-        ORC["SearchOrchestrator<br/>routing · fan-out · cancel · merge"]
+        ORC["SearchOrchestrator<br/>ToolTunnel DAG · cancel · merge"]
         CTX["ToolContext / Message builder"]
         TR["TitleResolver<br/>(post-generation)"]
     end
@@ -218,8 +226,8 @@ kenjaku-service/src/
 ├── harness/             [NEW]
 │   ├── mod.rs                    (SearchOrchestrator — the new SearchService)
 │   ├── routing.rs                (select_tools: intent → Vec<ToolId>, rollout gating)
-│   ├── fanout.rs        [NEW]   ← join_all<Result> → ToolOutput::Empty error mapper
-│   ├── context.rs                (ToolOutput → ToolContext merger)
+│   ├── fanout.rs        [NEW]   ← ToolTunnel DAG executor (topo sort + tiered join_all)
+│   ├── context.rs                (ToolOutputMap → ToolContext merger)
 │   └── title_resolver.rs [NEW]  ← wraps the infra TitleResolver behind a service-layer trait
 └── lib.rs                        (re-exports preserved for api crate compat)
 ```
@@ -325,40 +333,44 @@ use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 use crate::types::tool::{ToolId, ToolRequest, ToolOutput, ToolError, ToolConfig};
 
+/// Accumulated outputs from prior tool tiers, keyed by ToolId.
+/// Tools in tier N can read outputs from tiers 0..N-1.
+pub struct ToolOutputMap(HashMap<ToolId, ToolOutput>);
+
+impl ToolOutputMap {
+    pub fn chunk_count(&self, tool_id: &str) -> usize { ... }
+    pub fn has_web_hits(&self) -> bool { ... }
+    pub fn get(&self, id: &str) -> Option<&ToolOutput> { ... }
+}
+
 /// A pluggable external tool. Implementations live in
 /// `kenjaku-service::tools/` (wrapping infra clients and domain logic).
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn id(&self) -> ToolId;
-
-    /// Shared config (enabled flag, rollout pct). Default impl returns
-    /// a clone of the tool's stored config.
     fn config(&self) -> &ToolConfig;
 
-    /// Is this tool relevant for this request? Self-gating.
-    /// Cheap, synchronous, no I/O. Implementations call
-    /// `ToolConfig::should_fire_for(request_id)` first for the
-    /// enabled/rollout check, then layer tool-specific logic
-    /// (trigger-regex match, retrieval-depth threshold, etc.).
-    /// See §4.1 for why gating lives here.
-    fn should_fire(&self, req: &ToolRequest, prior_chunk_count: usize) -> bool;
+    /// Declare tool dependencies by ID. Default: empty (runs in Tier 0).
+    /// The ToolTunnel resolves execution tiers via topological sort
+    /// (Kahn's algorithm) at construction. Cycles panic at startup.
+    fn depends_on(&self) -> Vec<ToolId> { vec![] }
 
-    /// Execute. MUST honor `cancel.cancelled()` at every I/O await
-    /// point. The Harness wraps the call with a belt-and-braces
-    /// `tokio::time::timeout(tool_budget_ms, ...)` so a tool that
-    /// ignores cancellation still gets bounded. Return `ToolError::
-    /// Cancelled` on cooperative cancel; the Harness maps it to
-    /// `ToolOutput::Empty` without logging a warning.
+    /// Self-gating. `prior` contains accumulated outputs from all tools
+    /// in earlier tiers. Tier 0 tools get an empty map. A tool can read
+    /// any prior tool's output via `prior.chunk_count("doc_rag")` etc.
+    fn should_fire(&self, req: &ToolRequest, prior: &ToolOutputMap) -> bool;
+
+    /// Execute. `prior` contains accumulated outputs from dependency
+    /// tiers — a dependent tool can read another tool's result to
+    /// augment its own query. MUST honor `cancel.cancelled()` at
+    /// every I/O await point.
     async fn invoke(
         &self,
         req: &ToolRequest,
+        prior: &ToolOutputMap,
         cancel: &CancellationToken,
     ) -> Result<ToolOutput, ToolError>;
 
-    /// Render a `ToolOutput::Structured` payload into a text fact
-    /// block the Brain can cite. Default impl serializes to pretty
-    /// JSON. `Chunks`/`WebHits` bypass this — they use the existing
-    /// `[Source N]` prompt machinery.
     fn render_fact(&self, facts: &serde_json::Value) -> String {
         serde_json::to_string_pretty(facts).unwrap_or_default()
     }
@@ -383,40 +395,65 @@ Forcing a price quote through `RetrievedChunk` shape creates lossy embeddings of
 
 **Commitment to kill dead fields:** `StructuredFact` in `ToolContext` (§5) is unused until Phase 5. If no tool emits `Structured` by end of Phase 3, `StructuredFact` and `structured_facts: &[StructuredFact]` are **deleted**, not shipped as empty slices. Re-added in Phase 5 when the first structured tool lands.
 
-### 4.3 Fan-out semantics: `join_all<Result>`, NOT `try_join_all`
+### 4.3 `ToolTunnel` — dependency-aware DAG executor
 
-The Harness error policy says: `Upstream`/`Timeout`/`Cancelled` → degrade to `Empty`. `BadRequest` → fail the request. `Disabled` → silent skip.
+The Harness runs tools through a `ToolTunnel` that topologically sorts them into tiers based on `depends_on()` declarations. Within each tier, tools run in parallel via `join_all`. Between tiers, execution is serial so dependent tools can read prior outputs from a shared `ToolOutputMap`.
 
-`try_join_all` fights that policy: on first error it drops all remaining futures and bubbles. `join_all` on `Vec<Result<ToolOutput, ToolError>>` instead — the Harness fold-maps the results:
+**Current tier resolution:**
+- **Tier 0** (no deps, parallel): `DocRagTool`, `FaqTool`, `ConversationAssembler`
+- **Tier 1** (depends on DocRag): `BraveWebTool` — reads `prior.chunk_count("doc_rag")` for its sparse-retrieval fallback
+
+Future tools slot in by declaring deps. A `PriceQuoteTool` with no deps → Tier 0 (fully parallel). A `SummarizerTool` that depends on DocRag + Brave → Tier 2 (waits for both).
+
+**Error policy:** `Upstream`/`Timeout`/`Cancelled` → degrade to `ToolOutput::Empty`. `BadRequest` → fail the request. `Disabled` → silent skip. Never `try_join_all` (short-circuits on first error, fighting the degradation policy).
+
+**Cycle detection:** Kahn's algorithm detects cycles at `ToolTunnel::new()` (startup) — panics with a clear message listing the cycle. Missing deps are warned, not fatal — the dependent tool sees `None` in the map and can decide to skip.
 
 ```rust
 // kenjaku-service/src/harness/fanout.rs (sketch)
-pub async fn fanout_tools(
-    tools: &[Arc<dyn Tool>],
-    req: &ToolRequest,
-    cancel: &CancellationToken,
-    tool_budget_ms: u64,
-) -> Result<Vec<ToolOutput>> {
-    let futs = tools.iter().filter(|t| t.should_fire(req, 0)).map(|t| {
-        let t = Arc::clone(t);
-        let req = req.clone();
-        let cancel = cancel.clone();
-        async move {
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(tool_budget_ms),
-                t.invoke(&req, &cancel),
-            ).await {
-                Ok(Ok(out))                         => out,
-                Ok(Err(ToolError::BadRequest(_)))   => return Err(t.id()), // propagate
-                Ok(Err(_))                          => ToolOutput::Empty,  // degrade
-                Err(_timeout)                       => ToolOutput::Empty,  // degrade
-            };
-            // ... normalize, log at appropriate level
+pub struct ToolTunnel {
+    tiers: Vec<Vec<Arc<dyn Tool>>>,  // pre-sorted at construction
+}
+
+impl ToolTunnel {
+    pub fn new(tools: Vec<Arc<dyn Tool>>) -> Self { /* Kahn's algorithm */ }
+
+    pub async fn execute(
+        &self,
+        req: &ToolRequest,
+        cancel: &CancellationToken,
+        tool_budget_ms: u64,
+    ) -> ToolOutputMap {
+        let mut accumulated = ToolOutputMap::new();
+        for tier in &self.tiers {
+            let firing: Vec<_> = tier.iter()
+                .filter(|t| t.should_fire(req, &accumulated))
+                .collect();
+            let results = futures::future::join_all(
+                firing.iter().map(|t| {
+                    let t = Arc::clone(t);
+                    let req = req.clone();
+                    let prior = accumulated.clone();
+                    let cancel = cancel.clone();
+                    async move {
+                        let id = t.id();
+                        match tokio::time::timeout(
+                            Duration::from_millis(tool_budget_ms),
+                            t.invoke(&req, &prior, &cancel),
+                        ).await {
+                            Ok(Ok(out)) => (id, out),
+                            Ok(Err(_))  => (id, ToolOutput::Empty),
+                            Err(_)      => (id, ToolOutput::Empty),
+                        }
+                    }
+                })
+            ).await;
+            for (id, output) in results {
+                accumulated.insert(id, output);
+            }
         }
-    });
-    let outputs: Vec<_> = futures::future::join_all(futs).await;
-    // map any BadRequest errors into core::Error::Validation for the handler
-    // ...
+        accumulated
+    }
 }
 ```
 
@@ -575,7 +612,7 @@ Phase 1 is a hard gate because dead code that compiles is not the same as dead c
 
 ### Phase 2 — "Harness-ify SearchService"
 
-- Introduce `SearchOrchestrator` as an internal type behind `SearchService`. Move the body of `search()` / `search_stream()` into the orchestrator, rewriting tool invocations to go through `Vec<Arc<dyn Tool>>` + `harness::fanout::fanout_tools` (the `join_all<Result>` wrapper from §4.3).
+- Introduce `SearchOrchestrator` as an internal type behind `SearchService`. Move the body of `search()` / `search_stream()` into the orchestrator, rewriting tool invocations to go through the `ToolTunnel` DAG executor (§4.3) which topologically sorts tools by `depends_on` and fans out each tier via `join_all`.
 - Add `ToolContext` assembly in `harness/context.rs`.
 - Wire a per-request `CancellationToken`. The SSE handler creates it; the orchestrator owns it; on client disconnect, `drop(stream)` triggers `token.cancel()` which cascades.
 - Introduce `harness/title_resolver.rs` — a service-layer trait wrapping `kenjaku_infra::TitleResolver`, so the Harness holds `Arc<dyn TitleResolver>` instead of the concrete infra type.
