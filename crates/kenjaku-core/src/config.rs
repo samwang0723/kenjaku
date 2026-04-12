@@ -127,6 +127,42 @@ pub struct LlmConfig {
     pub max_tokens: u32,
     #[serde(default = "default_temperature")]
     pub temperature: f32,
+    /// Gemini inference tier: standard (default), flex (50% cheaper, higher
+    /// latency), or priority (75-100% more expensive, lowest latency).
+    /// Sent as `serviceTier` in the request body, ALL CAPS.
+    #[serde(default = "default_service_tier")]
+    pub service_tier: ServiceTier,
+}
+
+/// Gemini inference tier. Controls latency/cost trade-off.
+/// Serialized as ALL CAPS in the API request (`STANDARD`, `FLEX`, `PRIORITY`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceTier {
+    Standard,
+    Flex,
+    Priority,
+}
+
+impl ServiceTier {
+    /// Returns the ALL-CAPS string for the Gemini `serviceTier` request field.
+    pub fn as_api_value(&self) -> &'static str {
+        match self {
+            Self::Standard => "STANDARD",
+            Self::Flex => "FLEX",
+            Self::Priority => "PRIORITY",
+        }
+    }
+
+    /// Cost multiplier relative to standard pricing.
+    /// Standard = 1.0, Flex = 0.5, Priority = 1.75.
+    pub fn cost_multiplier(&self) -> f64 {
+        match self {
+            Self::Standard => 1.0,
+            Self::Flex => 0.5,
+            Self::Priority => 1.75,
+        }
+    }
 }
 
 fn default_max_tokens() -> u32 {
@@ -135,6 +171,10 @@ fn default_max_tokens() -> u32 {
 
 fn default_temperature() -> f32 {
     0.7
+}
+
+fn default_service_tier() -> ServiceTier {
+    ServiceTier::Standard
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -670,6 +710,7 @@ contextualizer:
                 api_key: String::new(),
                 max_tokens: 2048,
                 temperature: 0.7,
+                service_tier: ServiceTier::Standard,
             },
             contextualizer: ContextualizerConfig {
                 provider: "anthropic".into(),
@@ -747,6 +788,7 @@ contextualizer:
                 api_key: "gm-key".into(),
                 max_tokens: 2048,
                 temperature: 0.7,
+                service_tier: ServiceTier::Standard,
             },
             contextualizer: ContextualizerConfig {
                 provider: "anthropic".into(),

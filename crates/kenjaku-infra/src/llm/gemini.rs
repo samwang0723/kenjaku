@@ -49,6 +49,39 @@ impl GeminiProvider {
         }
     }
 
+    /// Returns the ALL-CAPS service tier for the `serviceTier` request field.
+    fn service_tier_value(&self) -> Option<String> {
+        Some(self.config.service_tier.as_api_value().to_string())
+    }
+
+    /// Estimate cost in USD for a given token usage, factoring in model
+    /// base pricing and the configured service tier multiplier.
+    ///
+    /// Pricing per 1M tokens (standard tier):
+    /// - gemini-3.1-pro*:         $2.00 input,  $12.00 output (≤200k ctx)
+    /// - gemini-2.5-flash*:       $0.30 input,   $2.50 output
+    /// - gemini-2.5-flash-lite*:  $0.10 input,   $0.40 output
+    /// - gemini-3.1-flash-lite*:  $0.10 input,   $0.40 output
+    /// - fallback (unknown):      $0.30 input,   $2.50 output (flash rate)
+    fn estimate_cost(&self, prompt_tokens: u32, completion_tokens: u32) -> Option<f64> {
+        let model = &self.config.model;
+        let (input_per_m, output_per_m) = if model.contains("pro") {
+            (2.00_f64, 12.00_f64)
+        } else if model.contains("flash-lite") || model.contains("flash_lite") {
+            (0.10, 0.40)
+        } else {
+            // flash + unknown models default to flash pricing
+            (0.30, 2.50)
+        };
+
+        let tier_mult = self.config.service_tier.cost_multiplier();
+        let cost = tier_mult
+            * ((prompt_tokens as f64 / 1_000_000.0) * input_per_m
+                + (completion_tokens as f64 / 1_000_000.0) * output_per_m);
+
+        Some((cost * 1_000_000.0).round() / 1_000_000.0) // round to 6 decimal places
+    }
+
     /// Build the context string from retrieved chunks.
     fn build_context(chunks: &[RetrievedChunk]) -> String {
         chunks
@@ -232,6 +265,7 @@ impl LlmProvider for GeminiProvider {
                 response_mime_type: None,
                 response_schema: None,
             }),
+            service_tier: self.service_tier_value(),
         };
 
         let url = format!(
@@ -290,10 +324,15 @@ impl LlmProvider for GeminiProvider {
             })
             .unwrap_or_default();
 
-        let usage = result.usage_metadata.map(|u| LlmUsage {
-            prompt_tokens: u.prompt_token_count.unwrap_or(0),
-            completion_tokens: u.candidates_token_count.unwrap_or(0),
-            total_tokens: u.total_token_count.unwrap_or(0),
+        let usage = result.usage_metadata.map(|u| {
+            let prompt = u.prompt_token_count.unwrap_or(0);
+            let completion = u.candidates_token_count.unwrap_or(0);
+            LlmUsage {
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                total_tokens: u.total_token_count.unwrap_or(0),
+                cost_usd: self.estimate_cost(prompt, completion),
+            }
         });
 
         Ok(LlmResponse {
@@ -323,6 +362,7 @@ impl LlmProvider for GeminiProvider {
                 response_mime_type: None,
                 response_schema: None,
             }),
+            service_tier: self.service_tier_value(),
         };
 
         let url = format!(
@@ -405,6 +445,7 @@ impl LlmProvider for GeminiProvider {
                 response_mime_type: None,
                 response_schema: None,
             }),
+            service_tier: self.service_tier_value(),
         };
 
         let url = format!(
@@ -607,6 +648,7 @@ impl LlmProvider for GeminiProvider {
                 response_mime_type: Some("application/json".to_string()),
                 response_schema: Some(schema),
             }),
+            service_tier: self.service_tier_value(),
         };
 
         let url = format!(
@@ -700,6 +742,7 @@ impl LlmProvider for GeminiProvider {
                 response_mime_type: None,
                 response_schema: None,
             }),
+            service_tier: self.service_tier_value(),
         };
 
         let url = format!(
@@ -828,6 +871,7 @@ impl LlmProvider for GeminiProvider {
                 response_mime_type: Some("application/json".to_string()),
                 response_schema: Some(schema),
             }),
+            service_tier: self.service_tier_value(),
         };
 
         let url = format!(
@@ -956,6 +1000,9 @@ struct GeminiRequest {
     tools: Option<Vec<GeminiTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     generation_config: Option<GeminiGenerationConfig>,
+    /// Inference tier: STANDARD, FLEX, or PRIORITY. Controls latency/cost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_tier: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

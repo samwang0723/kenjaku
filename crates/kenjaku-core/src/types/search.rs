@@ -145,12 +145,16 @@ pub struct LlmSource {
     pub snippet: Option<String>,
 }
 
-/// Token usage from LLM call.
+/// Token usage from LLM call, with estimated cost based on model + tier.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// Estimated cost in USD for this call, factoring in the service tier
+    /// multiplier. `None` if pricing data is unavailable for the model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
 }
 
 /// A single SSE stream chunk (text delta).
