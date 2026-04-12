@@ -1,19 +1,24 @@
-pub mod autocomplete;
 pub mod brain;
-pub mod component;
-pub mod conversation;
-pub mod feedback;
+pub mod foundation;
 pub(crate) mod harness;
-pub mod history;
-pub mod intent;
-pub mod locale_memory;
-pub mod quality;
-pub mod refresh_worker;
-pub mod reranker;
-pub mod retriever;
 pub mod search;
-pub mod suggestion;
+pub mod session;
 pub mod tools;
-pub mod translation;
-pub mod trending;
-pub mod worker;
+
+// Re-exports for backward compatibility — external crates import these.
+// Gradually deprecate as callers migrate to the layered paths.
+pub use brain::intent;
+pub use brain::translation;
+pub use foundation::quality;
+pub use foundation::refresh_worker;
+pub use foundation::suggestion;
+pub use foundation::trending;
+pub use foundation::worker;
+pub use harness::component;
+pub use session::autocomplete;
+pub use session::conversation;
+pub use session::feedback;
+pub use session::history;
+pub use session::locale_memory;
+pub use tools::reranker;
+pub use tools::retriever;

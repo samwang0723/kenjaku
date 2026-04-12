@@ -8,7 +8,9 @@
 
 pub mod assembler;
 pub mod generator;
+pub mod intent;
 pub mod prompt;
+pub mod translation;
 
 pub use assembler::ConversationAssembler;
 pub use generator::GeminiBrain;
