@@ -202,7 +202,12 @@ async fn run_seed_refresh_now(
         return Ok(());
     }
 
-    let llm_provider = Arc::new(GeminiProvider::new(config.llm.clone()));
+    // Ingest-side LLM usage (suggestion refresh, cluster-question
+    // generation) never hits the `/search` tool-enabled paths — the
+    // worker calls structured JSON-mode completions that set
+    // `tools: None` internally. The flag is irrelevant here; pass
+    // `false` for consistency with the Brave-enabled default.
+    let llm_provider = Arc::new(GeminiProvider::new(config.llm.clone(), false));
     let clusterer = Arc::new(LinfaClusterer::new());
 
     let worker = SuggestionRefreshWorker::new(

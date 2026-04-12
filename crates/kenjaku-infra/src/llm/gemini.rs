@@ -23,14 +23,29 @@ pub struct GeminiProvider {
     client: Client,
     config: LlmConfig,
     base_url: String,
+    /// When true, the search-path calls (`generate` / `generate_stream`)
+    /// attach Gemini's built-in `google_search` grounding tool as a
+    /// fallback web tier. When false, no tool is attached — live web
+    /// results are expected to be supplied by a separate
+    /// `WebSearchProvider` (e.g. Brave) as synthetic `[Source N]`
+    /// chunks injected into the retrieved context before this provider
+    /// runs. Wire from `!config.web_search.enabled` at bootstrap.
+    use_google_search_tool: bool,
 }
 
 impl GeminiProvider {
-    pub fn new(config: LlmConfig) -> Self {
+    /// Construct a Gemini provider.
+    ///
+    /// `use_google_search_tool` should be `true` iff no other
+    /// `WebSearchProvider` is wired in — then Gemini's own
+    /// `google_search` tool becomes the fallback source for real-time
+    /// facts. When a Brave/Serper/etc. tier is active, pass `false`.
+    pub fn new(config: LlmConfig, use_google_search_tool: bool) -> Self {
         Self {
             client: Client::new(),
             base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
             config,
+            use_google_search_tool,
         }
     }
 
@@ -55,11 +70,21 @@ impl GeminiProvider {
     /// reminder because in-context multi-turn priors in another language
     /// can override the systemInstruction — we want the model to see the
     /// target language inside the current user turn as well.
+    ///
+    /// When retrieval returned no chunks, the `Internal context:` block is
+    /// omitted entirely rather than emitted empty — an empty block is a
+    /// negative cue that nudges the model toward refusal, whereas omitting
+    /// it leaves the model free to reach for `google_search`.
     fn build_search_prompt(query: &str, context: &str, answer_locale: Locale) -> String {
         let display = answer_locale.display_name();
         let tag = answer_locale.as_str();
+        let context_block = if context.trim().is_empty() {
+            String::new()
+        } else {
+            format!("Internal context:\n{context}\n\n")
+        };
         format!(
-            "Internal context:\n{context}\n\n\
+            "{context_block}\
              Question: {query}\n\n\
              Respond in {display} (`{tag}`). If earlier turns were in a different language, ignore that — answer this question in {display}.\n\n\
              Answer:"
@@ -94,21 +119,51 @@ impl GeminiProvider {
     }
 
     /// Build the per-request `systemInstruction` for the answer call.
-    /// Pins the answer language, sets grounding priority, and keeps the
+    /// Pins the answer language, sets source-handling rules, and keeps
     /// wording generic so we don't trip Gemini preview models into
     /// interpreting literal tool names as client-side function calls.
-    fn build_search_system_instruction(answer_locale: Locale) -> GeminiContent {
+    ///
+    /// Two variants, selected by `has_builtin_web_tool`:
+    /// - **true** — the `google_search` grounding tool is attached to
+    ///   this request. The model can reach for live web facts itself.
+    ///   Prompt language encourages it to do so for real-time questions
+    ///   and forbids the "I cannot access real-time data" refusal.
+    /// - **false** — no tool is attached; a separate `WebSearchProvider`
+    ///   (Brave) has already pre-injected fresh web results as
+    ///   `[Source N]` chunks in the user turn. Prompt language tells
+    ///   the model those chunks ARE its real-time data and that it must
+    ///   synthesize from them without deferring the user elsewhere.
+    fn build_search_system_instruction(
+        answer_locale: Locale,
+        has_builtin_web_tool: bool,
+    ) -> GeminiContent {
         let display = answer_locale.display_name();
         let tag = answer_locale.as_str();
+        let source_rules = if has_builtin_web_tool {
+            "Your inputs, in priority order:\n\
+             1. The numbered `[Source N]` entries in the current user turn. These come from the product's own document corpus. Prefer them when they answer the question, and cite with `[Source N]` markers.\n\
+             2. The built-in web search capability attached to this request. For real-time questions — markets, prices, news, weather, sports scores, live events, anything mentioning \"today\", \"now\", \"current\", \"latest\", \"this week\" — you MUST use the web search to retrieve fresh facts, then synthesize a direct answer. Web sources surface separately in the response; do not invent `[Source N]` markers for them.\n\
+             3. Your own training knowledge, used only as a last-resort fallback for timeless factual questions when both above are insufficient. Only this case may disclose a training cut-off.\n\
+             \n\
+             How to answer:\n\
+             - NEVER respond with \"I cannot access real-time information\", \"as an AI I don't have live data\", \"check Reuters / Yahoo / CNN / Bloomberg / etc.\", or any variant that tells the user to go look it up themselves. You have a web search tool — use it. Refusals are forbidden for real-time questions.\n\
+             - Include concrete numbers, dates, names, and timestamps when the retrieved sources carry them.\n\
+             - Do not refuse because internal retrieval is sparse. Reach for web search instead."
+        } else {
+            "Your only inputs are:\n\
+             1. The numbered `[Source N]` entries in the current user turn. These are authoritative. They may include product documentation, knowledge-base articles, and/or fresh web results that the platform has pre-fetched for you — you do NOT need to distinguish between them. Treat every `[Source N]` as trustworthy context supplied by the platform for this specific question.\n\
+             2. Your own training knowledge, used only as a fallback when the `[Source N]` entries do not cover the question.\n\
+             \n\
+             How to answer:\n\
+             - If `[Source N]` entries are present, synthesize a direct answer from them and cite with `[Source N]` markers. Include concrete numbers, dates, names, and timestamps when the sources carry them.\n\
+             - If no `[Source N]` entries are present, answer from your training knowledge. Only in this case may you briefly note a training cut-off.\n\
+             - NEVER respond with \"I cannot access real-time information\", \"as an AI I don't have live data\", \"check Reuters / Yahoo / CNN / Bloomberg / etc.\", or any variant that tells the user to go look it up themselves. If the `[Source N]` entries carry fresh facts, those facts ARE your real-time data — use them. The platform has already done the web search for you.\n\
+             - Do not refuse because retrieval is sparse. Synthesize from whatever sources you have. Refusals are forbidden."
+        };
         let text = format!(
             "You are a helpful document search assistant.\n\
              \n\
-             Sources, in priority order:\n\
-             1. Internal context — numbered `[Source N]` entries in the user turn, from the product's own document corpus. Prefer it when it answers the question, and cite with `[Source N]` markers.\n\
-             2. Web grounding — when available, use it to fill gaps the internal context does not cover or to add up-to-date facts. Web sources are attached separately by the platform; do not invent `[Source N]` markers for them.\n\
-             3. Your own knowledge — if neither of the above is sufficient, answer from your training data and make the limitation explicit (e.g. \"as of my training cut-off\").\n\
-             \n\
-             Always try to answer. Do not refuse just because the retrieved internal context is sparse — synthesize from whatever sources you have.\n\
+             {source_rules}\n\
              \n\
              Output rules:\n\
              - Write the final answer in {display} (BCP-47 `{tag}`), regardless of the language of the retrieved context, the question, or earlier turns in this conversation. If previous turns were in a different language, ignore their language and respond only in {display}. This overrides any continuity from prior turns.\n\
@@ -132,23 +187,37 @@ impl LlmProvider for GeminiProvider {
         history: &[ConversationTurn],
         answer_locale: Locale,
     ) -> Result<LlmResponse> {
-        // `generate` is the search-path entrypoint. It ALWAYS includes the
-        // google_search grounding tool and the locale-pinning system
-        // instruction — even when retrieval returned zero chunks — so the
-        // model can fall back to web search for real-time questions
-        // ("how is the market today", "current BTC price", etc.). The
-        // previous behavior of stripping the tool on empty context caused
-        // the model to refuse with "I cannot access real-time info".
+        // `generate` is the search-path entrypoint. It sends the
+        // locale-pinning system instruction and the retrieved context
+        // chunks, then asks Gemini to synthesize an answer.
         //
-        // Stateless single-shot calls (intent classification, short utility
-        // completions) should call `generate_brief` instead — that path
-        // skips the tool to stay fast.
+        // Web grounding wiring:
+        // - When `self.use_google_search_tool` is true (wired from
+        //   `!config.web_search.enabled` at bootstrap), the built-in
+        //   `google_search` tool is attached and Gemini can call out to
+        //   live web search autonomously for real-time facts.
+        // - When false, a separate `WebSearchProvider` (Brave by default)
+        //   has pre-fetched fresh web results and injected them as
+        //   synthetic `[Source N]` chunks into `context` before this
+        //   method was called — so no tool is attached and Gemini
+        //   synthesizes purely from the unified chunk stream.
+        //
+        // Stateless single-shot calls (intent classification, short
+        // utility completions) should call `generate_brief` instead —
+        // that path always skips tools and caps tokens to stay fast.
         let context_str = Self::build_context(context);
         let prompt = Self::build_search_prompt(query, &context_str, answer_locale);
-        let tools = Some(vec![GeminiTool {
-            google_search: Some(serde_json::json!({})),
-        }]);
-        let system_instruction = Some(Self::build_search_system_instruction(answer_locale));
+        let tools = if self.use_google_search_tool {
+            Some(vec![GeminiTool {
+                google_search: Some(serde_json::json!({})),
+            }])
+        } else {
+            None
+        };
+        let system_instruction = Some(Self::build_search_system_instruction(
+            answer_locale,
+            self.use_google_search_tool,
+        ));
         let contents = Self::build_multi_turn_contents(history, prompt);
         let max_tokens = self.config.max_tokens;
         let temperature = self.config.temperature;
@@ -311,12 +380,25 @@ impl LlmProvider for GeminiProvider {
         let context_str = Self::build_context(context);
         let prompt = Self::build_search_prompt(query, &context_str, answer_locale);
 
+        // Mirror `generate`: the `google_search` tool is attached iff
+        // `self.use_google_search_tool` is true (no separate
+        // WebSearchProvider is wired in). Otherwise the Brave tier has
+        // already injected fresh web results as `[Source N]` chunks in
+        // `context` and no tool is needed.
+        let tools = if self.use_google_search_tool {
+            Some(vec![GeminiTool {
+                google_search: Some(serde_json::json!({})),
+            }])
+        } else {
+            None
+        };
         let request = GeminiRequest {
             contents: Self::build_multi_turn_contents(history, prompt),
-            system_instruction: Some(Self::build_search_system_instruction(answer_locale)),
-            tools: Some(vec![GeminiTool {
-                google_search: Some(serde_json::json!({})),
-            }]),
+            system_instruction: Some(Self::build_search_system_instruction(
+                answer_locale,
+                self.use_google_search_tool,
+            )),
+            tools,
             generation_config: Some(GeminiGenerationConfig {
                 max_output_tokens: Some(self.config.max_tokens),
                 temperature: Some(self.config.temperature),

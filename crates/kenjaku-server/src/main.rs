@@ -60,7 +60,17 @@ async fn main() -> anyhow::Result<()> {
 
     // Create providers
     let embedding_provider = Arc::from(create_embedding_provider(config.embedding.clone())?);
-    let llm_provider = Arc::new(GeminiProvider::new(config.llm.clone()));
+    // Attach Gemini's built-in `google_search` tool only when no
+    // external `WebSearchProvider` is wired in. If `web_search.enabled`
+    // is true, Brave (or whichever provider) pre-injects fresh web
+    // results as synthetic `[Source N]` chunks — google_search becomes
+    // redundant and we skip it to save tokens and latency. When
+    // disabled, google_search is the fallback source of live facts.
+    let use_google_search_tool = !config.web_search.enabled;
+    let llm_provider = Arc::new(GeminiProvider::new(
+        config.llm.clone(),
+        use_google_search_tool,
+    ));
 
     // Create repositories
     let feedback_repo = FeedbackRepository::new(pg_pool.clone());
