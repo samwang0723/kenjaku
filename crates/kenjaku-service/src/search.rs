@@ -8,26 +8,19 @@ use tracing::warn;
 use kenjaku_core::config::WebSearchConfig;
 use kenjaku_core::error::Result;
 use kenjaku_core::traits::brain::Brain;
-use kenjaku_core::traits::intent::IntentClassifier;
-use kenjaku_core::traits::llm::LlmProvider;
-use kenjaku_core::traits::retriever::Retriever;
 use kenjaku_core::traits::tool::Tool;
-use kenjaku_core::traits::web_search::WebSearchProvider;
 use kenjaku_core::types::intent::Intent;
 use kenjaku_core::types::locale::{DetectedLocale, Locale};
 use kenjaku_core::types::search::{
     DetectedLocaleSource, GroundingInfo, LlmSource, SearchRequest, SearchResponse, StreamChunk,
     StreamDoneMetadata, StreamStartMetadata, TranslationResult,
 };
-use kenjaku_core::types::tool::ToolConfig;
 
-use crate::brain::GeminiBrain;
 use crate::component::ComponentService;
 use crate::conversation::ConversationService;
 use crate::harness::SearchOrchestrator;
 use crate::history::SessionHistoryStore;
 use crate::locale_memory::LocaleMemory;
-use crate::tools::{BraveWebTool, DocRagTool};
 use crate::trending::TrendingService;
 
 /// Orchestrates the full RAG search pipeline.
@@ -41,46 +34,27 @@ pub struct SearchService {
 }
 
 impl SearchService {
+    /// Construct a `SearchService` from pre-built Brain and Tool instances.
+    ///
+    /// The caller (typically `kenjaku-server/main.rs`) is responsible for
+    /// constructing the `Brain` facade and the `Tool` list. This keeps
+    /// `search.rs` free of any knowledge about concrete retriever or
+    /// web-search provider types.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        retriever: Arc<dyn Retriever>,
-        llm: Arc<dyn LlmProvider>,
-        intent_classifier: Arc<dyn IntentClassifier>,
+        brain: Arc<dyn Brain>,
+        tools: Vec<Arc<dyn Tool>>,
         component_service: ComponentService,
         trending_service: TrendingService,
         conversation_service: ConversationService,
         title_resolver: Option<Arc<kenjaku_infra::title_resolver::TitleResolver>>,
         locale_memory: Arc<LocaleMemory>,
         history_store: SessionHistoryStore,
-        web_search: Option<Arc<dyn WebSearchProvider>>,
         web_search_config: WebSearchConfig,
         collection_name: String,
         suggestion_count: usize,
         has_web_grounding: bool,
     ) -> Self {
-        // Build the Brain facade that wraps LLM + intent classifier.
-        let brain: Arc<dyn Brain> = Arc::new(GeminiBrain::new(llm, intent_classifier));
-
-        // Build tools from the existing dependencies.
-        let doc_rag: Arc<dyn Tool> = Arc::new(DocRagTool::new(
-            retriever,
-            collection_name.clone(),
-            ToolConfig::default(),
-        ));
-
-        let brave_web: Arc<dyn Tool> = Arc::new(BraveWebTool::new(
-            web_search,
-            ToolConfig {
-                enabled: web_search_config.enabled,
-                rollout_pct: None,
-            },
-            web_search_config.trigger_patterns.clone(),
-            web_search_config.fallback_min_chunks,
-            web_search_config.limit,
-        ));
-
-        let tools: Vec<Arc<dyn Tool>> = vec![doc_rag, brave_web];
-
         let orchestrator = SearchOrchestrator::new(
             brain,
             component_service,

@@ -8,4 +8,3 @@ pub mod tool;
 pub mod web_search;
 
 pub use clusterer::{Cluster, Clusterer};
-pub use web_search::{WebSearchProvider, WebSearchResult};

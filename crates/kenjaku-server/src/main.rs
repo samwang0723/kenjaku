@@ -4,6 +4,9 @@ use tokio::signal;
 use tracing::info;
 
 use kenjaku_core::config::load_config;
+use kenjaku_core::traits::brain::Brain;
+use kenjaku_core::traits::tool::Tool;
+use kenjaku_core::types::tool::ToolConfig;
 use kenjaku_infra::clustering::LinfaClusterer;
 use kenjaku_infra::embedding::create_embedding_provider;
 use kenjaku_infra::llm::GeminiProvider;
@@ -18,6 +21,7 @@ use kenjaku_infra::title_resolver::TitleResolver;
 use kenjaku_infra::web_search::BraveSearchProvider;
 
 use kenjaku_service::autocomplete::AutocompleteService;
+use kenjaku_service::brain::GeminiBrain;
 use kenjaku_service::component::ComponentService;
 use kenjaku_service::conversation::ConversationService;
 use kenjaku_service::feedback::FeedbackService;
@@ -27,6 +31,7 @@ use kenjaku_service::refresh_worker::SuggestionRefreshWorker;
 use kenjaku_service::retriever::HybridRetriever;
 use kenjaku_service::search::SearchService;
 use kenjaku_service::suggestion::{ServiceRng, SuggestionService};
+use kenjaku_service::tools::{BraveWebTool, DocRagTool};
 use kenjaku_service::trending::TrendingService;
 use kenjaku_service::worker::TrendingFlushWorker;
 
@@ -138,45 +143,66 @@ async fn main() -> anyhow::Result<()> {
         kenjaku_service::history::SessionHistoryStore::new(config.search.history.clone());
     history_store.clone().spawn_janitor();
 
+    // Build the Brain facade that wraps LLM + intent classifier.
+    let brain: Arc<dyn Brain> = Arc::new(GeminiBrain::new(llm_provider.clone(), intent_classifier));
+
+    // Build the Tool list — DocRag (tier 1) then BraveWeb (tier 2).
+    let doc_rag: Arc<dyn Tool> = Arc::new(DocRagTool::new(
+        retriever,
+        config.qdrant.collection_name.clone(),
+        ToolConfig::default(),
+    ));
+
     // Web search provider — replaces Gemini's non-functional built-in
     // `google_search` tool. Constructed only when enabled + configured
-    // with an API key; otherwise SearchService falls back to internal-
-    // only retrieval as before.
-    let web_search_provider: Option<Arc<dyn kenjaku_core::traits::web_search::WebSearchProvider>> =
-        if config.web_search.enabled && !config.web_search.api_key.is_empty() {
-            match config.web_search.provider.as_str() {
-                "brave" => match BraveSearchProvider::new(config.web_search.clone()) {
-                    Ok(p) => Some(Arc::new(p)),
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to init Brave provider; web tier disabled");
-                        None
-                    }
-                },
-                other => {
-                    tracing::warn!(provider = %other, "unknown web_search.provider; web tier disabled");
+    // with an API key; otherwise the BraveWebTool wraps None and never
+    // fires.
+    let web_search_provider = if config.web_search.enabled && !config.web_search.api_key.is_empty()
+    {
+        match config.web_search.provider.as_str() {
+            "brave" => match BraveSearchProvider::new(config.web_search.clone()) {
+                Ok(p) => Some(Arc::new(p)),
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to init Brave provider; web tier disabled");
                     None
                 }
+            },
+            other => {
+                tracing::warn!(provider = %other, "unknown web_search.provider; web tier disabled");
+                None
             }
-        } else {
-            None
-        };
+        }
+    } else {
+        None
+    };
     info!(
         enabled = config.web_search.enabled,
         configured = web_search_provider.is_some(),
         "Web search tier"
     );
 
+    let brave_web: Arc<dyn Tool> = Arc::new(BraveWebTool::new(
+        web_search_provider.map(|p| p as _),
+        ToolConfig {
+            enabled: config.web_search.enabled,
+            rollout_pct: None,
+        },
+        config.web_search.trigger_patterns.clone(),
+        config.web_search.fallback_min_chunks,
+        config.web_search.limit,
+    ));
+
+    let tools: Vec<Arc<dyn Tool>> = vec![doc_rag, brave_web];
+
     let search_service = SearchService::new(
-        retriever,
-        llm_provider.clone(),
-        intent_classifier,
+        brain,
+        tools,
         component_service,
         trending_service.clone(),
         conversation_service,
         Some(title_resolver),
         locale_memory.clone(),
         history_store,
-        web_search_provider,
         config.web_search.clone(),
         config.qdrant.collection_name.clone(),
         config.search.suggestion_count,
