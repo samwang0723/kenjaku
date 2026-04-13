@@ -29,10 +29,18 @@ impl ServiceRng {
     }
 
     /// Sample a uniform `(0, 1)` (open interval — guard against ln(0)).
+    ///
+    /// Returns 0.5 (neutral weight) if the mutex is poisoned, which is
+    /// extremely unlikely but avoids a panic in production.
     fn sample_unit(&self) -> f64 {
-        let mut guard = self.0.lock().unwrap();
-        let raw: f64 = guard.gen_range(f64::EPSILON..1.0_f64);
-        raw
+        let mut guard = match self.0.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                tracing::warn!("ServiceRng mutex poisoned, recovering");
+                poisoned.into_inner()
+            }
+        };
+        guard.gen_range(f64::EPSILON..1.0_f64)
     }
 }
 

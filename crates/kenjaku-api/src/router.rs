@@ -12,6 +12,8 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
+use kenjaku_core::config::ServerConfig;
+
 use crate::AppState;
 use crate::extractors::SessionLocaleLookup;
 use crate::handlers;
@@ -22,13 +24,17 @@ use crate::handlers;
 /// `ResolvedLocale` extractor can resolve session-stickied locales without
 /// the api crate depending on the concrete service-layer `LocaleMemory`.
 #[allow(deprecated)] // TimeoutLayer::new deprecated in tower-http 0.6, replacement API differs
-pub fn build_router(state: Arc<AppState>, locale_lookup: Arc<dyn SessionLocaleLookup>) -> Router {
-    // Rate limiter: 60 requests per minute per IP
+pub fn build_router(
+    state: Arc<AppState>,
+    locale_lookup: Arc<dyn SessionLocaleLookup>,
+    server_config: &ServerConfig,
+) -> Router {
+    // Rate limiter: configurable requests per second per IP
     // SmartIpKeyExtractor checks X-Forwarded-For, X-Real-Ip, then peer addr
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(1)
-            .burst_size(60)
+            .per_second(server_config.rate_limit_per_second)
+            .burst_size(server_config.rate_limit_burst)
             .key_extractor(SmartIpKeyExtractor)
             .finish()
             .expect("failed to build rate limiter config"),
@@ -52,8 +58,10 @@ pub fn build_router(state: Arc<AppState>, locale_lookup: Arc<dyn SessionLocaleLo
     Router::new()
         .nest("/api/v1", api_routes)
         .merge(health_routes)
-        .layer(TimeoutLayer::new(Duration::from_secs(30)))
-        .layer(RequestBodyLimitLayer::new(1024 * 64)) // 64 KB
+        .layer(TimeoutLayer::new(Duration::from_secs(
+            server_config.request_timeout_secs,
+        )))
+        .layer(RequestBodyLimitLayer::new(server_config.body_limit_bytes))
         .layer(TraceLayer::new_for_http())
         .layer(
             CorsLayer::new()

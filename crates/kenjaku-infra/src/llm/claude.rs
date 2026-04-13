@@ -28,15 +28,7 @@ pub struct ClaudeContextualizer {
 
 impl ClaudeContextualizer {
     pub fn new(config: ContextualizerConfig) -> Self {
-        Self {
-            client: Client::new(),
-            base_url: "https://api.anthropic.com/v1".to_string(),
-            config,
-        }
-    }
-
-    /// Create with a custom base URL (for testing).
-    pub fn with_base_url(config: ContextualizerConfig, base_url: String) -> Self {
+        let base_url = config.base_url.clone();
         Self {
             client: Client::new(),
             base_url,

@@ -11,13 +11,16 @@ use kenjaku_core::traits::embedding::EmbeddingProvider;
 pub struct OpenAiEmbeddingProvider {
     client: Client,
     config: EmbeddingConfig,
+    base_url: String,
 }
 
 impl OpenAiEmbeddingProvider {
     pub fn new(config: EmbeddingConfig) -> Self {
+        let base_url = config.base_url.clone();
         Self {
             client: Client::new(),
             config,
+            base_url,
         }
     }
 }
@@ -38,7 +41,7 @@ impl EmbeddingProvider for OpenAiEmbeddingProvider {
 
         let response = self
             .client
-            .post("https://api.openai.com/v1/embeddings")
+            .post(format!("{}/embeddings", self.base_url))
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .json(&request)
             .send()
@@ -112,13 +115,14 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn test_config(_url: &str) -> EmbeddingConfig {
+    fn test_config(url: &str) -> EmbeddingConfig {
         EmbeddingConfig {
             provider: "openai".to_string(),
             model: "text-embedding-3-small".to_string(),
             api_key: "test-key".to_string(),
             dimensions: 1536,
             batch_size: 100,
+            base_url: url.to_string(),
         }
     }
 
@@ -149,11 +153,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let config = test_config(&server.uri());
-        let _provider = OpenAiEmbeddingProvider {
-            client: Client::new(),
-            config,
-        };
+        let config = test_config(&format!("{}/v1", server.uri()));
+        let _provider = OpenAiEmbeddingProvider::new(config);
 
         // Note: This test would need the URL overridden to hit wiremock.
         // In production, we'd use a configurable base_url.
@@ -177,6 +178,7 @@ mod tests {
             api_key: "test".to_string(),
             dimensions: 1536,
             batch_size: 100,
+            base_url: "https://api.openai.com/v1".to_string(),
         };
         let provider = OpenAiEmbeddingProvider::new(config);
         assert_eq!(provider.model_name(), "text-embedding-3-small");

@@ -42,7 +42,7 @@ pub async fn search(
     Json(dto): Json<SearchRequestDto>,
 ) -> impl IntoResponse {
     // Validate query length
-    if dto.query.is_empty() {
+    if dto.query.trim().is_empty() {
         return Json(ApiResponse::<SearchResponseDto>::err(
             "Query cannot be empty".to_string(),
         ))

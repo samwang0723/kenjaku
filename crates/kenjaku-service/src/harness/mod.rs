@@ -196,11 +196,26 @@ impl SearchOrchestrator {
             .await
         {
             Ok(s) if s.len() >= self.suggestion_count => s[..self.suggestion_count].to_vec(),
-            _ => chunks
-                .iter()
-                .map(|c| c.title.clone())
-                .take(self.suggestion_count)
-                .collect(),
+            Ok(s) => {
+                warn!(
+                    count = s.len(),
+                    needed = self.suggestion_count,
+                    "LLM returned fewer suggestions than needed, falling back to chunk titles"
+                );
+                chunks
+                    .iter()
+                    .map(|c| c.title.clone())
+                    .take(self.suggestion_count)
+                    .collect()
+            }
+            Err(e) => {
+                warn!(error = %e, "Suggestion generation failed, falling back to chunk titles");
+                chunks
+                    .iter()
+                    .map(|c| c.title.clone())
+                    .take(self.suggestion_count)
+                    .collect()
+            }
         };
 
         let suggestion_source = if suggestions.len() == self.suggestion_count {

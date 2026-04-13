@@ -40,9 +40,10 @@ impl GeminiProvider {
     /// `google_search` tool becomes the fallback source for real-time
     /// facts. When a Brave/Serper/etc. tier is active, pass `false`.
     pub fn new(config: LlmConfig, use_google_search_tool: bool) -> Self {
+        let base_url = config.base_url.clone();
         Self {
             client: Client::new(),
-            base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+            base_url,
             config,
             use_google_search_tool,
         }

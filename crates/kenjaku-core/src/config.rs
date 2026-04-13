@@ -61,6 +61,14 @@ impl AppConfig {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    /// Rate limiter: requests per second per IP.
+    pub rate_limit_per_second: u64,
+    /// Rate limiter: burst size (max requests before throttling).
+    pub rate_limit_burst: u32,
+    /// Maximum request body size in bytes.
+    pub body_limit_bytes: usize,
+    /// Global request timeout in seconds.
+    pub request_timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +114,8 @@ pub struct EmbeddingConfig {
     pub dimensions: usize,
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
+    /// Base URL for the embedding API (e.g. `https://api.openai.com/v1`).
+    pub base_url: String,
 }
 
 fn default_dimensions() -> usize {
@@ -132,6 +142,8 @@ pub struct LlmConfig {
     /// Sent as `serviceTier` in the request body, ALL CAPS.
     #[serde(default = "default_service_tier")]
     pub service_tier: ServiceTier,
+    /// Base URL for the LLM API (e.g. `https://generativelanguage.googleapis.com/v1beta`).
+    pub base_url: String,
 }
 
 /// Gemini inference tier. Controls latency/cost trade-off.
@@ -184,6 +196,8 @@ pub struct ContextualizerConfig {
     /// API key. Must come from secrets.{env}.yaml.
     #[serde(default)]
     pub api_key: String,
+    /// Base URL for the contextualizer API (e.g. `https://api.anthropic.com/v1`).
+    pub base_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -525,6 +539,13 @@ pub struct WebSearchConfig {
     /// chunks — covers the "in-domain but retrieval missed" case.
     #[serde(default = "default_web_search_fallback_min_chunks")]
     pub fallback_min_chunks: usize,
+    /// Base URL for the web search API (e.g. `https://api.search.brave.com/res/v1/web/search`).
+    #[serde(default = "default_web_search_base_url")]
+    pub base_url: String,
+}
+
+fn default_web_search_base_url() -> String {
+    "https://api.search.brave.com/res/v1/web/search".to_string()
 }
 
 impl Default for WebSearchConfig {
@@ -537,6 +558,7 @@ impl Default for WebSearchConfig {
             timeout_ms: default_web_search_timeout_ms(),
             trigger_patterns: default_web_search_trigger_patterns(),
             fallback_min_chunks: default_web_search_fallback_min_chunks(),
+            base_url: default_web_search_base_url(),
         }
     }
 }
@@ -612,18 +634,25 @@ mod tests {
 server:
   host: "0.0.0.0"
   port: 8080
+  rate_limit_per_second: 1
+  rate_limit_burst: 60
+  body_limit_bytes: 65536
+  request_timeout_secs: 30
 qdrant:
   url: "http://localhost:6334"
   collection_name: "documents"
 embedding:
   provider: "openai"
   model: "text-embedding-3-small"
+  base_url: "https://api.openai.com/v1"
 llm:
   provider: "gemini"
   model: "gemini-2.0-flash-lite"
+  base_url: "https://generativelanguage.googleapis.com/v1beta"
 contextualizer:
   provider: "anthropic"
   model: "claude-haiku-4-5"
+  base_url: "https://api.anthropic.com/v1"
 trending:
   popularity_threshold: 5
   flush_interval_secs: 300
@@ -688,6 +717,10 @@ contextualizer:
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
+                rate_limit_per_second: 1,
+                rate_limit_burst: 60,
+                body_limit_bytes: 65_536,
+                request_timeout_secs: 30,
             },
             qdrant: QdrantConfig {
                 url: "http://localhost:6334".into(),
@@ -705,6 +738,7 @@ contextualizer:
                 api_key: String::new(),
                 dimensions: 1536,
                 batch_size: 100,
+                base_url: "https://api.openai.com/v1".into(),
             },
             llm: LlmConfig {
                 provider: "gemini".into(),
@@ -713,11 +747,13 @@ contextualizer:
                 max_tokens: 2048,
                 temperature: 0.7,
                 service_tier: ServiceTier::Standard,
+                base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
             },
             contextualizer: ContextualizerConfig {
                 provider: "anthropic".into(),
                 model: "m".into(),
                 api_key: String::new(),
+                base_url: "https://api.anthropic.com/v1".into(),
             },
             trending: TrendingConfig {
                 popularity_threshold: 5,
@@ -764,6 +800,10 @@ contextualizer:
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
+                rate_limit_per_second: 1,
+                rate_limit_burst: 60,
+                body_limit_bytes: 65_536,
+                request_timeout_secs: 30,
             },
             qdrant: QdrantConfig {
                 url: "http://localhost:6334".into(),
@@ -783,6 +823,7 @@ contextualizer:
                 api_key: "sk-key".into(),
                 dimensions: 1536,
                 batch_size: 100,
+                base_url: "https://api.openai.com/v1".into(),
             },
             llm: LlmConfig {
                 provider: "gemini".into(),
@@ -791,11 +832,13 @@ contextualizer:
                 max_tokens: 2048,
                 temperature: 0.7,
                 service_tier: ServiceTier::Standard,
+                base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
             },
             contextualizer: ContextualizerConfig {
                 provider: "anthropic".into(),
                 model: "m".into(),
                 api_key: "sk-ant-key".into(),
+                base_url: "https://api.anthropic.com/v1".into(),
             },
             trending: TrendingConfig {
                 popularity_threshold: 5,

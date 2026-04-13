@@ -10,10 +10,10 @@ static X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 pub async fn ensure_request_id(mut request: Request, next: Next) -> Response {
     if !request.headers().contains_key(&X_REQUEST_ID) {
         let request_id = Uuid::new_v4().to_string();
-        request.headers_mut().insert(
-            X_REQUEST_ID.clone(),
-            HeaderValue::from_str(&request_id).unwrap(),
-        );
+        // UUID v4 hyphenated format is always valid ASCII, so this cannot fail.
+        if let Ok(value) = HeaderValue::from_str(&request_id) {
+            request.headers_mut().insert(X_REQUEST_ID.clone(), value);
+        }
     }
 
     let mut response = next.run(request).await;

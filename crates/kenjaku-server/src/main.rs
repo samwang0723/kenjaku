@@ -257,7 +257,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Build router
-    let app = build_router(state, locale_lookup);
+    let app = build_router(state, locale_lookup, &config.server);
 
     // Bind and serve
     let addr = format!("{}:{}", config.server.host, config.server.port);

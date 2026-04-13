@@ -15,20 +15,24 @@ use kenjaku_core::config::WebSearchConfig;
 use kenjaku_core::error::{Error, Result};
 use kenjaku_core::traits::web_search::{WebSearchProvider, WebSearchResult};
 
-const BRAVE_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web/search";
-
 pub struct BraveSearchProvider {
     client: Client,
     config: WebSearchConfig,
+    base_url: String,
 }
 
 impl BraveSearchProvider {
     pub fn new(config: WebSearchConfig) -> Result<Self> {
+        let base_url = config.base_url.clone();
         let client = Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
             .build()
             .map_err(|e| Error::Internal(format!("Failed to build Brave HTTP client: {e}")))?;
-        Ok(Self { client, config })
+        Ok(Self {
+            client,
+            config,
+            base_url,
+        })
     }
 }
 
@@ -47,7 +51,7 @@ impl WebSearchProvider for BraveSearchProvider {
 
         let response = self
             .client
-            .get(BRAVE_ENDPOINT)
+            .get(&self.base_url)
             .header("Accept", "application/json")
             .header("X-Subscription-Token", &self.config.api_key)
             .query(&[
