@@ -2,8 +2,10 @@
 //! conversation assembly, and model invocation.
 //!
 //! Public exports:
-//! - `GeminiBrain` — the default `Brain` impl wrapping `Arc<dyn LlmProvider>`
-//! - `CompositeBrain` — Phase 2 composition of `Classifier` + `Translator` + `Generator`
+//! - `CompositeBrain` — Phase 2 orchestrator-facing `Brain` impl; composes
+//!   `Classifier` + `Translator` + `Generator` sub-traits
+//! - `GeminiBrain` — the default underlying provider-backed `Brain` impl
+//!   used by `CompositeBrain` (serves all three sub-roles today)
 //! - `ConversationAssembler` — pure function: history + query + chunks -> Vec<Message>
 //! - Prompt builders in `prompt` submodule
 

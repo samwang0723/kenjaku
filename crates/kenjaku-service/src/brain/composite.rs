@@ -36,9 +36,9 @@ use kenjaku_core::types::search::{LlmResponse, RetrievedChunk, StreamChunk, Tran
 /// impl (the Phase 2 default — `GeminiBrain` serves all three roles)
 /// or at three different providers once Phase 3 lands.
 pub struct CompositeBrain {
-    pub classifier: Arc<dyn Classifier>,
-    pub translator: Arc<dyn Translator>,
-    pub generator: Arc<dyn Generator>,
+    classifier: Arc<dyn Classifier>,
+    translator: Arc<dyn Translator>,
+    generator: Arc<dyn Generator>,
 }
 
 impl CompositeBrain {

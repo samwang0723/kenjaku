@@ -23,12 +23,12 @@ use crate::types::search::{LlmResponse, RetrievedChunk, StreamChunk, Translation
 ///
 /// **Phase 2 note:** `Brain` is still the orchestrator-facing contract,
 /// but the concrete implementation wired into the pipeline is now
-/// [`CompositeBrain`](../../../../../kenjaku-service/src/brain/composite.rs)
-/// which composes three sub-traits (`Classifier`, `Translator`,
-/// `Generator`). The default methods [`has_web_grounding`] and
-/// [`model_name`] replace two Phase 1 leaks — the hardcoded
-/// `has_web_grounding: bool` constructor arg on `SinglePassPipeline`
-/// and the hardcoded `"gemini"` model name in streaming `done` metadata.
+/// `CompositeBrain` (in `kenjaku-service`) which composes three
+/// sub-traits (`Classifier`, `Translator`, `Generator`). The default
+/// methods [`Brain::has_web_grounding`] and [`Brain::model_name`]
+/// replace two Phase 1 leaks — the hardcoded `has_web_grounding: bool`
+/// constructor arg on `SinglePassPipeline` and the hardcoded `"gemini"`
+/// model name in streaming `done` metadata.
 #[async_trait]
 pub trait Brain: Send + Sync {
     /// Classify the intent of a user query.
