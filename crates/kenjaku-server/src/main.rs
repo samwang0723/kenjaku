@@ -296,7 +296,7 @@ async fn main() -> anyhow::Result<()> {
     let tenants_cache = Arc::new(TenantsCache::load_at_startup(&pg_pool).await?);
     info!(tenant_count = tenants_cache.len(), "TenantsCache loaded");
 
-    let jwt_validator = load_jwt_validator(&config.tenancy)?;
+    let jwt_validator = load_jwt_validator(&config.tenancy).await?;
     info!(
         tenancy_enabled = config.tenancy.enabled,
         validator_constructed = jwt_validator.is_some(),
@@ -385,7 +385,10 @@ impl kenjaku_api::extractors::SessionLocaleLookup for LocaleMemoryAdapter {
 ///     1. `is_file()` check rejects `/dev/zero`, FIFOs, etc.
 ///     2. 16 KiB size cap (an RSA-4096 PEM is ~1.7 KB; 16 KiB is
 ///        ~10x the largest realistic key).
-///     3. Single `std::fs::read` call — bounded I/O.
+///     3. Single `tokio::fs::read` call — bounded I/O, non-blocking
+///        on the Tokio runtime. (`tokio::fs` dispatches to
+///        `spawn_blocking` internally; equivalent for startup but
+///        keeps the main tokio worker free on slow/remote volumes.)
 ///
 ///   then constructs the validator with the parsed PEM bytes.
 ///
@@ -396,7 +399,7 @@ impl kenjaku_api::extractors::SessionLocaleLookup for LocaleMemoryAdapter {
 /// Matches the 3c.1 architecture decision to keep
 /// `kenjaku_infra::auth::jwt` filesystem-free; the bootstrap is the
 /// one audit point for key-material loading.
-fn load_jwt_validator(cfg: &TenancyConfig) -> KenjakuResult<Option<Arc<JwtValidator>>> {
+async fn load_jwt_validator(cfg: &TenancyConfig) -> KenjakuResult<Option<Arc<JwtValidator>>> {
     if !cfg.enabled {
         return Ok(None);
     }
@@ -411,7 +414,7 @@ fn load_jwt_validator(cfg: &TenancyConfig) -> KenjakuResult<Option<Arc<JwtValida
     const MAX_PEM_BYTES: u64 = 16 * 1024;
 
     let path = Path::new(&jwt.public_key_path);
-    let meta = std::fs::metadata(path).map_err(|e| {
+    let meta = tokio::fs::metadata(path).await.map_err(|e| {
         Error::Config(format!(
             "JWT public_key_path {} cannot be stat'd: {e}",
             jwt.public_key_path
@@ -431,7 +434,7 @@ fn load_jwt_validator(cfg: &TenancyConfig) -> KenjakuResult<Option<Arc<JwtValida
         )));
     }
 
-    let pem = std::fs::read(path).map_err(|e| {
+    let pem = tokio::fs::read(path).await.map_err(|e| {
         Error::Config(format!(
             "JWT public_key_path {} read failed: {e}",
             jwt.public_key_path
@@ -532,28 +535,32 @@ qwIDAQAB
 -----END PUBLIC KEY-----
 ";
 
-    #[test]
-    fn load_jwt_validator_disabled_returns_none() {
-        let v = load_jwt_validator(&tenancy_disabled()).unwrap();
+    #[tokio::test]
+    async fn load_jwt_validator_disabled_returns_none() {
+        let v = load_jwt_validator(&tenancy_disabled()).await.unwrap();
         assert!(v.is_none(), "tenancy disabled => no validator built");
     }
 
-    #[test]
-    fn load_jwt_validator_missing_file_fails() {
+    #[tokio::test]
+    async fn load_jwt_validator_missing_file_fails() {
         let cfg = tenancy_with_jwt("/nonexistent/path/to/jwt_pub.pem");
-        let err = load_jwt_validator(&cfg).expect_err("missing file must fail");
+        let err = load_jwt_validator(&cfg)
+            .await
+            .expect_err("missing file must fail");
         assert!(matches!(err, Error::Config(_)));
     }
 
-    #[test]
-    fn load_jwt_validator_oversized_file_fails() {
+    #[tokio::test]
+    async fn load_jwt_validator_oversized_file_fails() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("oversized.pem");
         // 32 KiB of garbage — larger than the 16 KiB cap.
         let big = vec![b'A'; 32 * 1024];
         std::fs::write(&path, &big).unwrap();
         let cfg = tenancy_with_jwt(path.to_string_lossy().as_ref());
-        let err = load_jwt_validator(&cfg).expect_err("oversized must fail");
+        let err = load_jwt_validator(&cfg)
+            .await
+            .expect_err("oversized must fail");
         let msg = err.to_string();
         assert!(matches!(err, Error::Config(_)));
         assert!(
@@ -562,12 +569,12 @@ qwIDAQAB
         );
     }
 
-    #[test]
-    fn load_jwt_validator_ok_path_returns_validator() {
+    #[tokio::test]
+    async fn load_jwt_validator_ok_path_returns_validator() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(TEST_RSA_PUBLIC_PEM.as_bytes()).unwrap();
         let cfg = tenancy_with_jwt(f.path().to_string_lossy().as_ref());
-        let v = load_jwt_validator(&cfg).unwrap();
+        let v = load_jwt_validator(&cfg).await.unwrap();
         assert!(v.is_some(), "valid PEM must yield a validator");
     }
 

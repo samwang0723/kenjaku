@@ -45,6 +45,11 @@ use kenjaku_core::types::tenant::{PlanTier, TenantId};
 /// limiter). Direct field access is still `pub` for future
 /// accessor impls, but the redacted `Debug` prevents the field from
 /// ever being accidentally logged.
+///
+/// `TenantRow` deliberately does **NOT** implement [`Clone`]. Shared
+/// access goes through [`Arc<TenantRow>`] ([`TenantsCache::get`]
+/// returns one), so cloning the full JSONB in `config_overrides` is
+/// structurally impossible on the request hot path.
 pub struct TenantRow {
     pub id: TenantId,
     pub name: String,
@@ -52,17 +57,6 @@ pub struct TenantRow {
     /// Per-tenant JSONB overrides. **NEVER logged.** Redacted by the
     /// custom `Debug` impl below.
     pub config_overrides: JsonValue,
-}
-
-impl Clone for TenantRow {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id.clone(),
-            name: self.name.clone(),
-            plan_tier: self.plan_tier,
-            config_overrides: self.config_overrides.clone(),
-        }
-    }
 }
 
 impl std::fmt::Debug for TenantRow {
@@ -94,8 +88,13 @@ impl TenantRepository {
     /// Explicit column list — no `SELECT *` — so a future schema
     /// addition doesn't silently bleed new fields into the
     /// in-memory cache.
+    ///
+    /// Returns `HashMap<TenantId, Arc<TenantRow>>`. The Arc wrapper
+    /// lets the cache hand out cheap (refcount-bump) handles on the
+    /// request hot path instead of cloning the full JSONB
+    /// `config_overrides` on every auth check.
     #[instrument(skip(self))]
-    pub async fn load_all(&self) -> Result<HashMap<TenantId, TenantRow>> {
+    pub async fn load_all(&self) -> Result<HashMap<TenantId, Arc<TenantRow>>> {
         let rows = sqlx::query(
             r#"
             SELECT id, name, plan_tier, config_overrides
@@ -132,12 +131,12 @@ impl TenantRepository {
                 .map_err(|e| Error::Database(format!("tenants.config_overrides read: {e}")))?;
             out.insert(
                 id.clone(),
-                TenantRow {
+                Arc::new(TenantRow {
                     id,
                     name,
                     plan_tier,
                     config_overrides,
-                },
+                }),
             );
         }
         Ok(out)
@@ -171,9 +170,13 @@ fn parse_plan_tier(s: &str) -> Result<PlanTier> {
 /// Thread-safe: the internal map lives behind an `Arc<HashMap>` with
 /// no interior mutability — all callers share the same read-only
 /// snapshot. Cheap to `clone()` (just an Arc bump).
+///
+/// Rows are stored as `Arc<TenantRow>` so [`TenantsCache::get`] can
+/// hand out refcount-bump handles without cloning the row's JSONB
+/// `config_overrides` on every auth check.
 #[derive(Clone)]
 pub struct TenantsCache {
-    tenants: Arc<HashMap<TenantId, TenantRow>>,
+    tenants: Arc<HashMap<TenantId, Arc<TenantRow>>>,
 }
 
 impl TenantsCache {
@@ -189,19 +192,19 @@ impl TenantsCache {
     }
 
     /// Construct from a pre-built map. Primarily for tests.
-    pub fn from_map(map: HashMap<TenantId, TenantRow>) -> Self {
+    pub fn from_map(map: HashMap<TenantId, Arc<TenantRow>>) -> Self {
         Self {
             tenants: Arc::new(map),
         }
     }
 
-    /// Look up a tenant by id. Cheap (`HashMap::get`).
+    /// Look up a tenant by id. Cheap (`HashMap::get` + `Arc::clone`).
     ///
-    /// Returns a clone to avoid handing out long-lived references
-    /// into the cache — the auth middleware needs to build a
-    /// [`kenjaku_core::types::tenant::TenantContext`] that outlives
-    /// the lookup borrow.
-    pub fn get(&self, id: &TenantId) -> Option<TenantRow> {
+    /// Returns `Option<Arc<TenantRow>>` instead of `Option<TenantRow>`
+    /// — the Arc clone is a single atomic refcount bump, while a
+    /// plain `TenantRow` clone would copy the full JSONB
+    /// `config_overrides` on every authenticated request.
+    pub fn get(&self, id: &TenantId) -> Option<Arc<TenantRow>> {
         self.tenants.get(id).cloned()
     }
 
@@ -252,7 +255,9 @@ mod tests {
             ("beta-co", PlanTier::Free),
         ] {
             let r = row(id, plan);
-            m.insert(r.id.clone(), r);
+            // Arc wrap matches production shape: cache rows are
+            // `Arc<TenantRow>` so reads don't clone JSONB.
+            m.insert(r.id.clone(), Arc::new(r));
         }
         TenantsCache::from_map(m)
     }
@@ -275,9 +280,30 @@ mod tests {
     fn get_hit_returns_row_with_expected_plan_tier() {
         let c = populated_cache();
         let acme = TenantId::new("acme").unwrap();
-        let r = c.get(&acme).expect("acme must be present");
+        let r: Arc<TenantRow> = c.get(&acme).expect("acme must be present");
+        // Arc derefs transparently to TenantRow's fields.
         assert_eq!(r.id.as_str(), "acme");
         assert_eq!(r.plan_tier, PlanTier::Pro);
+    }
+
+    #[test]
+    fn get_returns_arc_not_full_clone() {
+        // Regression guard for PR #17 #3: `get` must hand out an
+        // `Arc<TenantRow>` so the request hot path doesn't clone the
+        // JSONB `config_overrides` on every authenticated request.
+        // Two independent `get` calls for the same key must share
+        // the same heap allocation — `Arc::ptr_eq` is true and the
+        // strong count grows by the number of live handles.
+        let c = populated_cache();
+        let acme = TenantId::new("acme").unwrap();
+        let a = c.get(&acme).unwrap();
+        let b = c.get(&acme).unwrap();
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "two gets on the same key must return the same Arc allocation"
+        );
+        // Cache-internal strong count (1) + `a` + `b` = 3.
+        assert_eq!(Arc::strong_count(&a), 3);
     }
 
     #[test]

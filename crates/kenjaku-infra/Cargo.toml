@@ -64,8 +64,13 @@ tokio-test = { workspace = true }
 wiremock = { workspace = true }
 mockall = { workspace = true }
 tempfile = "3"
-# Test-only: forging well-formed + malformed tokens against a fixed
-# keypair. `jsonwebtoken`'s `encode` path is pulled in transitively via
-# the main dep, but base64 is needed for hand-crafting algorithm-
-# confusion + alg:none adversarial tokens that `encode` refuses to mint.
+# Test-only: the unit tests generate a fresh RSA-2048 keypair at
+# runtime via seeded RNG (~200ms, amortized via `OnceLock`).
+# Migrated from a hardcoded PEM pair post-PR #17 (Copilot #5 CWE-798
+# signal). `rand` is already in prod-deps for the LinfaClusterer;
+# `rsa 0.9` is already transitively in `Cargo.lock`, so zero net-new
+# supply-chain vet. base64 is still needed for hand-crafting
+# algorithm-confusion + alg:none adversarial tokens that
+# `jsonwebtoken::encode` refuses to mint.
+rsa = { version = "0.9", features = ["pem"] }
 base64 = "0.22"

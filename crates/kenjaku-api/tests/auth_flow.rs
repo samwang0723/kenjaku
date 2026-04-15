@@ -116,12 +116,12 @@ fn tenants_cache(rows: &[(&str, PlanTier)]) -> Arc<TenantsCache> {
         let tid = TenantId::new(*id).unwrap();
         m.insert(
             tid.clone(),
-            TenantRow {
+            Arc::new(TenantRow {
                 id: tid,
                 name: format!("{id} Corp"),
                 plan_tier: *plan,
                 config_overrides: serde_json::json!({}),
-            },
+            }),
         );
     }
     Arc::new(TenantsCache::from_map(m))

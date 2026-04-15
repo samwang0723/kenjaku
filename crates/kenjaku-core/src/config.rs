@@ -769,25 +769,36 @@ pub enum RateLimitKeyStrategy {
     TenantPrincipalIp,
 }
 
-/// Rate-limit configuration.
+/// Future-only rate-limit scaffolding for upcoming key-strategy and
+/// per-plan settings. This block is not yet enforced by the router;
+/// the active governor configuration still comes from
+/// `server.rate_limit_per_second` / `server.rate_limit_burst`.
+/// Keeping this explicit avoids two apparent sources of truth until
+/// enforcement is consolidated onto a single config surface.
 ///
-/// Per-plan defaults apply when the tenant row has no
-/// `config_overrides.rate_limit` JSONB override. **3c.2 reads the
-/// per-plan defaults; reading per-tenant overrides is stubbed — lands
-/// in a follow-up slice.** The key-strategy switch is the Must.
+/// In 3c.2, only [`RateLimitConfig::key_strategy`] has an active
+/// read path — it's consumed by
+/// [`kenjaku_api::middleware::rate_limit::TenantPrincipalIpExtractor`]
+/// to decide the governor's key shape. The `plan_*_per_second`
+/// fields are reserved for a follow-up slice that consolidates
+/// per-plan + per-tenant bucket sizing onto this struct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitConfig {
     #[serde(default)]
     pub key_strategy: RateLimitKeyStrategy,
-    /// Requests per second bucket for `Free` tier.
+    /// Reserved for a follow-up slice. Not currently consumed by the
+    /// governor — active bucket sizing comes from
+    /// `server.rate_limit_per_second` / `server.rate_limit_burst`.
     #[serde(default = "default_plan_free_per_second")]
     pub plan_free_per_second: u64,
-    /// Requests per second bucket for `Pro` tier.
+    /// Reserved for a follow-up slice. See
+    /// [`RateLimitConfig::plan_free_per_second`].
     #[serde(default = "default_plan_pro_per_second")]
     pub plan_pro_per_second: u64,
-    /// Requests per second bucket for `Enterprise` tier. Very high by
-    /// design — intended as "effectively unlimited" for the `public`
-    /// internal tenant and enterprise customers.
+    /// Reserved for a follow-up slice. Intended as "effectively
+    /// unlimited" for the `public` internal tenant and enterprise
+    /// customers once the per-plan wiring lands. See
+    /// [`RateLimitConfig::plan_free_per_second`].
     #[serde(default = "default_plan_enterprise_per_second")]
     pub plan_enterprise_per_second: u64,
 }
