@@ -2,6 +2,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info, instrument};
 
 use kenjaku_core::types::conversation::CreateConversation;
+use kenjaku_core::types::tenant::TenantContext;
 use kenjaku_infra::postgres::ConversationRepository;
 
 /// Service for async conversation storage.
@@ -28,8 +29,23 @@ impl ConversationService {
 
     /// Queue a conversation record for async persistence.
     /// Returns immediately; never blocks the search response.
-    #[instrument(skip(self, record), fields(request_id = %record.request_id))]
-    pub async fn record(&self, record: CreateConversation) {
+    ///
+    /// Phase 3b: accepts `tctx` to emit tenant-scoped tracing spans.
+    /// The record is authoritative for `tenant_id` — callers set
+    /// `record.tenant_id = tctx.tenant_id.as_str().to_string()` before
+    /// calling (see `SinglePassPipeline`). A `debug_assert!` guards
+    /// against divergence.
+    #[instrument(skip(self, record, tctx), fields(
+        request_id = %record.request_id,
+        tenant_id = %tctx.tenant_id.as_str(),
+        plan_tier = ?tctx.plan_tier,
+    ))]
+    pub async fn record(&self, tctx: &TenantContext, record: CreateConversation) {
+        debug_assert_eq!(
+            record.tenant_id,
+            tctx.tenant_id.as_str(),
+            "CreateConversation.tenant_id must match TenantContext.tenant_id"
+        );
         if let Err(e) = self.tx.try_send(record) {
             error!(error = %e, "Failed to queue conversation record (channel full or closed)");
         }
@@ -113,6 +129,7 @@ mod tests {
         // We can't test with a real repo, but we can verify the channel setup.
         // Using a mock would require the full PgPool — skip for unit tests.
         let record = CreateConversation {
+            tenant_id: "public".to_string(),
             session_id: "sess".to_string(),
             request_id: "req".to_string(),
             query: "test".to_string(),

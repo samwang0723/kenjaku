@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use tracing::instrument;
 
 use kenjaku_core::error::Result;
+use kenjaku_core::types::tenant::TenantContext;
 use kenjaku_infra::postgres::TrendingRepository;
 use kenjaku_infra::qdrant::QdrantClient;
 
@@ -28,14 +29,35 @@ impl AutocompleteService {
     }
 
     /// Get autocomplete suggestions for a partial query.
-    #[instrument(skip(self))]
-    pub async fn suggest(&self, query: &str, locale: &str, limit: usize) -> Result<Vec<String>> {
+    ///
+    /// Phase 3b: takes `tctx` so the popular-queries read is
+    /// tenant-scoped. Not currently called from any handler (autocomplete
+    /// + top-searches go through `SuggestionService`), but the signature
+    /// is kept in lock-step with the repo so slice 3c can drop it into
+    /// a per-tenant extractor without reshaping this call.
+    #[instrument(skip(self, tctx), fields(
+        tenant_id = %tctx.tenant_id.as_str(),
+        plan_tier = ?tctx.plan_tier,
+    ))]
+    pub async fn suggest(
+        &self,
+        tctx: &TenantContext,
+        query: &str,
+        locale: &str,
+        limit: usize,
+    ) -> Result<Vec<String>> {
         let mut suggestions = HashSet::new();
 
         // Source 1: Popular past searches matching prefix (with quality floor)
         let popular = self
             .trending_repo
-            .search_popular(locale, query, limit, self.min_count)
+            .search_popular(
+                tctx.tenant_id.as_str(),
+                locale,
+                query,
+                limit,
+                self.min_count,
+            )
             .await?;
 
         for pq in popular {

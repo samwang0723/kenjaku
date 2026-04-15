@@ -10,6 +10,7 @@ use crate::dto::response::{ApiResponse, BlendedItemDto, TopSearchesResponse};
 use crate::extractors::ResolvedLocale;
 
 use kenjaku_core::types::suggestion::SuggestionSource;
+use kenjaku_core::types::tenant::TenantContext;
 
 /// Maximum result limit for top searches.
 const MAX_LIMIT: usize = 100;
@@ -61,9 +62,14 @@ pub async fn top_searches(
         "top_searches resolved locale"
     );
 
+    // 3c: replace with TenantContext extractor driven by the JWT
+    // middleware. Until then every request resolves to the `public`
+    // tenant.
+    let tctx = TenantContext::public();
+
     match state
         .suggestion_service
-        .get_top(resolved.locale, limit)
+        .get_top(&tctx, resolved.locale, limit)
         .await
     {
         Ok(blended) => {

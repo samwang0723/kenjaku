@@ -161,16 +161,18 @@ mod tests {
     }
 
     fn make_request(query: &str) -> ToolRequest {
-        ToolRequest {
-            query_raw: query.into(),
-            query_normalized: query.into(),
-            locale: Locale::En,
-            intent: Intent::Factual,
-            collection_name: "documents".into(),
-            top_k: 5,
-            request_id: "req-123".into(),
-            session_id: "sess-456".into(),
-        }
+        use kenjaku_core::types::tenant::TenantContext;
+        ToolRequest::new(
+            query.into(),
+            query.into(),
+            Locale::En,
+            Intent::Factual,
+            "documents".into(),
+            5,
+            "req-123".into(),
+            "sess-456".into(),
+            &TenantContext::public(),
+        )
     }
 
     fn default_trigger_patterns() -> Vec<String> {

@@ -4,11 +4,14 @@ pub mod fanout;
 
 use std::sync::Arc;
 
+use tracing::instrument;
+
 use kenjaku_core::error::Result;
 use kenjaku_core::traits::pipeline::SearchPipeline;
 use kenjaku_core::types::search::{
     LlmSource, SearchRequest, SearchResponse, SearchStreamOutput, StreamContext, StreamDoneMetadata,
 };
+use kenjaku_core::types::tenant::TenantContext;
 
 use crate::pipelines::SinglePassPipeline;
 
@@ -17,13 +20,13 @@ use crate::pipelines::SinglePassPipeline;
 ///
 /// The orchestrator keeps a typed `Arc<SinglePassPipeline>` alongside the
 /// trait object for the one method not yet on the trait
-/// (`complete_stream`). Phase 3 promotes `complete_stream` onto the trait
-/// once `StreamContext` carries `TenantContext`; at that point the
-/// `single_pass` field is deleted and only `pipeline` remains.
+/// (`complete_stream`). Phase 3b threads `&TenantContext` through every
+/// method; Phase 3c/3d decides whether to promote `complete_stream` onto
+/// the trait (`StreamContext` already carries `tenant`).
 pub(crate) struct SearchOrchestrator {
     pipeline: Arc<dyn SearchPipeline>,
     /// Concrete handle kept so we can call `complete_stream` — not on the
-    /// trait in Phase 1.
+    /// trait in Phase 3b.
     single_pass: Arc<SinglePassPipeline>,
 }
 
@@ -31,15 +34,15 @@ impl SearchOrchestrator {
     /// Build an orchestrator around a single concrete pipeline.
     ///
     /// Takes `Arc<SinglePassPipeline>` rather than
-    /// `Arc<dyn SearchPipeline>` in Phase 1 because
+    /// `Arc<dyn SearchPipeline>` in Phase 3b because
     /// [`SearchOrchestrator::complete_stream`] still calls the inherent
     /// method on the concrete pipeline (it is not yet part of the
     /// [`SearchPipeline`] trait). The struct internally upcasts to a
     /// trait object for `search` / `search_stream` delegation, so the
     /// hot path already runs through the trait.
     ///
-    /// Phase 3 (multi-tenancy) moves `complete_stream` onto the trait
-    /// and this signature collapses to `Arc<dyn SearchPipeline>`.
+    /// Phase 3c/3d may promote `complete_stream` onto the trait and
+    /// collapse this signature to `Arc<dyn SearchPipeline>`.
     pub(crate) fn new(pipeline: Arc<SinglePassPipeline>) -> Self {
         let trait_obj: Arc<dyn SearchPipeline> = pipeline.clone();
         Self {
@@ -48,22 +51,39 @@ impl SearchOrchestrator {
         }
     }
 
+    #[instrument(skip(self, req, tctx, device_session_id), fields(
+        request_id = %req.request_id,
+        tenant_id = %tctx.tenant_id.as_str(),
+        plan_tier = ?tctx.plan_tier,
+    ))]
     pub(crate) async fn search(
         &self,
         req: &SearchRequest,
+        tctx: &TenantContext,
         device_session_id: Option<&str>,
     ) -> Result<SearchResponse> {
-        self.pipeline.search(req, device_session_id).await
+        self.pipeline.search(req, tctx, device_session_id).await
     }
 
+    #[instrument(skip(self, req, tctx, device_session_id), fields(
+        request_id = %req.request_id,
+        tenant_id = %tctx.tenant_id.as_str(),
+        plan_tier = ?tctx.plan_tier,
+    ))]
     pub(crate) async fn search_stream(
         &self,
         req: &SearchRequest,
+        tctx: &TenantContext,
         device_session_id: Option<&str>,
     ) -> Result<SearchStreamOutput> {
-        self.pipeline.search_stream(req, device_session_id).await
+        self.pipeline
+            .search_stream(req, tctx, device_session_id)
+            .await
     }
 
+    /// Finalize a streamed search. The tenant context is read from
+    /// `ctx.tenant` (populated by `search_stream`) — no separate tctx
+    /// argument is required.
     pub(crate) async fn complete_stream(
         &self,
         ctx: StreamContext,
