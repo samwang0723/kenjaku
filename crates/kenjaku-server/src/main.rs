@@ -343,36 +343,22 @@ async fn main() -> anyhow::Result<()> {
 /// Newtype wrapping the service-layer `LocaleMemory` so it can be exposed
 /// to the api crate's `SessionLocaleLookup` trait without leaking the
 /// concrete type across the layer boundary.
+///
+/// Phase 3d.1 collapsed this to a 1-line pass-through: the widened
+/// `SessionLocaleLookup::lookup(&TenantContext, &str)` contract removes
+/// the previous hardcoded `TenantContext::public()` fallback, which was
+/// the last remaining cross-tenant locale leak vector at
+/// `tenancy.enabled=true`.
 struct LocaleMemoryAdapter(Arc<LocaleMemory>);
 
 #[async_trait::async_trait]
 impl kenjaku_api::extractors::SessionLocaleLookup for LocaleMemoryAdapter {
-    async fn lookup(&self, session_id: &str) -> Option<kenjaku_core::types::locale::Locale> {
-        // FIXME(3d): cross-tenant locale leak when `tenancy.enabled`
-        // flips on. The `ResolvedLocale` extractor runs as a
-        // FromRequestParts extractor per-handler — BEFORE the auth
-        // middleware runs — so at this lookup site we only have a
-        // device session id, not a `TenantContext`. As a result every
-        // session-locale read currently lands under the `public`
-        // tenant's namespace.
-        //
-        // Today (3c.2) `tenancy.enabled = false`, so writes also land
-        // under `public` and there's no leak path — the locale memory
-        // is correctly siloed in a single-tenant world.
-        //
-        // 3d MUST address this in the same change that flips the flag:
-        //   1. extend `SessionLocaleLookup::lookup` to take
-        //      `&TenantContext`, OR
-        //   2. re-layer the router so `ResolvedLocale` runs after the
-        //      auth middleware (so a tctx is available to extract
-        //      from request extensions), OR
-        //   3. accept the locale-as-public design + document.
-        //
-        // Tracked as Phase 3b architect flag #2; see the 3c.2
-        // `architect-3c2.md` for the rationale on why this lands in
-        // 3d alongside the enable flip rather than in 3c.2.
-        let tctx = kenjaku_core::types::tenant::TenantContext::public();
-        self.0.lookup(&tctx, session_id).await
+    async fn lookup(
+        &self,
+        tctx: &kenjaku_core::types::tenant::TenantContext,
+        session_id: &str,
+    ) -> Option<kenjaku_core::types::locale::Locale> {
+        self.0.lookup(tctx, session_id).await
     }
 }
 
