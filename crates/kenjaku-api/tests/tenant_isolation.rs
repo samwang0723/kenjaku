@@ -423,7 +423,7 @@ struct MissLookup;
 
 #[async_trait]
 impl SessionLocaleLookup for MissLookup {
-    async fn lookup(&self, _session_id: &str) -> Option<Locale> {
+    async fn lookup(&self, _tctx: &TenantContext, _session_id: &str) -> Option<Locale> {
         None
     }
 }
@@ -1083,19 +1083,16 @@ fn _auth_mw_signature_anchor() -> AuthMwFn {
 // review should switch this anchor to take `&TenantContext` — a future
 // revert of the widening would then fail to compile here.
 //
-// TODO(3d.1 peer-review / integrate merge): once dev-1's trait widens,
-// update this anchor to:
-//     async fn lookup(
-//         &self,
-//         _tctx: &TenantContext,
-//         _sid: &str,
-//     ) -> Option<Locale> { None }
+// Upgraded during 3d.1 integrate merge (dev-1's widened trait landed):
+// `SessionLocaleLookup::lookup` now takes `&TenantContext` before the
+// session id. This anchor tracks the real trait signature so future
+// drift is caught at compile time.
 #[allow(dead_code)]
 fn _lookup_signature_anchor() -> impl SessionLocaleLookup {
     struct A;
     #[async_trait]
     impl SessionLocaleLookup for A {
-        async fn lookup(&self, _session_id: &str) -> Option<Locale> {
+        async fn lookup(&self, _tctx: &TenantContext, _session_id: &str) -> Option<Locale> {
             None
         }
     }
