@@ -668,8 +668,9 @@ pub struct JwtConfig {
     #[serde(default)]
     pub audience: String,
     /// Filesystem path to a PEM-encoded public key (RSA or EC).
-    /// The validator reads this at startup, never from env vars, so the
-    /// key material cannot accidentally land in process listings.
+    /// The startup/DI layer should read this path and pass the PEM bytes
+    /// into the validator. Prefer supplying a path rather than raw key
+    /// bytes via environment-backed configuration sources.
     #[serde(default)]
     pub public_key_path: String,
     /// Allowed signature algorithm. Strict single-algorithm allowlist —

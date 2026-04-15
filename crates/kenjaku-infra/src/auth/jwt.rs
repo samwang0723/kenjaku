@@ -29,9 +29,13 @@
 //!    verification — bypassing this invariant is exactly how most
 //!    classic JWT libs got their CVEs.
 //!
-//! 4. **Public key from filesystem path only.** Never from env, never
-//!    embedded in the binary. Keeps key material out of process
-//!    listings and secrets-in-code leaks.
+//! 4. **Public key sourcing is a bootstrap/DI policy, not enforced by
+//!    this module.** The application should read the PEM bytes from a
+//!    configured filesystem path once at startup and pass those bytes
+//!    into [`JwtValidator`]. This module accepts caller-supplied PEM
+//!    bytes and does not itself enforce "from filesystem only" or
+//!    "never from env". Keeping file-based loading in the composition
+//!    layer helps avoid secrets-in-code leaks and accidental exposure.
 //!
 //! 5. **`iss`, `aud`, `exp`, `iat` required.** Tokens missing any of
 //!    these are rejected. `nbf` honored when present.
@@ -48,7 +52,7 @@ use tracing::debug;
 
 use kenjaku_core::config::{JwtAlgorithm, JwtConfig};
 use kenjaku_core::error::{AuthErrorCode, Error, Result};
-use kenjaku_core::types::tenant::PlanTier;
+use kenjaku_core::types::tenant::{PlanTier, PrincipalId, TenantId};
 
 /// Validated tenant claims extracted from a JWT.
 ///
@@ -57,18 +61,31 @@ use kenjaku_core::types::tenant::PlanTier;
 /// hint**; the auth middleware (slice 3c.2) must source the effective
 /// plan tier from the tenants DB row, not from this claim. See the
 /// module-level security invariants.
+///
+/// `tenant_id` and `principal_id` are the typed newtypes from
+/// `kenjaku_core::types::tenant`. Their serde `try_from = "String"`
+/// impls run the Phase 3a charset + length validation during JWT
+/// deserialization — so a token carrying, e.g., `"tenant_id":
+/// "../etc/passwd"` is rejected by the decoder with the same generic
+/// [`AuthErrorCode::Unauthorized`] as any other malformed token. No
+/// caller is trusted to remember to re-validate.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TenantClaims {
-    /// Tenant identifier. Validated string only — the middleware feeds
-    /// this into [`kenjaku_core::types::tenant::TenantId::new`] which
-    /// enforces charset + length.
-    pub tenant_id: String,
+    /// Tenant identifier. Validated by [`TenantId`]'s serde impl
+    /// during JWT decode — invalid charset or length rejects as a
+    /// generic `Unauthorized` before the claim ever reaches a
+    /// handler.
+    pub tenant_id: TenantId,
     /// Optional principal identifier (user / service account).
+    /// Validated by [`PrincipalId`]'s serde impl — same rules as
+    /// `tenant_id`.
     #[serde(default)]
-    pub principal_id: Option<String>,
-    /// Plan-tier hint — DO NOT use for authorization decisions. See
-    /// module docs.
-    pub plan_tier: PlanTier,
+    pub principal_id: Option<PrincipalId>,
+    /// Optional plan-tier hint — DO NOT use for authorization
+    /// decisions. See module docs. Tokens may omit this advisory
+    /// claim without failing validation.
+    #[serde(default)]
+    pub plan_tier: Option<PlanTier>,
     /// Expiration time (Unix seconds). Required.
     pub exp: u64,
     /// Issuer. Required; validated against [`JwtConfig::issuer`].
@@ -193,9 +210,12 @@ impl JwtValidator {
                 // "InvalidSignature", "ExpiredSignature", "InvalidIssuer",
                 // etc. — useful in dev/diagnostic logs, not safe in the
                 // user-facing error path.
+                // `tracing`'s `?` formatter calls `Debug` directly on
+                // `e.kind()`, avoiding a per-failure `String` allocation
+                // on what is an attacker-triggerable path.
                 debug!(
                     target: "kenjaku_infra::auth",
-                    kind = %e.kind().as_debug(),
+                    kind = ?e.kind(),
                     algorithm = self.algorithm.as_str(),
                     "JWT validation failed"
                 );
@@ -236,18 +256,6 @@ fn build_decoding_key(
             DecodingKey::from_rsa_pem(pem_bytes)
         }
         JwtAlgorithm::ES256 | JwtAlgorithm::ES384 => DecodingKey::from_ec_pem(pem_bytes),
-    }
-}
-
-// Helper only the tracing macro reaches for; keeps `e.kind()` behind
-// a Display wrapper because `ErrorKind` doesn't impl Display in
-// jsonwebtoken 10.
-trait ErrorKindAsDebug {
-    fn as_debug(&self) -> String;
-}
-impl ErrorKindAsDebug for jsonwebtoken::errors::ErrorKind {
-    fn as_debug(&self) -> String {
-        format!("{self:?}")
     }
 }
 
@@ -373,9 +381,12 @@ qwIDAQAB
         let v = make_validator();
         let token = mint_rs256(&default_claims());
         let claims = v.validate(&token).expect("valid token must pass");
-        assert_eq!(claims.tenant_id, "acme");
-        assert_eq!(claims.principal_id.as_deref(), Some("user-42"));
-        assert_eq!(claims.plan_tier, PlanTier::Pro);
+        assert_eq!(claims.tenant_id.as_str(), "acme");
+        assert_eq!(
+            claims.principal_id.as_ref().map(|p| p.as_str()),
+            Some("user-42")
+        );
+        assert_eq!(claims.plan_tier, Some(PlanTier::Pro));
         assert_eq!(claims.iss, TEST_ISSUER);
         assert_eq!(claims.aud, TEST_AUDIENCE);
     }
@@ -604,6 +615,105 @@ qwIDAQAB
             err2,
             Error::TenantAuth(AuthErrorCode::Unauthorized)
         ));
+    }
+
+    // ---------- Post-Copilot-review hardening (3c.1 fix turn) -------------
+
+    // Test 13 — newtype claim validation is enforced at JWT decode.
+    //
+    // Follow-up to PR #16 Copilot feedback: `TenantClaims.tenant_id`
+    // was hardened from `String` to the validated `TenantId` newtype.
+    // Its serde `try_from = "String"` impl runs the Phase 3a charset
+    // + length allowlist as part of decode, so a token carrying an
+    // invalid identifier is rejected as a generic `Unauthorized` —
+    // no handler can forget to re-validate, because the claim
+    // literally cannot be deserialized as a malformed string.
+    //
+    // We cover three slices of the validation surface:
+    // (a) invalid charset — must reject
+    // (b) empty string — must reject
+    // (c) boundary length (128 ok / 129 rejects)
+    #[test]
+    fn test_13_newtype_tenant_id_validation_at_decode_time() {
+        let v = make_validator();
+
+        // (a) invalid charset — path traversal seed char.
+        let mut c = default_claims();
+        c["tenant_id"] = serde_json::json!("../etc/passwd");
+        let token = mint_rs256(&c);
+        let err = v
+            .validate(&token)
+            .expect_err("invalid-charset tenant_id must reject at decode");
+        assert!(matches!(
+            err,
+            Error::TenantAuth(AuthErrorCode::Unauthorized)
+        ));
+
+        // (a') shell-meta char.
+        c["tenant_id"] = serde_json::json!("acme;rm -rf /");
+        let token = mint_rs256(&c);
+        let err = v
+            .validate(&token)
+            .expect_err("shell-meta tenant_id must reject");
+        assert!(matches!(
+            err,
+            Error::TenantAuth(AuthErrorCode::Unauthorized)
+        ));
+
+        // (b) empty string.
+        c["tenant_id"] = serde_json::json!("");
+        let token = mint_rs256(&c);
+        let err = v.validate(&token).expect_err("empty tenant_id must reject");
+        assert!(matches!(
+            err,
+            Error::TenantAuth(AuthErrorCode::Unauthorized)
+        ));
+
+        // (c) exactly MAX_ID_LEN (128) accepts.
+        let max_ok = "a".repeat(kenjaku_core::types::tenant::MAX_ID_LEN);
+        c["tenant_id"] = serde_json::json!(max_ok);
+        let token = mint_rs256(&c);
+        let claims = v
+            .validate(&token)
+            .expect("tenant_id at exactly MAX_ID_LEN must accept");
+        assert_eq!(claims.tenant_id.as_str(), max_ok);
+
+        // (c') MAX_ID_LEN + 1 rejects.
+        let too_long = "a".repeat(kenjaku_core::types::tenant::MAX_ID_LEN + 1);
+        c["tenant_id"] = serde_json::json!(too_long);
+        let token = mint_rs256(&c);
+        let err = v
+            .validate(&token)
+            .expect_err("over-MAX_ID_LEN tenant_id must reject");
+        assert!(matches!(
+            err,
+            Error::TenantAuth(AuthErrorCode::Unauthorized)
+        ));
+    }
+
+    // Test 14 — plan_tier is advisory; tokens may omit it and still
+    // validate.
+    //
+    // Follow-up to PR #16 Copilot feedback: `plan_tier` was hardened
+    // from a required claim into `#[serde(default)] Option<PlanTier>`.
+    // Issuers that don't populate it are fine; the middleware (3c.2)
+    // must source the effective plan-tier from the tenants DB row
+    // anyway, so the claim is strictly a diagnostic hint.
+    #[test]
+    fn test_14_token_without_plan_tier_accepts() {
+        let v = make_validator();
+        let mut c = default_claims();
+        c.as_object_mut().unwrap().remove("plan_tier");
+        let token = mint_rs256(&c);
+        let claims = v
+            .validate(&token)
+            .expect("token without plan_tier must validate");
+        assert!(
+            claims.plan_tier.is_none(),
+            "missing plan_tier claim must deserialize as None, not a default tier"
+        );
+        // Other fields unaffected.
+        assert_eq!(claims.tenant_id.as_str(), "acme");
     }
 
     // ---------- Additional defensive tests --------------------------------

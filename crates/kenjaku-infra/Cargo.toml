@@ -38,10 +38,18 @@ opentelemetry_sdk = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 
-# Auth / JWT (Phase 3c.1). Pinned to 10.3 — current latest stable, MSRV
-# 1.85 (<= our 1.88). Constant-time signature compare is provided by the
-# crate's `decode` entry point; we never roll our own crypto. Default
-# `use_pem` feature covers both RSA and EC public-key PEM loading.
+# Auth / JWT (Phase 3c.1). MSRV-compatible 10.x; exact version pinned
+# via Cargo.lock. The caret range ("10.3") deliberately allows semver-
+# compatible patch bumps so cargo-audit-driven CVE fixes land without
+# a Cargo.toml edit, while Cargo.lock keeps day-to-day builds
+# reproducibly on the same byte-for-byte compiled crate. Pinning to
+# `=10.3.0` here would trade automatic CVE-patch uptake for a form of
+# pinning Cargo.lock already provides.
+#
+# jsonwebtoken 10.x requires Rust 1.85 (<= our 1.88). Constant-time
+# signature compare is provided by the crate's `decode` entry point;
+# we never roll our own crypto. Default `use_pem` feature covers both
+# RSA and EC public-key PEM loading.
 #
 # `aws_lc_rs` backend: FIPS-capable, aligns with rustls's default and
 # the broader Rust-at-scale security ecosystem. Chosen over
