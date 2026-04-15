@@ -1,9 +1,12 @@
+use std::path::Path;
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
 use tokio::signal;
 use tracing::info;
 
-use kenjaku_core::config::load_config;
+use kenjaku_core::config::{TenancyConfig, load_config};
+use kenjaku_core::error::{Error, Result as KenjakuResult};
 use kenjaku_core::traits::brain::Brain;
 use kenjaku_core::traits::classifier::Classifier;
 use kenjaku_core::traits::collection::{CollectionResolver, PrefixCollectionResolver};
@@ -11,12 +14,13 @@ use kenjaku_core::traits::generator::Generator;
 use kenjaku_core::traits::tool::Tool;
 use kenjaku_core::traits::translator::Translator;
 use kenjaku_core::types::tool::ToolConfig;
+use kenjaku_infra::auth::JwtValidator;
 use kenjaku_infra::clustering::LinfaClusterer;
 use kenjaku_infra::embedding::create_embedding_provider;
 use kenjaku_infra::llm::GeminiProvider;
 use kenjaku_infra::postgres::{
     ConversationRepository, DefaultSuggestionsRepository, FeedbackRepository,
-    RefreshBatchesRepository, TrendingRepository, create_pool, run_migrations,
+    RefreshBatchesRepository, TenantsCache, TrendingRepository, create_pool, run_migrations,
 };
 use kenjaku_infra::qdrant::QdrantClient;
 use kenjaku_infra::redis::{LocaleMemoryRedis, RedisClient};
@@ -276,6 +280,29 @@ async fn main() -> anyhow::Result<()> {
     let locale_lookup: Arc<dyn kenjaku_api::extractors::SessionLocaleLookup> =
         Arc::new(LocaleMemoryAdapter(locale_memory.clone()));
 
+    // ------------------------------------------------------------------
+    // Phase 3c.2 wiring — TenantsCache + JwtValidator + tenancy config.
+    //
+    // TenantsCache: snapshot of the `tenants` table loaded once at
+    // startup. The `public` row seeded by migration
+    // `20260415000001_add_tenant_id.up.sql` is always present, so the
+    // cache is non-empty even on a fresh deploy.
+    //
+    // JwtValidator: built only when `tenancy.enabled = true`. The auth
+    // middleware short-circuits to `TenantContext::public()` when
+    // disabled and NEVER reads `state.jwt_validator` on that branch
+    // (see `disabled_mode_never_invokes_validator` test).
+    // ------------------------------------------------------------------
+    let tenants_cache = Arc::new(TenantsCache::load_at_startup(&pg_pool).await?);
+    info!(tenant_count = tenants_cache.len(), "TenantsCache loaded");
+
+    let jwt_validator = load_jwt_validator(&config.tenancy)?;
+    info!(
+        tenancy_enabled = config.tenancy.enabled,
+        validator_constructed = jwt_validator.is_some(),
+        "Tenancy auth state"
+    );
+
     // Build app state
     let state = Arc::new(AppState {
         search_service,
@@ -286,6 +313,10 @@ async fn main() -> anyhow::Result<()> {
         qdrant,
         redis,
         pg_pool,
+        tenants_cache,
+        jwt_validator,
+        tenancy_config: config.tenancy.clone(),
+        rate_limit_config: config.rate_limit.clone(),
     });
 
     // Build router
@@ -317,15 +348,115 @@ struct LocaleMemoryAdapter(Arc<LocaleMemory>);
 #[async_trait::async_trait]
 impl kenjaku_api::extractors::SessionLocaleLookup for LocaleMemoryAdapter {
     async fn lookup(&self, session_id: &str) -> Option<kenjaku_core::types::locale::Locale> {
-        // 3b: the `ResolvedLocale` extractor runs before any auth
-        // middleware (which lands in 3c), so at this point we only have
-        // a device session id — not a tenant. Scope lookups to the
-        // `public` tenant for now. Slice 3c extends
-        // `SessionLocaleLookup` to carry tctx so per-tenant session
-        // lookups become possible.
+        // FIXME(3d): cross-tenant locale leak when `tenancy.enabled`
+        // flips on. The `ResolvedLocale` extractor runs as a
+        // FromRequestParts extractor per-handler — BEFORE the auth
+        // middleware runs — so at this lookup site we only have a
+        // device session id, not a `TenantContext`. As a result every
+        // session-locale read currently lands under the `public`
+        // tenant's namespace.
+        //
+        // Today (3c.2) `tenancy.enabled = false`, so writes also land
+        // under `public` and there's no leak path — the locale memory
+        // is correctly siloed in a single-tenant world.
+        //
+        // 3d MUST address this in the same change that flips the flag:
+        //   1. extend `SessionLocaleLookup::lookup` to take
+        //      `&TenantContext`, OR
+        //   2. re-layer the router so `ResolvedLocale` runs after the
+        //      auth middleware (so a tctx is available to extract
+        //      from request extensions), OR
+        //   3. accept the locale-as-public design + document.
+        //
+        // Tracked as Phase 3b architect flag #2; see the 3c.2
+        // `architect-3c2.md` for the rationale on why this lands in
+        // 3d alongside the enable flip rather than in 3c.2.
         let tctx = kenjaku_core::types::tenant::TenantContext::public();
         self.0.lookup(&tctx, session_id).await
     }
+}
+
+/// Build the JWT validator from configuration.
+///
+/// - `tenancy.enabled = false` → returns `Ok(None)`. The auth
+///   middleware never reads the validator on the disabled branch.
+/// - `tenancy.enabled = true` → reads the public-key PEM from
+///   `tenancy.jwt.public_key_path` with hardening:
+///     1. `is_file()` check rejects `/dev/zero`, FIFOs, etc.
+///     2. 16 KiB size cap (an RSA-4096 PEM is ~1.7 KB; 16 KiB is
+///        ~10x the largest realistic key).
+///     3. Single `std::fs::read` call — bounded I/O.
+///
+///   then constructs the validator with the parsed PEM bytes.
+///
+/// Audit-trail INFO log on success: emits the public-key path and
+/// the SHA-256 fingerprint (first 8 hex chars) — never the bytes.
+///
+/// This is the **only filesystem touch** in the entire JWT path.
+/// Matches the 3c.1 architecture decision to keep
+/// `kenjaku_infra::auth::jwt` filesystem-free; the bootstrap is the
+/// one audit point for key-material loading.
+fn load_jwt_validator(cfg: &TenancyConfig) -> KenjakuResult<Option<Arc<JwtValidator>>> {
+    if !cfg.enabled {
+        return Ok(None);
+    }
+    // `validate_secrets` already ran (line 50) and asserts that
+    // `tenancy.enabled=true` implies a populated `jwt` block; the
+    // expect here is a startup invariant, not a user-facing path.
+    let jwt = cfg
+        .jwt
+        .as_ref()
+        .expect("validate_secrets must guarantee jwt block when enabled=true");
+
+    const MAX_PEM_BYTES: u64 = 16 * 1024;
+
+    let path = Path::new(&jwt.public_key_path);
+    let meta = std::fs::metadata(path).map_err(|e| {
+        Error::Config(format!(
+            "JWT public_key_path {} cannot be stat'd: {e}",
+            jwt.public_key_path
+        ))
+    })?;
+    if !meta.is_file() {
+        return Err(Error::Config(format!(
+            "JWT public_key_path {} is not a regular file",
+            jwt.public_key_path
+        )));
+    }
+    if meta.len() > MAX_PEM_BYTES {
+        return Err(Error::Config(format!(
+            "JWT public_key_path {} exceeds {MAX_PEM_BYTES} byte cap (got {} bytes)",
+            jwt.public_key_path,
+            meta.len()
+        )));
+    }
+
+    let pem = std::fs::read(path).map_err(|e| {
+        Error::Config(format!(
+            "JWT public_key_path {} read failed: {e}",
+            jwt.public_key_path
+        ))
+    })?;
+    let validator = JwtValidator::new(jwt, &pem)?;
+    let fingerprint = sha256_first_8(&pem);
+    info!(
+        path = %jwt.public_key_path,
+        algorithm = jwt.algorithm.as_str(),
+        fingerprint = %fingerprint,
+        "JWT validator constructed"
+    );
+    Ok(Some(Arc::new(validator)))
+}
+
+/// SHA-256 of `bytes`, first 4 bytes hex-encoded (8 chars). Used only
+/// for the JWT public-key audit log — operators can correlate
+/// "this fingerprint is what's deployed" without ever printing the
+/// key material.
+fn sha256_first_8(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let out = h.finalize();
+    hex::encode(&out[..4])
 }
 
 async fn shutdown_signal() {
@@ -352,4 +483,102 @@ async fn shutdown_signal() {
     }
 
     info!("Shutdown signal received");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    use kenjaku_core::config::{JwtAlgorithm, JwtConfig};
+
+    fn tenancy_disabled() -> TenancyConfig {
+        TenancyConfig {
+            enabled: false,
+            header_name: "X-Tenant-Id".into(),
+            default_tenant: "public".into(),
+            collection_name_template: "{base}_{tenant}".into(),
+            jwt: None,
+        }
+    }
+
+    fn tenancy_with_jwt(public_key_path: &str) -> TenancyConfig {
+        TenancyConfig {
+            enabled: true,
+            header_name: "X-Tenant-Id".into(),
+            default_tenant: "public".into(),
+            collection_name_template: "{base}_{tenant}".into(),
+            jwt: Some(JwtConfig {
+                issuer: "kenjaku-test".into(),
+                audience: "kenjaku-api".into(),
+                public_key_path: public_key_path.into(),
+                algorithm: JwtAlgorithm::RS256,
+                clock_skew_secs: 30,
+            }),
+        }
+    }
+
+    // Test RSA-2048 public key — same constant used in
+    // kenjaku-infra/src/auth/jwt.rs unit tests + kenjaku-api auth
+    // middleware tests.
+    const TEST_RSA_PUBLIC_PEM: &str = "-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwCUFrwPKbw2egiLr2NdI
+X4/B2HR8LGARprJJrPFQ6c5p+LsUyeMbhkxzFbx2cVxX+/G2hxZeu7SWNI7lzCsu
+/ZV/Mxth61xSQBWG+fhwktHyZf+EBAWCjF5X65JruFWEiGh/kq4emyR+8hjqn6XP
+WB2+uhCnb/op7xfXFgvedp6wmAvHOuSiJ3ZlP6pMKNcOopqk/j8TgyB99gKpiivj
+whmGK/jpygg8ob2z/TcW4FuJvzcBUgt4+ZDUe1/ezgdz6lOcejlF2phhnXeNBI5i
+6aMWlSxbOLlwOPSNqA2k97YFu0snm9lxCOPLjtqM9XT2QXAJpx9MxctgPDe1ANzr
+qwIDAQAB
+-----END PUBLIC KEY-----
+";
+
+    #[test]
+    fn load_jwt_validator_disabled_returns_none() {
+        let v = load_jwt_validator(&tenancy_disabled()).unwrap();
+        assert!(v.is_none(), "tenancy disabled => no validator built");
+    }
+
+    #[test]
+    fn load_jwt_validator_missing_file_fails() {
+        let cfg = tenancy_with_jwt("/nonexistent/path/to/jwt_pub.pem");
+        let err = load_jwt_validator(&cfg).expect_err("missing file must fail");
+        assert!(matches!(err, Error::Config(_)));
+    }
+
+    #[test]
+    fn load_jwt_validator_oversized_file_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oversized.pem");
+        // 32 KiB of garbage — larger than the 16 KiB cap.
+        let big = vec![b'A'; 32 * 1024];
+        std::fs::write(&path, &big).unwrap();
+        let cfg = tenancy_with_jwt(path.to_string_lossy().as_ref());
+        let err = load_jwt_validator(&cfg).expect_err("oversized must fail");
+        let msg = err.to_string();
+        assert!(matches!(err, Error::Config(_)));
+        assert!(
+            msg.contains("16384 byte cap"),
+            "error must reference the cap: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_jwt_validator_ok_path_returns_validator() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(TEST_RSA_PUBLIC_PEM.as_bytes()).unwrap();
+        let cfg = tenancy_with_jwt(f.path().to_string_lossy().as_ref());
+        let v = load_jwt_validator(&cfg).unwrap();
+        assert!(v.is_some(), "valid PEM must yield a validator");
+    }
+
+    #[test]
+    fn sha256_first_8_is_8_hex_chars_and_deterministic() {
+        let a = sha256_first_8(b"hello");
+        let b = sha256_first_8(b"hello");
+        let c = sha256_first_8(b"world");
+        assert_eq!(a.len(), 8);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    }
 }
