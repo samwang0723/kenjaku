@@ -343,12 +343,13 @@ struct IsolationState {
     cache: Arc<TenantsCache>,
     validator: Option<Arc<JwtValidator>>,
     stores: Arc<FakeStores>,
-    /// Fake locale-memory adapter. Phase 3d.1 dev-1 widens the trait to
-    /// take `&TenantContext`; at base commit the trait takes only
-    /// `session_id: &str`. The adapter below returns `None` regardless
-    /// to keep the `ResolvedLocale` extractor on its Accept-Language /
-    /// default path — the isolation semantics on the 5 paths are
-    /// asserted via `TenantCtx` reads in the fake handlers.
+    /// Fake locale-memory adapter. After Phase 3d.1 `SessionLocaleLookup`
+    /// takes `&TenantContext`; this impl returns `None` regardless so
+    /// the `ResolvedLocale` extractor falls through to Accept-Language /
+    /// default. Isolation semantics on the 5 paths are asserted via
+    /// `TenantCtx` reads in the fake handlers; real Redis key scoping
+    /// (`sl:{tenant_id}:{session_id}`) is covered by the service-layer
+    /// unit test in `session/locale_memory.rs`.
     #[allow(dead_code)]
     locale_lookup: Arc<dyn SessionLocaleLookup>,
 }
@@ -577,7 +578,7 @@ async fn fake_search(
     let history: Vec<String> = {
         let g = state.stores.conversations.lock().unwrap();
         g.iter()
-            .filter(|(t, s, _)| *t == tctx.tenant_id && s == &dto.session_id)
+            .filter(|(t, s, _)| t == &tctx.tenant_id && s == &dto.session_id)
             .map(|(_, _, body)| body.clone())
             .collect()
     };
