@@ -51,7 +51,7 @@ impl SearchOrchestrator {
         }
     }
 
-    #[instrument(skip(self, tctx), fields(
+    #[instrument(skip(self, req, tctx, device_session_id), fields(
         request_id = %req.request_id,
         tenant_id = %tctx.tenant_id.as_str(),
         plan_tier = ?tctx.plan_tier,
@@ -65,7 +65,7 @@ impl SearchOrchestrator {
         self.pipeline.search(req, tctx, device_session_id).await
     }
 
-    #[instrument(skip(self, tctx), fields(
+    #[instrument(skip(self, req, tctx, device_session_id), fields(
         request_id = %req.request_id,
         tenant_id = %tctx.tenant_id.as_str(),
         plan_tier = ?tctx.plan_tier,

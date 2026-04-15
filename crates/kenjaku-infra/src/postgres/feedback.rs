@@ -35,9 +35,13 @@ impl FeedbackRepository {
 
         let row = sqlx::query(
             r#"
+            -- ON CONFLICT target matches idx_feedback_tenant_session_request_unique
+            -- from migration 20260415000002. Without tenant_id in the conflict
+            -- target, two tenants sharing the same (session_id, request_id)
+            -- pair would cross-tenant-overwrite — caught by Copilot on PR #15.
             INSERT INTO feedback (id, tenant_id, session_id, request_id, action, reason_category_id, description)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (session_id, request_id) DO UPDATE SET
+            ON CONFLICT (tenant_id, session_id, request_id) DO UPDATE SET
                 action = EXCLUDED.action,
                 reason_category_id = EXCLUDED.reason_category_id,
                 description = EXCLUDED.description,
