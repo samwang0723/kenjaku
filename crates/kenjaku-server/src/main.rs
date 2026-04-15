@@ -165,20 +165,20 @@ async fn main() -> anyhow::Result<()> {
 
     let brain: Arc<dyn Brain> = Arc::new(CompositeBrain::new(classifier, translator, generator));
 
-    // Phase 3a: construct the CollectionResolver so DI wiring is
-    // validated at startup. Slice 3b threads this into DocRagTool +
-    // HybridRetriever so each tenant reads from its own Qdrant
-    // collection. In 3a the resolver is unused by the retrieval path —
-    // the bare `config.qdrant.collection_name` is still threaded
-    // through the existing Tool constructors a few lines below.
-    let _collection_resolver: Arc<dyn CollectionResolver> = Arc::new(
-        PrefixCollectionResolver::new(config.qdrant.collection_name.clone()),
-    );
+    // Phase 3b: the CollectionResolver is now wired into DocRagTool.
+    // For every invocation the resolver maps the request's tenant to a
+    // Qdrant collection name — `public` -> `{base}`, everything else ->
+    // `{base}_{tenant}`. Until slice 3c, the handler injects
+    // `TenantContext::public()` so the effective behavior is identical
+    // to pre-3b (the resolver returns the bare base name).
+    let collection_resolver: Arc<dyn CollectionResolver> = Arc::new(PrefixCollectionResolver::new(
+        config.qdrant.collection_name.clone(),
+    ));
 
     // Build the Tool list — DocRag (tier 1) then BraveWeb (tier 2).
     let doc_rag: Arc<dyn Tool> = Arc::new(DocRagTool::new(
         retriever,
-        config.qdrant.collection_name.clone(),
+        collection_resolver,
         ToolConfig::default(),
     ));
 
@@ -317,7 +317,14 @@ struct LocaleMemoryAdapter(Arc<LocaleMemory>);
 #[async_trait::async_trait]
 impl kenjaku_api::extractors::SessionLocaleLookup for LocaleMemoryAdapter {
     async fn lookup(&self, session_id: &str) -> Option<kenjaku_core::types::locale::Locale> {
-        self.0.lookup(session_id).await
+        // 3b: the `ResolvedLocale` extractor runs before any auth
+        // middleware (which lands in 3c), so at this point we only have
+        // a device session id — not a tenant. Scope lookups to the
+        // `public` tenant for now. Slice 3c extends
+        // `SessionLocaleLookup` to carry tctx so per-tenant session
+        // lookups become possible.
+        let tctx = kenjaku_core::types::tenant::TenantContext::public();
+        self.0.lookup(&tctx, session_id).await
     }
 }
 

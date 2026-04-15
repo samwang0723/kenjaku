@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use kenjaku_core::error::{Error, Result};
 use kenjaku_core::types::feedback::{CreateFeedbackRequest, Feedback, ReasonCategory};
+use kenjaku_core::types::tenant::TenantContext;
 use kenjaku_infra::postgres::FeedbackRepository;
 
 /// Service for managing user feedback.
@@ -17,8 +18,18 @@ impl FeedbackService {
     }
 
     /// Create feedback with validation.
-    #[instrument(skip(self))]
-    pub async fn create(&self, req: &CreateFeedbackRequest) -> Result<Feedback> {
+    ///
+    /// Phase 3b: threads `&TenantContext` through to the repo; the
+    /// INSERT explicitly binds `tenant_id`.
+    #[instrument(skip(self, tctx), fields(
+        tenant_id = %tctx.tenant_id.as_str(),
+        plan_tier = ?tctx.plan_tier,
+    ))]
+    pub async fn create(
+        &self,
+        tctx: &TenantContext,
+        req: &CreateFeedbackRequest,
+    ) -> Result<Feedback> {
         // Validate required fields
         if req.session_id.is_empty() {
             return Err(Error::Validation("session_id is required".to_string()));
@@ -27,7 +38,7 @@ impl FeedbackService {
             return Err(Error::Validation("request_id is required".to_string()));
         }
 
-        self.repo.create(req).await
+        self.repo.create(tctx.tenant_id.as_str(), req).await
     }
 
     /// Get feedback by ID.

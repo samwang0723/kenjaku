@@ -207,16 +207,18 @@ mod tests {
     // ---- helpers -----------------------------------------------------------
 
     fn make_request() -> ToolRequest {
-        ToolRequest {
-            query_raw: "test".into(),
-            query_normalized: "test".into(),
-            locale: Locale::En,
-            intent: Intent::Factual,
-            collection_name: "docs".into(),
-            top_k: 10,
-            request_id: "req-1".into(),
-            session_id: "sess-1".into(),
-        }
+        use kenjaku_core::types::tenant::TenantContext;
+        ToolRequest::new(
+            "test".into(),
+            "test".into(),
+            Locale::En,
+            Intent::Factual,
+            "docs".into(),
+            10,
+            "req-1".into(),
+            "sess-1".into(),
+            &TenantContext::public(),
+        )
     }
 
     static TOOL_CONFIG: ToolConfig = ToolConfig {

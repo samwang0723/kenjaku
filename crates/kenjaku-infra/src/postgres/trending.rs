@@ -25,8 +25,18 @@ impl TrendingRepository {
     /// keeps Postgres mirrored to Redis while active keys live, and
     /// preserves the last-flushed score as the historical snapshot
     /// once the Redis key TTL-expires.
+    ///
+    /// Phase 3b: the INSERT now **explicitly binds** `tenant_id` rather
+    /// than relying on the column's `DEFAULT 'public'`. The 3a stopgap
+    /// was acceptable while no code path yet carried tenancy context;
+    /// with `&TenantContext` threaded through the hot path, letting the
+    /// DEFAULT silently fill the column would mask programmer error
+    /// (e.g. a new repo method forgetting to bind it). Tenant-scoped
+    /// INSERTs MUST supply tenant_id from here on — enforced by grep
+    /// audit in QA.
     pub async fn upsert(
         &self,
+        tenant_id: &str,
         locale: &str,
         query: &str,
         count: i64,
@@ -35,23 +45,16 @@ impl TrendingRepository {
     ) -> Result<()> {
         let period_str = period.to_string();
 
-        // Phase 3a migration dropped the old UNIQUE(locale, query, period,
-        // period_date) constraint in favor of the tenant-scoped composite
-        // `uniq_popular_query_tenant_locale`. The INSERT still omits
-        // `tenant_id` — the column's DEFAULT 'public' fills it — but the
-        // ON CONFLICT target must name every column in the new unique index,
-        // otherwise Postgres raises "no unique or exclusion constraint
-        // matching the ON CONFLICT specification" and the flush worker
-        // error-loops every 5 min. Phase 3b will thread &TenantContext here.
         sqlx::query(
             r#"
-            INSERT INTO popular_queries (locale, query, search_count, period, period_date)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO popular_queries (tenant_id, locale, query, search_count, period, period_date)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (tenant_id, locale, query, period, period_date)
             DO UPDATE SET search_count = EXCLUDED.search_count,
                           updated_at = NOW()
             "#,
         )
+        .bind(tenant_id)
         .bind(locale)
         .bind(query)
         .bind(count)
@@ -68,8 +71,12 @@ impl TrendingRepository {
     ///
     /// `min_count` enforces the crowdsourcing quality floor — entries
     /// with fewer than this many searches never surface.
+    ///
+    /// Phase 3b: filters by `tenant_id` so cross-tenant reads are
+    /// impossible.
     pub async fn get_top(
         &self,
+        tenant_id: &str,
         locale: &str,
         period: &TrendingPeriod,
         limit: usize,
@@ -81,11 +88,12 @@ impl TrendingRepository {
             r#"
             SELECT id, locale, query, search_count, period, period_date
             FROM popular_queries
-            WHERE locale = $1 AND period = $2 AND search_count >= $3
+            WHERE tenant_id = $1 AND locale = $2 AND period = $3 AND search_count >= $4
             ORDER BY search_count DESC
-            LIMIT $4
+            LIMIT $5
             "#,
         )
+        .bind(tenant_id)
         .bind(locale)
         .bind(&period_str)
         .bind(min_count)
@@ -101,8 +109,12 @@ impl TrendingRepository {
     ///
     /// `min_count` enforces the crowdsourcing quality floor — entries
     /// with fewer than this many searches never surface.
+    ///
+    /// Phase 3b: filters by `tenant_id` so cross-tenant reads are
+    /// impossible.
     pub async fn search_popular(
         &self,
+        tenant_id: &str,
         locale: &str,
         prefix: &str,
         limit: usize,
@@ -114,11 +126,12 @@ impl TrendingRepository {
             r#"
             SELECT id, locale, query, search_count, period, period_date
             FROM popular_queries
-            WHERE locale = $1 AND query ILIKE $2 AND search_count >= $3
+            WHERE tenant_id = $1 AND locale = $2 AND query ILIKE $3 AND search_count >= $4
             ORDER BY search_count DESC
-            LIMIT $4
+            LIMIT $5
             "#,
         )
+        .bind(tenant_id)
         .bind(locale)
         .bind(&pattern)
         .bind(min_count)

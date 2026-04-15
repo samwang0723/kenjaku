@@ -12,6 +12,7 @@ use tracing::instrument;
 use kenjaku_core::error::Result;
 use kenjaku_core::types::locale::Locale;
 use kenjaku_core::types::suggestion::{BlendedSuggestion, SuggestionSource};
+use kenjaku_core::types::tenant::TenantContext;
 use kenjaku_core::types::trending::TrendingPeriod;
 use kenjaku_infra::postgres::{DefaultSuggestionsRepository, TrendingRepository};
 
@@ -71,11 +72,24 @@ impl SuggestionService {
     }
 
     /// Blended top suggestions for a locale. Read-only.
-    #[instrument(skip(self))]
-    pub async fn get_top(&self, locale: Locale, limit: usize) -> Result<Vec<BlendedSuggestion>> {
+    ///
+    /// Phase 3b: scoped to `tctx.tenant_id` via `trending_repo.get_top`.
+    /// Behavior is equivalent to pre-3b when every request resolves to
+    /// the `public` tenant.
+    #[instrument(skip(self, tctx), fields(
+        tenant_id = %tctx.tenant_id.as_str(),
+        plan_tier = ?tctx.plan_tier,
+    ))]
+    pub async fn get_top(
+        &self,
+        tctx: &TenantContext,
+        locale: Locale,
+        limit: usize,
+    ) -> Result<Vec<BlendedSuggestion>> {
         let crowd = self
             .trending_repo
             .get_top(
+                tctx.tenant_id.as_str(),
                 locale.as_str(),
                 &TrendingPeriod::Daily,
                 self.pool_cap,
@@ -93,9 +107,15 @@ impl SuggestionService {
 
     /// Blended autocomplete — same blend, prefix-filtered first.
     /// `prefix` is case-insensitive (lowered before search).
-    #[instrument(skip(self))]
+    ///
+    /// Phase 3b: scoped to `tctx.tenant_id`.
+    #[instrument(skip(self, tctx), fields(
+        tenant_id = %tctx.tenant_id.as_str(),
+        plan_tier = ?tctx.plan_tier,
+    ))]
     pub async fn autocomplete(
         &self,
+        tctx: &TenantContext,
         locale: Locale,
         prefix: &str,
         limit: usize,
@@ -104,6 +124,7 @@ impl SuggestionService {
         let crowd = self
             .trending_repo
             .search_popular(
+                tctx.tenant_id.as_str(),
                 locale.as_str(),
                 &prefix_lower,
                 self.pool_cap,

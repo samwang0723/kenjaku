@@ -15,6 +15,7 @@ use crate::dto::request::SearchRequestDto;
 use crate::dto::response::{ApiResponse, SearchResponseDto};
 
 use kenjaku_core::types::search::SearchRequest;
+use kenjaku_core::types::tenant::TenantContext;
 use kenjaku_service::search::SearchStreamOutput;
 
 /// Maximum query length in characters.
@@ -89,15 +90,20 @@ pub async fn search(
         top_k,
     };
 
+    // 3c: replace with TenantContext extractor driven by the JWT
+    // middleware. Until then every request resolves to the `public`
+    // tenant.
+    let tctx = TenantContext::public();
+
     if req.streaming {
-        return search_streaming(state, req, device_session_id)
+        return search_streaming(state, req, tctx, device_session_id)
             .await
             .into_response();
     }
 
     match state
         .search_service
-        .search(&req, device_session_id.as_deref())
+        .search(&req, &tctx, device_session_id.as_deref())
         .await
     {
         Ok(response) => {
@@ -125,6 +131,7 @@ pub async fn search(
 async fn search_streaming(
     state: Arc<AppState>,
     req: SearchRequest,
+    tctx: TenantContext,
     device_session_id: Option<String>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
     info!(request_id = %req.request_id, "SSE streaming handler started");
@@ -135,7 +142,7 @@ async fn search_streaming(
         // Open the stream — this runs intent classify + translate + retrieve.
         let out = match state
             .search_service
-            .search_stream(&req, device_session_id.as_deref())
+            .search_stream(&req, &tctx, device_session_id.as_deref())
             .await
         {
             Ok(out) => out,

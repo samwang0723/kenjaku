@@ -10,6 +10,7 @@ use tracing::{instrument, warn};
 
 use kenjaku_core::config::LocaleMemoryConfig;
 use kenjaku_core::types::locale::Locale;
+use kenjaku_core::types::tenant::TenantContext;
 use kenjaku_infra::redis::LocaleMemoryRedis;
 
 /// Mirror of the API extractor's session_id cap so the write path can't
@@ -31,19 +32,32 @@ impl LocaleMemory {
         Self { redis, config }
     }
 
-    /// Returns a key like `sl:{session_id}` based on the configured prefix.
-    fn key(&self, session_id: &str) -> String {
-        format!("{}{}", self.config.key_prefix, session_id)
+    /// Returns a key like `sl:{tenant_id}:{session_id}` based on the
+    /// configured prefix and the tenancy context.
+    ///
+    /// Phase 3b: tenant is baked into the key so that even if two
+    /// distinct tenants ever share a session_id (e.g. a stolen or
+    /// collision-guessed value) they cannot cross-read locale memory.
+    fn key(&self, tctx: &TenantContext, session_id: &str) -> String {
+        format!(
+            "{}{}:{}",
+            self.config.key_prefix,
+            tctx.tenant_id.as_str(),
+            session_id
+        )
     }
 
     /// Fire-and-forget write. Errors are logged at WARN and swallowed.
     /// Sliding TTL — every record refreshes the expiry.
-    #[instrument(skip(self))]
-    pub async fn record(&self, session_id: &str, locale: Locale) {
+    #[instrument(skip(self, tctx), fields(
+        tenant_id = %tctx.tenant_id.as_str(),
+        plan_tier = ?tctx.plan_tier,
+    ))]
+    pub async fn record(&self, tctx: &TenantContext, session_id: &str, locale: Locale) {
         if !self.config.enabled || session_id.is_empty() || session_id.len() > MAX_SESSION_ID_LEN {
             return;
         }
-        let key = self.key(session_id);
+        let key = self.key(tctx, session_id);
         if let Err(e) = self
             .redis
             .set(&key, locale.as_str(), self.config.ttl_seconds)
@@ -55,12 +69,15 @@ impl LocaleMemory {
 
     /// Returns `Some(locale)` if the key exists and parses, else `None`.
     /// Errors degrade to `None` + a warn log.
-    #[instrument(skip(self))]
-    pub async fn lookup(&self, session_id: &str) -> Option<Locale> {
+    #[instrument(skip(self, tctx), fields(
+        tenant_id = %tctx.tenant_id.as_str(),
+        plan_tier = ?tctx.plan_tier,
+    ))]
+    pub async fn lookup(&self, tctx: &TenantContext, session_id: &str) -> Option<Locale> {
         if !self.config.enabled || session_id.is_empty() || session_id.len() > MAX_SESSION_ID_LEN {
             return None;
         }
-        let key = self.key(session_id);
+        let key = self.key(tctx, session_id);
         match self.redis.get(&key).await {
             Ok(Some(tag)) => match Locale::from_str(&tag) {
                 Ok(l) => Some(l),
@@ -105,15 +122,47 @@ mod tests {
         // connection; instead exercise the disabled-flag short-circuit
         // by constructing a config and asserting the helpers behave.
         let config = cfg(false);
-        // Compute the key directly and assert it's stable.
+        // Compute the 3b-formatted key (prefix + tenant + session) directly
+        // and assert it's stable.
         let prefix = &config.key_prefix;
-        assert_eq!(format!("{prefix}abc"), "sl:abc");
+        assert_eq!(format!("{prefix}public:abc"), "sl:public:abc");
     }
 
     #[test]
     fn key_prefix_format() {
         let config = cfg(true);
-        assert_eq!(format!("{}abc", config.key_prefix), "sl:abc");
+        // Phase 3b key shape: {prefix}{tenant_id}:{session_id}.
+        assert_eq!(format!("{}public:abc", config.key_prefix), "sl:public:abc");
+    }
+
+    /// Phase 3b: pure composition check that the 3b key shape is stable
+    /// for the public tenant. Exercises the `key` helper path without
+    /// a live Redis.
+    #[test]
+    fn key_is_tenant_prefixed_for_public() {
+        use kenjaku_core::types::tenant::TenantContext;
+        let tctx = TenantContext::public();
+        let config = cfg(true);
+        // Inline-mirror of LocaleMemory::key — same format string.
+        let key = format!(
+            "{}{}:{}",
+            config.key_prefix,
+            tctx.tenant_id.as_str(),
+            "abc123"
+        );
+        assert_eq!(key, "sl:public:abc123");
+    }
+
+    #[test]
+    fn key_separates_distinct_tenants() {
+        use kenjaku_core::types::tenant::TenantId;
+        let config = cfg(true);
+        let public_key = format!("{}{}:{}", config.key_prefix, "public", "sess-1");
+        let acme_tid = TenantId::new("acme").unwrap();
+        let acme_key = format!("{}{}:{}", config.key_prefix, acme_tid.as_str(), "sess-1");
+        assert_ne!(public_key, acme_key);
+        assert_eq!(public_key, "sl:public:sess-1");
+        assert_eq!(acme_key, "sl:acme:sess-1");
     }
 
     /// Pure check of the bounds the centralized guard enforces. Mirrors

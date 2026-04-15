@@ -17,15 +17,18 @@ impl ConversationRepository {
     }
 
     /// Insert a single conversation record.
-    #[instrument(skip(self, req), fields(session_id = %req.session_id, request_id = %req.request_id))]
+    ///
+    /// Phase 3b: explicitly binds `tenant_id` (no DEFAULT reliance).
+    #[instrument(skip(self, req), fields(session_id = %req.session_id, request_id = %req.request_id, tenant_id = %req.tenant_id))]
     pub async fn create(&self, req: &CreateConversation) -> Result<Conversation> {
         let row = sqlx::query_as::<_, ConversationRow>(
             r#"
-            INSERT INTO conversations (session_id, request_id, query, response_text, locale, intent, meta)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO conversations (tenant_id, session_id, request_id, query, response_text, locale, intent, meta)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id, session_id, request_id, query, response_text, locale, intent, meta, created_at
             "#,
         )
+        .bind(&req.tenant_id)
         .bind(&req.session_id)
         .bind(&req.request_id)
         .bind(&req.query)
@@ -41,6 +44,10 @@ impl ConversationRepository {
     }
 
     /// Batch insert conversation records (used by the flush worker).
+    ///
+    /// Phase 3b: each record carries its own `tenant_id` — the batch MAY
+    /// span tenants in a multi-tenant deployment. Explicitly bound;
+    /// no DEFAULT reliance.
     #[instrument(skip(self, records), fields(count = records.len()))]
     pub async fn batch_create(&self, records: &[CreateConversation]) -> Result<u64> {
         if records.is_empty() {
@@ -57,11 +64,12 @@ impl ConversationRepository {
         for req in records {
             let result = sqlx::query(
                 r#"
-                INSERT INTO conversations (session_id, request_id, query, response_text, locale, intent, meta)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                INSERT INTO conversations (tenant_id, session_id, request_id, query, response_text, locale, intent, meta)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 ON CONFLICT (request_id) DO NOTHING
                 "#,
             )
+            .bind(&req.tenant_id)
             .bind(&req.session_id)
             .bind(&req.request_id)
             .bind(&req.query)

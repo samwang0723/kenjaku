@@ -31,8 +31,15 @@ pub struct ConversationTurn {
 }
 
 /// Request to create a conversation record (used by the flush pipeline).
+///
+/// Phase 3b: `tenant_id` is now explicit and mandatory. The flush worker's
+/// batch INSERT binds this column rather than relying on the Postgres
+/// `DEFAULT 'public'` that was set up in 3a as a stopgap. In 3b every
+/// caller resolves to `"public"`; slice 3c lets JWT-scoped requests
+/// populate a real tenant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateConversation {
+    pub tenant_id: String,
     pub session_id: String,
     pub request_id: String,
     pub query: String,
@@ -49,6 +56,7 @@ mod tests {
     #[test]
     fn test_create_conversation() {
         let conv = CreateConversation {
+            tenant_id: "public".to_string(),
             session_id: "sess-1".to_string(),
             request_id: "req-1".to_string(),
             query: "What is Rust?".to_string(),
@@ -57,6 +65,7 @@ mod tests {
             intent: Intent::Factual,
             meta: serde_json::json!({"model": "gemini-2.0-flash-lite"}),
         };
+        assert_eq!(conv.tenant_id, "public");
         assert_eq!(conv.locale, Locale::En);
         assert_eq!(conv.intent, Intent::Factual);
     }
