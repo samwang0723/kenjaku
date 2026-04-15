@@ -197,10 +197,71 @@ mod tests {
     #[test]
     fn sessions_are_isolated() {
         let store = SessionHistoryStore::new(cfg(5, 5));
-        store.append("s1", turn("q1", "a1"));
-        store.append("s2", turn("q2", "a2"));
-        assert_eq!(store.snapshot_for_llm("s1").len(), 1);
-        assert_eq!(store.snapshot_for_llm("s1")[0].user, "q1");
-        assert_eq!(store.snapshot_for_llm("s2")[0].user, "q2");
+        let tctx = kenjaku_core::types::tenant::TenantContext::public();
+        store.append(&tctx, "s1", turn("q1", "a1"));
+        store.append(&tctx, "s2", turn("q2", "a2"));
+        assert_eq!(store.snapshot_for_llm(&tctx, "s1").len(), 1);
+        assert_eq!(store.snapshot_for_llm(&tctx, "s1")[0].user, "q1");
+        assert_eq!(store.snapshot_for_llm(&tctx, "s2")[0].user, "q2");
+    }
+
+    /// H1 regression: two tenants sharing the same `session_id` string must
+    /// not see each other's conversation history. Before the fix, the
+    /// `DashMap` was keyed on `session_id` only — tenant A could read
+    /// tenant B's turns (or vice versa) by using the same id. The fix keys
+    /// on `(tenant_id, session_id)`.
+    #[test]
+    fn snapshot_for_llm_does_not_leak_across_tenants_sharing_session_id() {
+        use kenjaku_core::types::tenant::{TenantContext, TenantId};
+
+        let store = SessionHistoryStore::new(cfg(5, 5));
+
+        let mut tctx_a = TenantContext::public();
+        tctx_a.tenant_id = TenantId::new("tenant-a").unwrap();
+        let mut tctx_b = TenantContext::public();
+        tctx_b.tenant_id = TenantId::new("tenant-b").unwrap();
+
+        let shared_sid = "shared-session-id-xyz";
+
+        // Tenant A records a turn with a distinctive marker.
+        store.append(
+            &tctx_a,
+            shared_sid,
+            turn("tenant-a-secret-marker", "tenant-a-assistant-marker"),
+        );
+
+        // Tenant B reads their own history under the same session id.
+        let b_snapshot = store.snapshot_for_llm(&tctx_b, shared_sid);
+
+        assert!(
+            b_snapshot.is_empty(),
+            "CRITICAL: SessionHistoryStore leaked tenant A's turn to tenant B \
+             via shared session_id (got {} turns, expected 0)",
+            b_snapshot.len()
+        );
+
+        // Positive control: tenant A still reads its own turn.
+        let a_snapshot = store.snapshot_for_llm(&tctx_a, shared_sid);
+        assert_eq!(a_snapshot.len(), 1, "tenant A must see its own turn");
+        assert_eq!(a_snapshot[0].user, "tenant-a-secret-marker");
+
+        // Reverse direction: tenant B writes, tenant A must not see it.
+        store.append(
+            &tctx_b,
+            shared_sid,
+            turn("tenant-b-secret-marker", "tenant-b-assistant-marker"),
+        );
+        let a_snapshot_after = store.snapshot_for_llm(&tctx_a, shared_sid);
+        assert_eq!(
+            a_snapshot_after.len(),
+            1,
+            "tenant A snapshot must not grow after tenant B writes"
+        );
+        assert!(
+            !a_snapshot_after
+                .iter()
+                .any(|t| t.user.contains("tenant-b-secret-marker")),
+            "CRITICAL: tenant B's write leaked into tenant A's history"
+        );
     }
 }
