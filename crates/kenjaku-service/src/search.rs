@@ -31,9 +31,19 @@ impl SearchService {
     ///
     /// DI (in `kenjaku-server/src/main.rs`) assembles a
     /// [`SinglePassPipeline`] with all its collaborators, then hands it
-    /// here. This keeps pipeline variant selection explicit at the
-    /// composition root — a future `AgenticPipeline` or `CachedPipeline`
-    /// is chosen the same way.
+    /// here.
+    ///
+    /// **Phase 1 scope — concrete type, not a trait object.** This
+    /// signature intentionally takes `Arc<SinglePassPipeline>` (rather
+    /// than `Arc<dyn SearchPipeline>`) because the streaming finalizer
+    /// `SearchOrchestrator::complete_stream` still calls the inherent
+    /// method on the concrete pipeline. Phase 3 promotes
+    /// `complete_stream` onto the [`kenjaku_core::traits::pipeline::SearchPipeline`]
+    /// trait alongside the `TenantContext` rollout; at that point this
+    /// constructor loosens to `Arc<dyn SearchPipeline>` and alternative
+    /// variants (`AgenticPipeline`, `CachedPipeline`) become selectable
+    /// purely at the composition root. See the rustdoc on
+    /// `SearchPipeline` for the full roadmap.
     pub fn new(pipeline: Arc<SinglePassPipeline>) -> Self {
         Self {
             orchestrator: SearchOrchestrator::new(pipeline),

@@ -28,6 +28,18 @@ pub(crate) struct SearchOrchestrator {
 }
 
 impl SearchOrchestrator {
+    /// Build an orchestrator around a single concrete pipeline.
+    ///
+    /// Takes `Arc<SinglePassPipeline>` rather than
+    /// `Arc<dyn SearchPipeline>` in Phase 1 because
+    /// [`SearchOrchestrator::complete_stream`] still calls the inherent
+    /// method on the concrete pipeline (it is not yet part of the
+    /// [`SearchPipeline`] trait). The struct internally upcasts to a
+    /// trait object for `search` / `search_stream` delegation, so the
+    /// hot path already runs through the trait.
+    ///
+    /// Phase 3 (multi-tenancy) moves `complete_stream` onto the trait
+    /// and this signature collapses to `Arc<dyn SearchPipeline>`.
     pub(crate) fn new(pipeline: Arc<SinglePassPipeline>) -> Self {
         let trait_obj: Arc<dyn SearchPipeline> = pipeline.clone();
         Self {

@@ -9,11 +9,23 @@ use crate::types::search::{SearchRequest, SearchResponse, SearchStreamOutput};
 /// request: intent classification, translation, tool fan-out, context
 /// assembly, LLM generation, and component packaging.
 ///
-/// `SearchOrchestrator` (in `kenjaku-service`) holds an
-/// `Arc<dyn SearchPipeline>` and delegates to it. This lets the platform
-/// host multiple strategies (the current `SinglePassPipeline`, a future
-/// `AgenticPipeline`, a latency-optimized `CachedPipeline`, …) selected
-/// by DI at startup.
+/// # Today vs. intended end-state
+///
+/// **Today (Phase 1):** the service layer is wired through the concrete
+/// [`crate::types::search::SearchStreamOutput`]-producing pipeline
+/// because the `complete_stream` finalizer is still an inherent method
+/// on `SinglePassPipeline`, not part of this trait. Both
+/// `SearchService::new` and `SearchOrchestrator::new` therefore accept
+/// `Arc<SinglePassPipeline>` rather than `Arc<dyn SearchPipeline>`. The
+/// orchestrator internally upcasts to a trait object for `search` /
+/// `search_stream`, but true DI-based pipeline swapping is not yet
+/// available at the composition root.
+///
+/// **Intended end-state:** `SearchOrchestrator` (in `kenjaku-service`)
+/// will hold an `Arc<dyn SearchPipeline>` and delegate to it,
+/// allowing the platform to host multiple strategies (the current
+/// `SinglePassPipeline`, a future `AgenticPipeline`, a latency-optimized
+/// `CachedPipeline`, …) selected by DI at startup.
 ///
 /// # Forward-compatibility notes
 ///
@@ -22,7 +34,11 @@ use crate::types::search::{SearchRequest, SearchResponse, SearchStreamOutput};
 ///   internally instead of depending on the monolithic `Brain`.
 /// - **Phase 3 (multi-tenancy)**: this trait is expected to gain a
 ///   `tctx: &TenantContext` argument once `TenantContext` lands in
-///   `kenjaku-core`. That is an intentional, deferred breaking change.
+///   `kenjaku-core`. At the same time, `complete_stream` will move onto
+///   the trait (with a tenant-aware `StreamContext`), and the
+///   constructors noted above will loosen from concrete to
+///   `Arc<dyn SearchPipeline>`. That is an intentional, deferred
+///   breaking change.
 ///
 /// # Why `complete_stream` isn't on the trait (yet)
 ///
