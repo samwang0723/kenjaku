@@ -12,9 +12,15 @@
 //!   signature is unchanged; the `has_web_grounding: bool` and
 //!   hardcoded `"gemini"` model-name leaks are gone — both are now
 //!   read via `Brain::has_web_grounding()` / `Brain::model_name()`.
-//! - Phase 3 will thread `TenantContext` through `search`,
-//!   `search_stream`, and `complete_stream` — that is the breaking
-//!   change called out in the trait's rustdoc.
+//! - Phase 3b (LANDED): `SearchPipeline::search`/`search_stream` now
+//!   accept `&TenantContext` and the pipeline forwards it into every
+//!   downstream call (tools, trending, conversations, locale memory).
+//!   `StreamContext.tenant` persists the context for `complete_stream`.
+//!   In 3b every call site resolves to `TenantContext::public()`; slice
+//!   3c wires the JWT extractor at the handler boundary.
+//! - Phase 3c/3d will decide whether `complete_stream` is promoted onto
+//!   the `SearchPipeline` trait. Until then it remains an inherent method
+//!   on this concrete type.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -35,6 +41,7 @@ use kenjaku_core::types::search::{
     CancelGuard, LlmSource, SearchMetadata, SearchRequest, SearchResponse, SearchStreamOutput,
     StreamContext, StreamDoneMetadata, StreamStartMetadata,
 };
+use kenjaku_core::types::tenant::TenantContext;
 use kenjaku_core::types::tool::ToolRequest;
 
 use crate::brain::ConversationAssembler;
@@ -106,7 +113,15 @@ impl SinglePassPipeline {
     /// final `done` metadata and queues the conversation for async
     /// persistence.
     ///
-    /// Not part of the [`SearchPipeline`] trait in Phase 1 — see trait docs.
+    /// Not part of the [`SearchPipeline`] trait in Phase 3b — see trait
+    /// docs. The tenant identity is read from `ctx.tenant` so this method
+    /// keeps its existing handler-facing signature while still routing
+    /// per-tenant.
+    #[instrument(skip(self, ctx, accumulated_answer, grounding_sources), fields(
+        request_id = %ctx.request_id,
+        tenant_id = %ctx.tenant.tenant_id.as_str(),
+        plan_tier = ?ctx.tenant.plan_tier,
+    ))]
     pub async fn complete_stream(
         &self,
         ctx: StreamContext,
@@ -153,20 +168,24 @@ impl SinglePassPipeline {
         let latency_ms = ctx.start_instant.elapsed().as_millis() as u64;
 
         self.conversation_service
-            .record(CreateConversation {
-                session_id: ctx.session_id.clone(),
-                request_id: ctx.request_id.clone(),
-                query: ctx.query.clone(),
-                response_text: accumulated_answer.to_string(),
-                locale: ctx.locale,
-                intent: ctx.intent,
-                meta: serde_json::json!({
-                    "latency_ms": latency_ms,
-                    "sources": merged_sources,
-                    "suggestions": suggestions,
-                    "streaming": true,
-                }),
-            })
+            .record(
+                &ctx.tenant,
+                CreateConversation {
+                    tenant_id: ctx.tenant.tenant_id.as_str().to_string(),
+                    session_id: ctx.session_id.clone(),
+                    request_id: ctx.request_id.clone(),
+                    query: ctx.query.clone(),
+                    response_text: accumulated_answer.to_string(),
+                    locale: ctx.locale,
+                    intent: ctx.intent,
+                    meta: serde_json::json!({
+                        "latency_ms": latency_ms,
+                        "sources": merged_sources,
+                        "suggestions": suggestions,
+                        "streaming": true,
+                    }),
+                },
+            )
             .await;
 
         // Append to in-memory session history (streaming path).
@@ -201,12 +220,15 @@ impl SinglePassPipeline {
 
 #[async_trait]
 impl SearchPipeline for SinglePassPipeline {
-    #[instrument(skip(self), fields(
+    #[instrument(skip(self, tctx), fields(
         request_id = %req.request_id,
+        tenant_id = %tctx.tenant_id.as_str(),
+        plan_tier = ?tctx.plan_tier,
     ))]
     async fn search(
         &self,
         req: &SearchRequest,
+        tctx: &TenantContext,
         device_session_id: Option<&str>,
     ) -> Result<SearchResponse> {
         let start = Instant::now();
@@ -256,22 +278,24 @@ impl SearchPipeline for SinglePassPipeline {
             let sid = device_session_id
                 .map(str::to_owned)
                 .unwrap_or_else(|| req.session_id.clone());
+            let tctx_owned = tctx.clone();
             tokio::spawn(async move {
-                lm.record(&sid, detected_locale).await;
+                lm.record(&tctx_owned, &sid, detected_locale).await;
             });
         }
 
         // Step 3 + 3b: Retrieve via tool fan-out (DocRag tier-1, Brave tier-2).
-        let tool_req = ToolRequest {
-            query_raw: req.query.clone(),
-            query_normalized: search_query.clone(),
-            locale: detected_locale,
+        let tool_req = ToolRequest::new(
+            req.query.clone(),
+            search_query.clone(),
+            detected_locale,
             intent,
-            collection_name: self.collection_name.clone(),
-            top_k: req.top_k,
-            request_id: req.request_id.clone(),
-            session_id: req.session_id.clone(),
-        };
+            self.collection_name.clone(),
+            req.top_k,
+            req.request_id.clone(),
+            req.session_id.clone(),
+            tctx,
+        );
 
         let tool_outputs = self
             .tunnel
@@ -344,7 +368,7 @@ impl SearchPipeline for SinglePassPipeline {
         // locale, not a client hint.
         if let Some(ref ts) = self.trending_service {
             let _ = ts
-                .record_query(detected_locale, &req.query, &search_query)
+                .record_query(tctx, detected_locale, &req.query, &search_query)
                 .await;
         }
 
@@ -387,15 +411,19 @@ impl SearchPipeline for SinglePassPipeline {
             .unwrap_or_default();
 
         self.conversation_service
-            .record(CreateConversation {
-                session_id: req.session_id.clone(),
-                request_id: req.request_id.clone(),
-                query: req.query.clone(),
-                response_text: answer_text.clone(),
-                locale: detected_locale,
-                intent,
-                meta,
-            })
+            .record(
+                tctx,
+                CreateConversation {
+                    tenant_id: tctx.tenant_id.as_str().to_string(),
+                    session_id: req.session_id.clone(),
+                    request_id: req.request_id.clone(),
+                    query: req.query.clone(),
+                    response_text: answer_text.clone(),
+                    locale: detected_locale,
+                    intent,
+                    meta,
+                },
+            )
             .await;
 
         // Append to in-memory session history so the next turn from the
@@ -422,12 +450,15 @@ impl SearchPipeline for SinglePassPipeline {
         Ok(response)
     }
 
-    #[instrument(skip(self), fields(
+    #[instrument(skip(self, tctx), fields(
         request_id = %req.request_id,
+        tenant_id = %tctx.tenant_id.as_str(),
+        plan_tier = ?tctx.plan_tier,
     ))]
     async fn search_stream(
         &self,
         req: &SearchRequest,
+        tctx: &TenantContext,
         device_session_id: Option<&str>,
     ) -> Result<SearchStreamOutput> {
         let start = Instant::now();
@@ -459,22 +490,24 @@ impl SearchPipeline for SinglePassPipeline {
             let sid = device_session_id
                 .map(str::to_owned)
                 .unwrap_or_else(|| req.session_id.clone());
+            let tctx_owned = tctx.clone();
             tokio::spawn(async move {
-                lm.record(&sid, detected_locale).await;
+                lm.record(&tctx_owned, &sid, detected_locale).await;
             });
         }
 
         // Step 3 + 3b: Retrieve via tool fan-out.
-        let tool_req = ToolRequest {
-            query_raw: req.query.clone(),
-            query_normalized: search_query.clone(),
-            locale: detected_locale,
+        let tool_req = ToolRequest::new(
+            req.query.clone(),
+            search_query.clone(),
+            detected_locale,
             intent,
-            collection_name: self.collection_name.clone(),
-            top_k: req.top_k,
-            request_id: req.request_id.clone(),
-            session_id: req.session_id.clone(),
-        };
+            self.collection_name.clone(),
+            req.top_k,
+            req.request_id.clone(),
+            req.session_id.clone(),
+            tctx,
+        );
 
         let tool_outputs = self
             .tunnel
@@ -523,7 +556,7 @@ impl SearchPipeline for SinglePassPipeline {
         // Step 5: Record trending (fire-and-forget).
         if let Some(ref ts) = self.trending_service {
             let _ = ts
-                .record_query(detected_locale, &req.query, &search_query)
+                .record_query(tctx, detected_locale, &req.query, &search_query)
                 .await;
         }
 
@@ -556,6 +589,7 @@ impl SearchPipeline for SinglePassPipeline {
                 query: req.query.clone(),
                 locale: detected_locale,
                 intent,
+                tenant: tctx.clone(),
                 _cancel_guard: CancelGuard::new(cancel),
             },
         })
@@ -584,6 +618,7 @@ mod tests {
         DetectedLocaleSource, GroundingInfo, LlmResponse, RetrievalMethod, RetrievedChunk,
         StreamChunk, StreamChunkType, TranslationResult,
     };
+    use kenjaku_core::types::tenant::TenantContext;
     use kenjaku_core::types::tool::{ToolConfig, ToolError, ToolId, ToolOutput, ToolOutputMap};
 
     // ---- MockBrain -----------------------------------------------------------
@@ -845,7 +880,10 @@ mod tests {
 
         let (pipeline, _rx) = make_pipeline(brain, vec![tool]);
         let req = make_request();
-        let response = pipeline.search(&req, None).await.unwrap();
+        let response = pipeline
+            .search(&req, &TenantContext::public(), None)
+            .await
+            .unwrap();
 
         assert_eq!(response.request_id, "req-1");
         assert_eq!(response.session_id, "sess-1");
@@ -879,7 +917,10 @@ mod tests {
 
         let (pipeline, _rx) = make_pipeline(brain, vec![tool]);
         let req = make_request();
-        let response = pipeline.search(&req, None).await.unwrap();
+        let response = pipeline
+            .search(&req, &TenantContext::public(), None)
+            .await
+            .unwrap();
 
         // Still returns a valid response, just no retrieval context
         assert_eq!(response.metadata.retrieval_count, 0);
@@ -898,7 +939,10 @@ mod tests {
         let brain = MockBrain::new().with_translate_locale(Locale::Ja);
         let (pipeline, _rx) = make_pipeline(brain, vec![]);
         let req = make_request();
-        let response = pipeline.search(&req, None).await.unwrap();
+        let response = pipeline
+            .search(&req, &TenantContext::public(), None)
+            .await
+            .unwrap();
 
         assert_eq!(response.metadata.locale, Locale::Ja);
         assert_eq!(
@@ -912,7 +956,10 @@ mod tests {
         let brain = MockBrain::new().with_intent_fail();
         let (pipeline, _rx) = make_pipeline(brain, vec![]);
         let req = make_request();
-        let response = pipeline.search(&req, None).await.unwrap();
+        let response = pipeline
+            .search(&req, &TenantContext::public(), None)
+            .await
+            .unwrap();
 
         // Falls back to Unknown
         assert_eq!(response.metadata.intent, Intent::Unknown);
@@ -923,7 +970,10 @@ mod tests {
         let brain = MockBrain::new().with_translate_fail();
         let (pipeline, _rx) = make_pipeline(brain, vec![]);
         let req = make_request();
-        let response = pipeline.search(&req, None).await.unwrap();
+        let response = pipeline
+            .search(&req, &TenantContext::public(), None)
+            .await
+            .unwrap();
 
         // Falls back to Locale::En with FallbackEn source
         assert_eq!(response.metadata.locale, Locale::En);
@@ -940,7 +990,10 @@ mod tests {
         let brain = MockBrain::new();
         let (pipeline, mut rx) = make_pipeline(brain, vec![]);
         let req = make_request();
-        let _response = pipeline.search(&req, None).await.unwrap();
+        let _response = pipeline
+            .search(&req, &TenantContext::public(), None)
+            .await
+            .unwrap();
 
         // The conversation should be queued
         let record = rx.try_recv().unwrap();
@@ -957,7 +1010,10 @@ mod tests {
         let brain = MockBrain::new();
         let (pipeline, _rx) = make_pipeline(brain, vec![]);
         let req = make_request();
-        let _response = pipeline.search(&req, None).await.unwrap();
+        let _response = pipeline
+            .search(&req, &TenantContext::public(), None)
+            .await
+            .unwrap();
 
         // History should now have one turn
         let history = pipeline.history_store.snapshot_for_llm("sess-1");
@@ -981,7 +1037,10 @@ mod tests {
 
         let (pipeline, _rx) = make_pipeline(brain, vec![tool]);
         let req = make_request();
-        let response = pipeline.search(&req, None).await.unwrap();
+        let response = pipeline
+            .search(&req, &TenantContext::public(), None)
+            .await
+            .unwrap();
 
         // Should fall back to chunk titles since suggest returned < suggestion_count
         let suggestions = response.components.iter().find_map(|c| {
@@ -1017,7 +1076,10 @@ mod tests {
             top_k: 5,
         };
 
-        let output = pipeline.search_stream(&req, None).await.unwrap();
+        let output = pipeline
+            .search_stream(&req, &TenantContext::public(), None)
+            .await
+            .unwrap();
 
         // Verify start_metadata
         assert_eq!(output.start_metadata.request_id, "req-stream");
@@ -1058,6 +1120,7 @@ mod tests {
             query: "test".into(),
             locale: Locale::En,
             intent: Intent::Factual,
+            tenant: TenantContext::public(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
@@ -1103,6 +1166,7 @@ mod tests {
             query: "test".into(),
             locale: Locale::En,
             intent: Intent::Factual,
+            tenant: TenantContext::public(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
@@ -1142,6 +1206,7 @@ mod tests {
             query: "test".into(),
             locale: Locale::En,
             intent: Intent::Factual,
+            tenant: TenantContext::public(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
@@ -1167,6 +1232,7 @@ mod tests {
             query: "streamed query".into(),
             locale: Locale::Ja,
             intent: Intent::Navigational,
+            tenant: TenantContext::public(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
@@ -1197,6 +1263,7 @@ mod tests {
             query: "history query".into(),
             locale: Locale::En,
             intent: Intent::Factual,
+            tenant: TenantContext::public(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
@@ -1226,6 +1293,7 @@ mod tests {
             query: "q".into(),
             locale: Locale::En,
             intent: Intent::Factual,
+            tenant: TenantContext::public(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
@@ -1242,7 +1310,10 @@ mod tests {
         let req = make_request();
 
         // Pass a device session id different from the body session_id
-        let _response = pipeline.search(&req, Some("device-123")).await.unwrap();
+        let _response = pipeline
+            .search(&req, &TenantContext::public(), Some("device-123"))
+            .await
+            .unwrap();
 
         // History should be keyed by device session id
         let device_history = pipeline.history_store.snapshot_for_llm("device-123");

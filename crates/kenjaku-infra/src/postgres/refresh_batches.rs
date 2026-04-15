@@ -18,14 +18,23 @@ impl RefreshBatchesRepository {
     }
 
     /// Insert a new batch row in `running` status. Returns its id.
+    ///
+    /// Phase 3b: explicitly binds `tenant_id`. The suggestion refresh
+    /// worker currently operates at the workspace level (one cron job
+    /// rebuilds suggestions from the entire Qdrant collection); until a
+    /// future slice multiplexes it per-tenant, every batch lands under
+    /// the `public` tenant. Per the migration-upsert audit discipline
+    /// from the Phase 3a retro, no tenant-scoped INSERT may rely on the
+    /// column's `DEFAULT 'public'` anymore.
     pub async fn start_batch(&self, corpus_fingerprint: &str) -> Result<i64> {
         let row = sqlx::query(
             r#"
-            INSERT INTO refresh_batches (corpus_fingerprint, status)
-            VALUES ($1, 'running')
+            INSERT INTO refresh_batches (tenant_id, corpus_fingerprint, status)
+            VALUES ($1, $2, 'running')
             RETURNING id
             "#,
         )
+        .bind("public")
         .bind(corpus_fingerprint)
         .fetch_one(&self.pool)
         .await

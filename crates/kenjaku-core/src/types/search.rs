@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use super::component::Component;
 use super::intent::Intent;
 use super::locale::{DetectedLocale, Locale};
+use super::tenant::TenantContext;
 use crate::error::Result;
 
 /// Incoming search request from the API layer.
@@ -315,6 +316,11 @@ pub struct StreamContext {
     pub query: String,
     pub locale: Locale,
     pub intent: Intent,
+    /// Request-scoped tenancy context carried forward so `complete_stream`
+    /// can route its downstream calls (trending, conversations) to the
+    /// owning tenant. Phase 3b: always `TenantContext::public()`. Phase 3c
+    /// populates this from the auth extractor.
+    pub tenant: TenantContext,
     /// Cancellation guard that fires on drop, ensuring in-flight work
     /// is cancelled when the SSE connection disconnects.
     pub _cancel_guard: CancelGuard,

@@ -11,6 +11,7 @@ use crate::dto::response::{ApiResponse, FeedbackResponseDto};
 use crate::handlers::search::header_str;
 
 use kenjaku_core::types::feedback::{CreateFeedbackRequest, FeedbackAction};
+use kenjaku_core::types::tenant::TenantContext;
 
 /// POST /api/v1/feedback
 pub async fn create_feedback(
@@ -49,7 +50,12 @@ pub async fn create_feedback(
         description: dto.description,
     };
 
-    match state.feedback_service.create(&req).await {
+    // 3c: replace with TenantContext extractor driven by the JWT
+    // middleware. Until then every request resolves to the `public`
+    // tenant.
+    let tctx = TenantContext::public();
+
+    match state.feedback_service.create(&tctx, &req).await {
         Ok(feedback) => Json(ApiResponse::ok(FeedbackResponseDto {
             id: feedback.id.to_string(),
             session_id: feedback.session_id,

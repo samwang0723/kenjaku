@@ -4,6 +4,7 @@ use tracing::{debug, instrument};
 use kenjaku_core::config::TrendingConfig;
 use kenjaku_core::error::Result;
 use kenjaku_core::types::locale::Locale;
+use kenjaku_core::types::tenant::TenantContext;
 use kenjaku_core::types::trending::{PopularQuery, TrendingPeriod};
 use kenjaku_infra::postgres::TrendingRepository;
 use kenjaku_infra::redis::RedisClient;
@@ -34,8 +35,24 @@ impl TrendingService {
     /// 2. `normalize_for_trending` — stores the English-normalized form for
     ///    `en` locale and a first-letter-capitalized raw query for others,
     ///    so near-duplicates collapse onto the same Redis key.
-    #[instrument(skip(self, raw, normalized), fields(locale = %locale))]
-    pub async fn record_query(&self, locale: Locale, raw: &str, normalized: &str) -> Result<()> {
+    ///
+    /// Phase 3b: Redis keys are tenant-scoped — `trending:{tenant}:daily:…`
+    /// and `trending:{tenant}:weekly:…`. In 3b every caller routes through
+    /// `TenantContext::public()` so the effective key prefix is
+    /// `trending:public:…`; slice 3c lets per-tenant JWT-scoped requests
+    /// populate real tenant IDs.
+    #[instrument(skip(self, raw, normalized, tctx), fields(
+        locale = %locale,
+        tenant_id = %tctx.tenant_id.as_str(),
+        plan_tier = ?tctx.plan_tier,
+    ))]
+    pub async fn record_query(
+        &self,
+        tctx: &TenantContext,
+        locale: Locale,
+        raw: &str,
+        normalized: &str,
+    ) -> Result<()> {
         if is_gibberish(raw) {
             debug!(query = %raw, "Dropping gibberish query from trending");
             return Ok(());
@@ -49,9 +66,10 @@ impl TrendingService {
         let today = Utc::now().format("%Y-%m-%d").to_string();
         let week = Utc::now().format("%Y-W%W").to_string();
         let locale_str = locale.as_str();
+        let tenant = tctx.tenant_id.as_str();
 
-        let daily_key = format!("trending:daily:{locale_str}:{today}");
-        let weekly_key = format!("trending:weekly:{locale_str}:{week}");
+        let daily_key = format!("trending:{tenant}:daily:{locale_str}:{today}");
+        let weekly_key = format!("trending:{tenant}:weekly:{locale_str}:{week}");
 
         // Fire and forget -- don't block the search response
         let _ = self
@@ -70,24 +88,36 @@ impl TrendingService {
     ///
     /// Results below `crowd_sourcing_min_count` are filtered out in both
     /// paths so autocomplete and top-searches never surface one-off queries.
-    #[instrument(skip(self))]
+    ///
+    /// Phase 3b: Filters by `tctx.tenant_id` in both Redis key composition
+    /// and the Postgres fallback. Not currently called from the hot path
+    /// (the `SuggestionService` read path handles the user-facing autocomplete
+    /// + top-searches endpoints), but the signature gains tctx for
+    /// consistency and so slice 3c can drop it straight into a per-tenant
+    /// handler without reshaping this call.
+    #[instrument(skip(self, tctx), fields(
+        tenant_id = %tctx.tenant_id.as_str(),
+        plan_tier = ?tctx.plan_tier,
+    ))]
     pub async fn get_top_searches(
         &self,
+        tctx: &TenantContext,
         locale: &str,
         period: &TrendingPeriod,
         limit: usize,
     ) -> Result<Vec<PopularQuery>> {
         let min_count = self.config.crowd_sourcing_min_count;
+        let tenant = tctx.tenant_id.as_str();
 
         // Try real-time from Redis first
         let key = match period {
             TrendingPeriod::Daily => {
                 let today = Utc::now().format("%Y-%m-%d").to_string();
-                format!("trending:daily:{locale}:{today}")
+                format!("trending:{tenant}:daily:{locale}:{today}")
             }
             TrendingPeriod::Weekly => {
                 let week = Utc::now().format("%Y-W%W").to_string();
-                format!("trending:weekly:{locale}:{week}")
+                format!("trending:{tenant}:weekly:{locale}:{week}")
             }
         };
 
@@ -117,6 +147,8 @@ impl TrendingService {
         }
 
         // Fall back to PostgreSQL (already filtered by min_count in the query)
-        self.repo.get_top(locale, period, limit, min_count).await
+        self.repo
+            .get_top(tenant, locale, period, limit, min_count)
+            .await
     }
 }

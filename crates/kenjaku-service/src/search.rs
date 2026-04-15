@@ -8,6 +8,7 @@ use kenjaku_core::types::search::{
     DetectedLocaleSource, LlmSource, SearchRequest, SearchResponse, StreamDoneMetadata,
     TranslationResult,
 };
+use kenjaku_core::types::tenant::TenantContext;
 
 // Re-export streaming types for backward-compat with `kenjaku-api` callers.
 // The canonical paths now live in `kenjaku_core::types::search`.
@@ -51,12 +52,17 @@ impl SearchService {
     }
 
     /// Execute a non-streaming search.
+    ///
+    /// Phase 3b: threads `&TenantContext` through to the orchestrator.
+    /// Handlers inject `TenantContext::public()` at the boundary (slice 3c
+    /// replaces that with an auth extractor).
     pub async fn search(
         &self,
         req: &SearchRequest,
+        tctx: &TenantContext,
         device_session_id: Option<&str>,
     ) -> Result<SearchResponse> {
-        self.orchestrator.search(req, device_session_id).await
+        self.orchestrator.search(req, tctx, device_session_id).await
     }
 
     /// Execute a streaming search.
@@ -64,14 +70,16 @@ impl SearchService {
     /// Returns a [`SearchStreamOutput`] containing:
     /// - `start_metadata` — everything we know BEFORE the LLM stream begins
     /// - `stream` — the token delta stream
-    /// - `context` — bookkeeping for `complete_stream`
+    /// - `context` — bookkeeping for `complete_stream` (carries the tctx
+    ///   so the finalizer stays tenant-scoped without an extra argument)
     pub async fn search_stream(
         &self,
         req: &SearchRequest,
+        tctx: &TenantContext,
         device_session_id: Option<&str>,
     ) -> Result<SearchStreamOutput> {
         self.orchestrator
-            .search_stream(req, device_session_id)
+            .search_stream(req, tctx, device_session_id)
             .await
     }
 

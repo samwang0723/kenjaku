@@ -23,14 +23,20 @@ impl FeedbackRepository {
     /// subsequent click on the same answer updates the existing row in
     /// place (action, reason, description, timestamp). Enforced by the
     /// `idx_feedback_session_request_unique` index.
-    pub async fn create(&self, req: &CreateFeedbackRequest) -> Result<Feedback> {
+    ///
+    /// Phase 3b: `tenant_id` is now explicitly bound on INSERT (no
+    /// DEFAULT reliance). The uniqueness contract stays on
+    /// `(session_id, request_id)` — a single feedback row per answer,
+    /// regardless of tenant, since the answer identity already lives on
+    /// the row.
+    pub async fn create(&self, tenant_id: &str, req: &CreateFeedbackRequest) -> Result<Feedback> {
         let id = Uuid::new_v4();
         let action_str = req.action.to_string();
 
         let row = sqlx::query(
             r#"
-            INSERT INTO feedback (id, session_id, request_id, action, reason_category_id, description)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO feedback (id, tenant_id, session_id, request_id, action, reason_category_id, description)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (session_id, request_id) DO UPDATE SET
                 action = EXCLUDED.action,
                 reason_category_id = EXCLUDED.reason_category_id,
@@ -40,6 +46,7 @@ impl FeedbackRepository {
             "#,
         )
         .bind(id)
+        .bind(tenant_id)
         .bind(&req.session_id)
         .bind(&req.request_id)
         .bind(&action_str)

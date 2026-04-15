@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::intent::Intent;
 use super::locale::Locale;
 use super::search::{LlmSource, RetrievedChunk};
+use super::tenant::TenantContext;
 
 /// Stable identifier for a tool. String-typed so config files and logs
 /// stay readable; the registry enforces uniqueness at boot.
@@ -15,6 +16,12 @@ pub struct ToolId(pub String);
 /// What the Harness hands a tool on invocation. Owned (not borrowed)
 /// so tools can spawn work onto other tasks without lifetime gymnastics.
 /// Cloning is cheap -- a handful of small strings per request.
+///
+/// Construction goes through [`ToolRequest::new`]. The `tenant` field is
+/// intentionally private (per the Phase 3a architect gate flag #2) so a
+/// tool cannot rewrite a request's tenant in-place and accidentally (or
+/// maliciously) cross tenant boundaries. Read-only access via
+/// [`ToolRequest::tenant`].
 #[derive(Debug, Clone)]
 pub struct ToolRequest {
     pub query_raw: String,
@@ -25,6 +32,52 @@ pub struct ToolRequest {
     pub top_k: usize,
     pub request_id: String,
     pub session_id: String,
+    /// Request-scoped tenancy context. Private by design — tools read via
+    /// [`ToolRequest::tenant`] and MUST NOT mutate it. In Phase 3b every
+    /// request resolves to [`TenantContext::public`]; slice 3c populates
+    /// this from the JWT extractor.
+    tenant: TenantContext,
+}
+
+impl ToolRequest {
+    /// Construct a `ToolRequest`. Clones `tctx` into an owned field so the
+    /// request can move across async boundaries without lifetime
+    /// gymnastics. Use this constructor — struct-literal construction
+    /// won't compile because `tenant` is private.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        query_raw: String,
+        query_normalized: String,
+        locale: Locale,
+        intent: Intent,
+        collection_name: String,
+        top_k: usize,
+        request_id: String,
+        session_id: String,
+        tctx: &TenantContext,
+    ) -> Self {
+        Self {
+            query_raw,
+            query_normalized,
+            locale,
+            intent,
+            collection_name,
+            top_k,
+            request_id,
+            session_id,
+            tenant: tctx.clone(),
+        }
+    }
+
+    /// Borrow the request-scoped tenancy context.
+    ///
+    /// Tools use this to drive per-tenant behavior (e.g. the default
+    /// `DocRagTool` hands `self.tenant().tenant_id` to a
+    /// `CollectionResolver` so each tenant reads from its own Qdrant
+    /// collection). In 3b this always returns `TenantContext::public()`.
+    pub fn tenant(&self) -> &TenantContext {
+        &self.tenant
+    }
 }
 
 /// What a tool returns. Tagged enum so non-document tools don't have to
@@ -194,6 +247,51 @@ impl ToolOutputMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::tenant::TenantContext;
+
+    // ---- ToolRequest tenant threading (Phase 3b) --------------------------
+
+    fn sample_request(tctx: &TenantContext) -> ToolRequest {
+        ToolRequest::new(
+            "raw query".to_string(),
+            "raw query".to_string(),
+            Locale::En,
+            Intent::Factual,
+            "documents".to_string(),
+            10,
+            "req-1".to_string(),
+            "sess-1".to_string(),
+            tctx,
+        )
+    }
+
+    #[test]
+    fn tool_request_new_stores_tenant_and_accessor_returns_it() {
+        let tctx = TenantContext::public();
+        let req = sample_request(&tctx);
+        assert_eq!(req.tenant().tenant_id.as_str(), "public");
+        assert!(req.tenant().principal_id.is_none());
+    }
+
+    #[test]
+    fn tool_request_new_clones_tctx_so_caller_retains_ownership() {
+        // Caller's tctx must still be usable after ToolRequest::new consumed
+        // a borrow.
+        let tctx = TenantContext::public();
+        let _req = sample_request(&tctx);
+        // Would not compile if `new` took ownership.
+        assert_eq!(tctx.tenant_id.as_str(), "public");
+    }
+
+    #[test]
+    fn tool_request_clone_preserves_tenant() {
+        let tctx = TenantContext::public();
+        let req = sample_request(&tctx);
+        let dup = req.clone();
+        assert_eq!(dup.tenant().tenant_id.as_str(), "public");
+    }
+
+    // ---- Existing tests ---------------------------------------------------
 
     #[test]
     fn tool_output_map_chunk_count() {
