@@ -1,9 +1,15 @@
+use std::pin::Pin;
+use std::time::Instant;
+
 use chrono::{DateTime, Utc};
+use futures::Stream;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 use super::component::Component;
 use super::intent::Intent;
 use super::locale::{DetectedLocale, Locale};
+use crate::error::Result;
 
 /// Incoming search request from the API layer.
 ///
@@ -253,4 +259,63 @@ impl std::fmt::Display for DocumentType {
             Self::Html => write!(f, "html"),
         }
     }
+}
+
+/// Output of a streaming search.
+///
+/// The API handler drains `stream`, accumulating token deltas and any
+/// grounding sources, then hands the `context` plus the accumulated
+/// answer to the pipeline's `complete_stream` method to produce the
+/// final `done` metadata.
+pub struct SearchStreamOutput {
+    pub start_metadata: StreamStartMetadata,
+    pub stream: Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>,
+    pub context: StreamContext,
+}
+
+/// RAII guard that cancels its [`CancellationToken`] on drop. Stored
+/// inside [`StreamContext`] so that if the SSE connection is dropped
+/// early, in-flight LLM / tool work is cancelled automatically.
+pub struct CancelGuard(CancellationToken);
+
+impl CancelGuard {
+    pub fn new(token: CancellationToken) -> Self {
+        Self(token)
+    }
+
+    /// Access the underlying token (e.g. to pass to tools).
+    pub fn token(&self) -> &CancellationToken {
+        &self.0
+    }
+}
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+/// Bookkeeping passed from a pipeline's `search_stream` to its
+/// `complete_stream` — kept separate from the `Stream` so the handler
+/// can move it into the completion call after dropping the stream.
+pub struct StreamContext {
+    pub sources: Vec<LlmSource>,
+    pub llm_model: String,
+    pub start_instant: Instant,
+    /// Web tier provenance captured during the preamble (before the
+    /// LLM stream opens). `complete_stream` may also flip
+    /// `gemini_grounding_used` if Gemini attached grounding metadata
+    /// to the stream.
+    pub grounding: GroundingInfo,
+    pub request_id: String,
+    pub session_id: String,
+    /// Stable device/session key used for in-memory history and locale
+    /// memory. Prefer `X-Session-Id` header; falls back to body session_id.
+    pub history_key: String,
+    pub query: String,
+    pub locale: Locale,
+    pub intent: Intent,
+    /// Cancellation guard that fires on drop, ensuring in-flight work
+    /// is cancelled when the SSE connection disconnects.
+    pub _cancel_guard: CancelGuard,
 }

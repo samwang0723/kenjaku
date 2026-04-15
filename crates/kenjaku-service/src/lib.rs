@@ -1,6 +1,7 @@
 pub mod brain;
 pub mod foundation;
 pub(crate) mod harness;
+pub mod pipelines;
 pub mod search;
 pub mod session;
 pub mod tools;
