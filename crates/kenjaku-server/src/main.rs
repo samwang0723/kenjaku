@@ -5,7 +5,10 @@ use tracing::info;
 
 use kenjaku_core::config::load_config;
 use kenjaku_core::traits::brain::Brain;
+use kenjaku_core::traits::classifier::Classifier;
+use kenjaku_core::traits::generator::Generator;
 use kenjaku_core::traits::tool::Tool;
+use kenjaku_core::traits::translator::Translator;
 use kenjaku_core::types::tool::ToolConfig;
 use kenjaku_infra::clustering::LinfaClusterer;
 use kenjaku_infra::embedding::create_embedding_provider;
@@ -21,7 +24,7 @@ use kenjaku_infra::title_resolver::TitleResolver;
 use kenjaku_infra::web_search::BraveSearchProvider;
 
 use kenjaku_service::autocomplete::AutocompleteService;
-use kenjaku_service::brain::GeminiBrain;
+use kenjaku_service::brain::{CompositeBrain, GeminiBrain};
 use kenjaku_service::component::ComponentService;
 use kenjaku_service::conversation::ConversationService;
 use kenjaku_service::feedback::FeedbackService;
@@ -144,8 +147,22 @@ async fn main() -> anyhow::Result<()> {
         kenjaku_service::history::SessionHistoryStore::new(config.search.history.clone());
     history_store.clone().spawn_janitor();
 
-    // Build the Brain facade that wraps LLM + intent classifier.
-    let brain: Arc<dyn Brain> = Arc::new(GeminiBrain::new(llm_provider.clone(), intent_classifier));
+    // Build the underlying GeminiBrain. One instance serves all three
+    // Phase 2 sub-capabilities (Classifier, Translator, Generator).
+    // Phase 3 can swap any of the three Arcs below to point at a
+    // different provider without touching the pipeline or CompositeBrain.
+    let gemini_brain = Arc::new(GeminiBrain::new(
+        llm_provider.clone(),
+        intent_classifier,
+        use_google_search_tool,
+        config.llm.model.clone(),
+    ));
+
+    let classifier: Arc<dyn Classifier> = gemini_brain.clone();
+    let translator: Arc<dyn Translator> = gemini_brain.clone();
+    let generator: Arc<dyn Generator> = gemini_brain.clone();
+
+    let brain: Arc<dyn Brain> = Arc::new(CompositeBrain::new(classifier, translator, generator));
 
     // Build the Tool list — DocRag (tier 1) then BraveWeb (tier 2).
     let doc_rag: Arc<dyn Tool> = Arc::new(DocRagTool::new(
@@ -209,7 +226,6 @@ async fn main() -> anyhow::Result<()> {
         &config.web_search,
         config.qdrant.collection_name.clone(),
         config.search.suggestion_count,
-        use_google_search_tool,
     ));
 
     let search_service = SearchService::new(pipeline);
