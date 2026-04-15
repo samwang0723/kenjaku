@@ -7,3 +7,11 @@ redis:
 
 telemetry:
   log_level: "debug"
+
+# Phase 3d.1: base.yaml flipped `tenancy.enabled` to `true` by default.
+# Local dev has no JWT issuer wired, so `make run` would fail at
+# `validate_secrets`. Pin `enabled: false` here to preserve dev
+# ergonomics; the isolation test + docker/staging/prod paths exercise
+# the `enabled: true` branch in CI and at deploy time.
+tenancy:
+  enabled: false

@@ -12,3 +12,11 @@ telemetry:
   service_name: "kenjaku"
   otlp_endpoint: "http://otel-collector:4317"
   log_level: "kenjaku_infra=debug,info"
+
+# Phase 3d.1: base.yaml flipped `tenancy.enabled` to `true` by default.
+# The dockerized dev stack (`make docker-up`) has no JWT issuer wired,
+# so pin `enabled: false` to keep the full-stack dev loop working.
+# Operators enable tenancy per-env via staging.yaml / production.yaml
+# (with a JWT public key provisioned through `secrets.{APP_ENV}.yaml`).
+tenancy:
+  enabled: false
