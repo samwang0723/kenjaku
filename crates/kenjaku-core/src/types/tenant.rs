@@ -190,7 +190,7 @@ fn validate_id(raw: &str, field: &str) -> Result<()> {
     }
     if raw.len() > MAX_ID_LEN {
         return Err(Error::Validation(format!(
-            "{field} exceeds {MAX_ID_LEN} chars"
+            "{field} exceeds {MAX_ID_LEN} bytes"
         )));
     }
     if !raw
