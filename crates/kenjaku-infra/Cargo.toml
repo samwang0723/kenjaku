@@ -38,9 +38,34 @@ opentelemetry_sdk = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 
+# Auth / JWT (Phase 3c.1). MSRV-compatible 10.x; exact version pinned
+# via Cargo.lock. The caret range ("10.3") deliberately allows semver-
+# compatible patch bumps so cargo-audit-driven CVE fixes land without
+# a Cargo.toml edit, while Cargo.lock keeps day-to-day builds
+# reproducibly on the same byte-for-byte compiled crate. Pinning to
+# `=10.3.0` here would trade automatic CVE-patch uptake for a form of
+# pinning Cargo.lock already provides.
+#
+# jsonwebtoken 10.x requires Rust 1.85 (<= our 1.88). Constant-time
+# signature compare is provided by the crate's `decode` entry point;
+# we never roll our own crypto. Default `use_pem` feature covers both
+# RSA and EC public-key PEM loading.
+#
+# `aws_lc_rs` backend: FIPS-capable, aligns with rustls's default and
+# the broader Rust-at-scale security ecosystem. Chosen over
+# `rust_crypto` because Crypto.com operates under regulated-fintech
+# constraints and the AWS-maintained backend is the more-audited option.
+# v10 requires exactly one backend feature; mutually exclusive.
+jsonwebtoken = { version = "10.3", features = ["aws_lc_rs"] }
+
 [dev-dependencies]
 tokio = { workspace = true }
 tokio-test = { workspace = true }
 wiremock = { workspace = true }
 mockall = { workspace = true }
 tempfile = "3"
+# Test-only: forging well-formed + malformed tokens against a fixed
+# keypair. `jsonwebtoken`'s `encode` path is pulled in transitively via
+# the main dep, but base64 is needed for hand-crafting algorithm-
+# confusion + alg:none adversarial tokens that `encode` refuses to mint.
+base64 = "0.22"
