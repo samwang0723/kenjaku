@@ -49,6 +49,32 @@ impl AppConfig {
             missing.push("contextualizer.api_key");
         }
 
+        // Tenancy + JWT: only enforced when tenancy is turned on.
+        // When `enabled=false` (3c.1 default, all production today) the
+        // `jwt` block is allowed to be absent or partially populated —
+        // nothing reads it. When `enabled=true`, every field must be set
+        // so the validator can be constructed at startup.
+        if self.tenancy.enabled {
+            match &self.tenancy.jwt {
+                None => missing.push("tenancy.jwt (block required when tenancy.enabled=true)"),
+                Some(jwt) => {
+                    if jwt.issuer.is_empty() {
+                        missing.push("tenancy.jwt.issuer");
+                    }
+                    if jwt.audience.is_empty() {
+                        missing.push("tenancy.jwt.audience");
+                    }
+                    if jwt.public_key_path.is_empty() {
+                        missing.push("tenancy.jwt.public_key_path");
+                    }
+                    // `algorithm` is typed and cannot be invalid or
+                    // `none` / `HS*` / `PS*` by construction. No check
+                    // needed here; `JwtAlgorithm`'s enum shape IS the
+                    // allowlist enforcement.
+                }
+            }
+        }
+
         if missing.is_empty() {
             Ok(())
         } else {
@@ -596,24 +622,112 @@ fn default_web_search_fallback_min_chunks() -> usize {
 
 /// Multi-tenancy configuration.
 ///
-/// All fields are required — no serde defaults. Follows Sam's "super clean
-/// config" convention (config hardening pass, commit `810e620`). Missing
-/// keys cause `load_config` to fail fast, which is what we want for a
-/// security-hot-path subsystem.
+/// All top-level fields are required — no serde defaults. Follows Sam's
+/// "super clean config" convention (config hardening pass, commit
+/// `810e620`). Missing keys cause `load_config` to fail fast, which is what
+/// we want for a security-hot-path subsystem.
 ///
-/// In Phase 3a the fields are inert:
-/// - `enabled: false` — no tenancy enforcement yet.
-/// - `header_name` — the HTTP header slice 3c reads for dev-mode tenant
-///   override (ignored when `enabled = false`).
+/// In Phase 3a+3b the fields were inert. Phase 3c.1 adds the `jwt`
+/// sub-block; slice 3c.2 wires it into an auth middleware. Until the
+/// middleware lands, the validator is code-only — no runtime surface.
+///
+/// - `enabled: false` — no tenancy enforcement yet (still the 3c.1 default).
+/// - `header_name` — the HTTP header slice 3c.2 reads for dev-mode tenant
+///   override (ignored when `enabled = true`).
 /// - `default_tenant` — the implicit tenant for un-authenticated requests.
 /// - `collection_name_template` — documents the naming rule the default
 ///   [`PrefixCollectionResolver`] implements.
+/// - `jwt` — optional. When `enabled = true` every field must be
+///   populated; [`AppConfig::validate_secrets`] enforces this at startup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TenancyConfig {
     pub enabled: bool,
     pub header_name: String,
     pub default_tenant: String,
     pub collection_name_template: String,
+    /// JWT validator config. `None` when tenancy is disabled; required
+    /// (all sub-fields non-empty) when `enabled = true`.
+    #[serde(default)]
+    pub jwt: Option<JwtConfig>,
+}
+
+/// JWT validator configuration.
+///
+/// Every field is required when [`TenancyConfig::enabled`] is `true`.
+/// `serde` default of empty strings is deliberate: we want `enabled=true` +
+/// missing fields to surface a precise "missing X" startup error rather
+/// than a serde parse error.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JwtConfig {
+    /// Expected `iss` claim (e.g. `"kenjaku-auth"`). Tokens with a
+    /// different issuer are rejected.
+    #[serde(default)]
+    pub issuer: String,
+    /// Expected `aud` claim (e.g. `"kenjaku-api"`). Tokens with a
+    /// different audience are rejected.
+    #[serde(default)]
+    pub audience: String,
+    /// Filesystem path to a PEM-encoded public key (RSA or EC).
+    /// The validator reads this at startup, never from env vars, so the
+    /// key material cannot accidentally land in process listings.
+    #[serde(default)]
+    pub public_key_path: String,
+    /// Allowed signature algorithm. Strict single-algorithm allowlist —
+    /// no downgrade path. `HS*`, `PS*`, and `none` are not representable
+    /// in [`JwtAlgorithm`] by construction.
+    #[serde(default = "default_jwt_algorithm")]
+    pub algorithm: JwtAlgorithm,
+    /// Leeway in seconds for `exp`, `iat`, `nbf` validation. Covers clock
+    /// skew between issuer and validator. Default 30s.
+    #[serde(default = "default_clock_skew_secs")]
+    pub clock_skew_secs: u64,
+}
+
+fn default_jwt_algorithm() -> JwtAlgorithm {
+    JwtAlgorithm::RS256
+}
+fn default_clock_skew_secs() -> u64 {
+    30
+}
+
+/// Strict asymmetric-only JWT algorithm allowlist.
+///
+/// **Security invariant**: `HS*` (symmetric HMAC — shared-secret leakage
+/// risk + classic algorithm-confusion attack surface), `PS*`, and `none`
+/// (unsigned!) are deliberately **not representable** in this enum. An
+/// operator cannot downgrade even by editing YAML — serde returns an
+/// error for any other string. The auth middleware (slice 3c.2) adds a
+/// second layer of defense by pinning
+/// `jsonwebtoken::Validation::algorithms` to a single-element vec derived
+/// from this enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum JwtAlgorithm {
+    /// RSA-SHA256. Recommended default; most common among OIDC issuers.
+    RS256,
+    /// RSA-SHA384.
+    RS384,
+    /// RSA-SHA512.
+    RS512,
+    /// ECDSA P-256 + SHA-256. Smaller keys than RSA, faster verify.
+    ES256,
+    /// ECDSA P-384 + SHA-384.
+    ES384,
+}
+
+impl JwtAlgorithm {
+    /// Returns the canonical JWT `alg` header value for this algorithm.
+    ///
+    /// Used by both the validator (header assertion) and error messages.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::RS256 => "RS256",
+            Self::RS384 => "RS384",
+            Self::RS512 => "RS512",
+            Self::ES256 => "ES256",
+            Self::ES384 => "ES384",
+        }
+    }
 }
 
 // ===========================================================================
@@ -821,6 +935,7 @@ contextualizer:
                 header_name: "X-Tenant-Id".into(),
                 default_tenant: "public".into(),
                 collection_name_template: "{base}_{tenant}".into(),
+                jwt: None,
             },
         };
 
@@ -912,6 +1027,7 @@ contextualizer:
                 header_name: "X-Tenant-Id".into(),
                 default_tenant: "public".into(),
                 collection_name_template: "{base}_{tenant}".into(),
+                jwt: None,
             },
         };
 
@@ -1009,5 +1125,237 @@ key_prefix: "loc:"
         assert_eq!(cfg.sample_cap, 500);
         assert_eq!(cfg.cluster_count, 20); // default
         assert_eq!(cfg.schedule_cron, "0 0 3 * * *"); // default
+    }
+
+    // ---- Phase 3c.1: JWT config + algorithm allowlist --------------------
+
+    #[test]
+    fn test_jwt_algorithm_serde_uppercase_roundtrip() {
+        for (alg, expected) in [
+            (JwtAlgorithm::RS256, "\"RS256\""),
+            (JwtAlgorithm::RS384, "\"RS384\""),
+            (JwtAlgorithm::RS512, "\"RS512\""),
+            (JwtAlgorithm::ES256, "\"ES256\""),
+            (JwtAlgorithm::ES384, "\"ES384\""),
+        ] {
+            let json = serde_json::to_string(&alg).unwrap();
+            assert_eq!(json, expected);
+            let back: JwtAlgorithm = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, alg);
+        }
+    }
+
+    #[test]
+    fn test_jwt_algorithm_rejects_symmetric_and_none() {
+        // SECURITY: HS* / PS* / none are the algorithm-confusion attack
+        // surface. They MUST NOT be deserializable — if a misconfigured
+        // YAML ever lands these values, config load must fail closed.
+        for bad in [
+            "\"HS256\"",
+            "\"HS384\"",
+            "\"HS512\"",
+            "\"PS256\"",
+            "\"PS384\"",
+            "\"PS512\"",
+            "\"none\"",
+            "\"None\"",
+            "\"NONE\"",
+            "\"EdDSA\"",  // Ed25519 not in allowlist
+            "\"RS1024\"", // bogus
+            "\"rs256\"",  // lowercase not accepted (uppercase rename_all)
+            "\"\"",
+        ] {
+            let result = serde_json::from_str::<JwtAlgorithm>(bad);
+            assert!(
+                result.is_err(),
+                "SECURITY: JwtAlgorithm must reject {bad} but accepted it"
+            );
+        }
+    }
+
+    #[test]
+    fn test_jwt_algorithm_as_str_matches_variant() {
+        assert_eq!(JwtAlgorithm::RS256.as_str(), "RS256");
+        assert_eq!(JwtAlgorithm::RS384.as_str(), "RS384");
+        assert_eq!(JwtAlgorithm::RS512.as_str(), "RS512");
+        assert_eq!(JwtAlgorithm::ES256.as_str(), "ES256");
+        assert_eq!(JwtAlgorithm::ES384.as_str(), "ES384");
+    }
+
+    #[test]
+    fn test_jwt_config_defaults_from_empty_yaml() {
+        // Every field is `#[serde(default)]` / has a default fn.
+        // Intentional so `tenancy.enabled=false` deployments can simply
+        // omit the block without serde parse errors.
+        let yaml = "";
+        let cfg: JwtConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.issuer, "");
+        assert_eq!(cfg.audience, "");
+        assert_eq!(cfg.public_key_path, "");
+        assert_eq!(cfg.algorithm, JwtAlgorithm::RS256);
+        assert_eq!(cfg.clock_skew_secs, 30);
+    }
+
+    #[test]
+    fn test_jwt_config_parses_full_yaml() {
+        let yaml = r#"
+issuer: "kenjaku-auth"
+audience: "kenjaku-api"
+public_key_path: "/run/secrets/jwt_pub.pem"
+algorithm: "ES384"
+clock_skew_secs: 60
+"#;
+        let cfg: JwtConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.issuer, "kenjaku-auth");
+        assert_eq!(cfg.audience, "kenjaku-api");
+        assert_eq!(cfg.public_key_path, "/run/secrets/jwt_pub.pem");
+        assert_eq!(cfg.algorithm, JwtAlgorithm::ES384);
+        assert_eq!(cfg.clock_skew_secs, 60);
+    }
+
+    // ---- validate_secrets: tenancy.enabled gating ------------------------
+
+    fn base_cfg_with_tenancy(tenancy: TenancyConfig) -> AppConfig {
+        AppConfig {
+            server: ServerConfig {
+                host: "0.0.0.0".into(),
+                port: 8080,
+                rate_limit_per_second: 1,
+                rate_limit_burst: 60,
+                body_limit_bytes: 65_536,
+                request_timeout_secs: 30,
+            },
+            qdrant: QdrantConfig {
+                url: "http://localhost:6334".into(),
+                collection_name: "docs".into(),
+                vector_size: 1536,
+            },
+            postgres: PostgresConfig {
+                url: "postgres://u:p@localhost/db".into(),
+                max_connections: 10,
+            },
+            redis: RedisConfig {
+                url: "redis://localhost:6379".into(),
+            },
+            embedding: EmbeddingConfig {
+                provider: "openai".into(),
+                model: "m".into(),
+                api_key: "sk-key".into(),
+                dimensions: 1536,
+                batch_size: 100,
+                base_url: "https://api.openai.com/v1".into(),
+            },
+            llm: LlmConfig {
+                provider: "gemini".into(),
+                model: "m".into(),
+                api_key: "gm-key".into(),
+                max_tokens: 2048,
+                temperature: 0.7,
+                service_tier: ServiceTier::Standard,
+                base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
+            },
+            contextualizer: ContextualizerConfig {
+                provider: "anthropic".into(),
+                model: "m".into(),
+                api_key: "sk-ant-key".into(),
+                base_url: "https://api.anthropic.com/v1".into(),
+            },
+            trending: TrendingConfig {
+                popularity_threshold: 5,
+                flush_interval_secs: 300,
+                daily_ttl_secs: 172800,
+                weekly_ttl_secs: 1209600,
+                crowd_sourcing_min_count: 2,
+            },
+            chunking: ChunkingConfig {
+                chunk_size: 512,
+                chunk_overlap: 50,
+            },
+            search: SearchConfig {
+                semantic_weight: 0.8,
+                bm25_weight: 0.2,
+                over_retrieve_factor: 10,
+                component_layout: ComponentLayout::default(),
+                suggestion_count: 3,
+                history: HistoryConfig::default(),
+            },
+            telemetry: TelemetryConfig {
+                service_name: "kenjaku".into(),
+                otlp_endpoint: None,
+                log_level: "info".into(),
+            },
+            default_suggestions: DefaultSuggestionsConfig::default(),
+            locale_memory: LocaleMemoryConfig::default(),
+            web_search: WebSearchConfig::default(),
+            tenancy,
+        }
+    }
+
+    #[test]
+    fn test_validate_secrets_tenancy_disabled_ignores_missing_jwt() {
+        // Default deployment — enabled=false, jwt=None — passes.
+        let cfg = base_cfg_with_tenancy(TenancyConfig {
+            enabled: false,
+            header_name: "X-Tenant-Id".into(),
+            default_tenant: "public".into(),
+            collection_name_template: "{base}_{tenant}".into(),
+            jwt: None,
+        });
+        assert!(cfg.validate_secrets().is_ok());
+    }
+
+    #[test]
+    fn test_validate_secrets_tenancy_enabled_requires_jwt_block() {
+        let cfg = base_cfg_with_tenancy(TenancyConfig {
+            enabled: true,
+            header_name: "X-Tenant-Id".into(),
+            default_tenant: "public".into(),
+            collection_name_template: "{base}_{tenant}".into(),
+            jwt: None,
+        });
+        let err = cfg.validate_secrets().unwrap_err().to_string();
+        assert!(
+            err.contains("tenancy.jwt"),
+            "expected missing-jwt-block error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_secrets_tenancy_enabled_flags_empty_jwt_fields() {
+        let cfg = base_cfg_with_tenancy(TenancyConfig {
+            enabled: true,
+            header_name: "X-Tenant-Id".into(),
+            default_tenant: "public".into(),
+            collection_name_template: "{base}_{tenant}".into(),
+            jwt: Some(JwtConfig {
+                issuer: String::new(),
+                audience: String::new(),
+                public_key_path: String::new(),
+                algorithm: JwtAlgorithm::RS256,
+                clock_skew_secs: 30,
+            }),
+        });
+        let err = cfg.validate_secrets().unwrap_err().to_string();
+        assert!(err.contains("tenancy.jwt.issuer"), "got: {err}");
+        assert!(err.contains("tenancy.jwt.audience"), "got: {err}");
+        assert!(err.contains("tenancy.jwt.public_key_path"), "got: {err}");
+    }
+
+    #[test]
+    fn test_validate_secrets_tenancy_enabled_passes_with_full_jwt() {
+        let cfg = base_cfg_with_tenancy(TenancyConfig {
+            enabled: true,
+            header_name: "X-Tenant-Id".into(),
+            default_tenant: "public".into(),
+            collection_name_template: "{base}_{tenant}".into(),
+            jwt: Some(JwtConfig {
+                issuer: "kenjaku-auth".into(),
+                audience: "kenjaku-api".into(),
+                public_key_path: "/run/secrets/jwt_pub.pem".into(),
+                algorithm: JwtAlgorithm::RS256,
+                clock_skew_secs: 30,
+            }),
+        });
+        assert!(cfg.validate_secrets().is_ok());
     }
 }
