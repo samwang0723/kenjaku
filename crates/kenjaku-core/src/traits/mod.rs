@@ -3,6 +3,7 @@ pub mod clusterer;
 pub mod embedding;
 pub mod intent;
 pub mod llm;
+pub mod pipeline;
 pub mod retriever;
 pub mod tool;
 pub mod web_search;

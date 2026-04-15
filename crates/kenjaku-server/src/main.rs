@@ -27,6 +27,7 @@ use kenjaku_service::conversation::ConversationService;
 use kenjaku_service::feedback::FeedbackService;
 use kenjaku_service::intent::LlmIntentClassifier;
 use kenjaku_service::locale_memory::LocaleMemory;
+use kenjaku_service::pipelines::SinglePassPipeline;
 use kenjaku_service::refresh_worker::SuggestionRefreshWorker;
 use kenjaku_service::retriever::HybridRetriever;
 use kenjaku_service::search::SearchService;
@@ -194,20 +195,24 @@ async fn main() -> anyhow::Result<()> {
 
     let tools: Vec<Arc<dyn Tool>> = vec![doc_rag, brave_web];
 
-    let search_service = SearchService::new(
+    // Build the search pipeline (single-pass today; a future `AgenticPipeline`
+    // or `CachedPipeline` would be selected here based on config).
+    let pipeline = Arc::new(SinglePassPipeline::new(
         brain,
-        tools,
         component_service,
         trending_service.clone(),
         conversation_service,
         Some(title_resolver),
         locale_memory.clone(),
         history_store,
-        config.web_search.clone(),
+        tools,
+        &config.web_search,
         config.qdrant.collection_name.clone(),
         config.search.suggestion_count,
         use_google_search_tool,
-    );
+    ));
+
+    let search_service = SearchService::new(pipeline);
 
     // Spawn background workers
     let flush_worker = TrendingFlushWorker::new(
