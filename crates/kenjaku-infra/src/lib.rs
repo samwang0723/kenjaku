@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod clustering;
 pub mod embedding;
 pub mod llm;
