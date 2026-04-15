@@ -22,6 +22,9 @@ pub struct AppConfig {
     pub locale_memory: LocaleMemoryConfig,
     #[serde(default)]
     pub web_search: WebSearchConfig,
+    /// Multi-tenancy scaffolding. Phase 3a introduces this as a required
+    /// block; slice 3b/3c/3d will read it. In 3a the fields are inert.
+    pub tenancy: TenancyConfig,
 }
 
 impl AppConfig {
@@ -588,6 +591,32 @@ fn default_web_search_fallback_min_chunks() -> usize {
 }
 
 // ===========================================================================
+// Multi-tenancy scaffolding (Phase 3a)
+// ===========================================================================
+
+/// Multi-tenancy configuration.
+///
+/// All fields are required — no serde defaults. Follows Sam's "super clean
+/// config" convention (config hardening pass, commit `810e620`). Missing
+/// keys cause `load_config` to fail fast, which is what we want for a
+/// security-hot-path subsystem.
+///
+/// In Phase 3a the fields are inert:
+/// - `enabled: false` — no tenancy enforcement yet.
+/// - `header_name` — the HTTP header slice 3c reads for dev-mode tenant
+///   override (ignored when `enabled = false`).
+/// - `default_tenant` — the implicit tenant for un-authenticated requests.
+/// - `collection_name_template` — documents the naming rule the default
+///   [`PrefixCollectionResolver`] implements.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TenancyConfig {
+    pub enabled: bool,
+    pub header_name: String,
+    pub default_tenant: String,
+    pub collection_name_template: String,
+}
+
+// ===========================================================================
 // FAQ tool
 // ===========================================================================
 
@@ -665,6 +694,11 @@ search:
 telemetry:
   service_name: "kenjaku"
   log_level: "info"
+tenancy:
+  enabled: false
+  header_name: "X-Tenant-Id"
+  default_tenant: "public"
+  collection_name_template: "{base}_{tenant}"
 "#;
         let mut f = std::fs::File::create(config_dir.join("base.yaml")).unwrap();
         f.write_all(base_yaml.as_bytes()).unwrap();
@@ -782,6 +816,12 @@ contextualizer:
             default_suggestions: DefaultSuggestionsConfig::default(),
             locale_memory: LocaleMemoryConfig::default(),
             web_search: WebSearchConfig::default(),
+            tenancy: TenancyConfig {
+                enabled: false,
+                header_name: "X-Tenant-Id".into(),
+                default_tenant: "public".into(),
+                collection_name_template: "{base}_{tenant}".into(),
+            },
         };
 
         let result = cfg.validate_secrets();
@@ -867,6 +907,12 @@ contextualizer:
             default_suggestions: DefaultSuggestionsConfig::default(),
             locale_memory: LocaleMemoryConfig::default(),
             web_search: WebSearchConfig::default(),
+            tenancy: TenancyConfig {
+                enabled: false,
+                header_name: "X-Tenant-Id".into(),
+                default_tenant: "public".into(),
+                collection_name_template: "{base}_{tenant}".into(),
+            },
         };
 
         assert!(cfg.validate_secrets().is_ok());
