@@ -7,10 +7,9 @@ use tracing::{debug, error};
 
 use crate::AppState;
 use crate::dto::response::{ApiResponse, AutocompleteResponseDto, BlendedItemDto};
-use crate::extractors::ResolvedLocale;
+use crate::extractors::{ResolvedLocale, TenantCtx};
 
 use kenjaku_core::types::suggestion::SuggestionSource;
-use kenjaku_core::types::tenant::TenantContext;
 
 /// Maximum autocomplete limit.
 const MAX_LIMIT: usize = 50;
@@ -38,6 +37,7 @@ fn default_limit() -> usize {
 /// Uses the `ResolvedLocale` extractor for locale resolution, then delegates
 /// to `SuggestionService::autocomplete` without changing the DTO shape.
 pub async fn autocomplete(
+    TenantCtx(tctx): TenantCtx,
     State(state): State<Arc<AppState>>,
     resolved: ResolvedLocale,
     Query(params): Query<AutocompleteQuery>,
@@ -56,10 +56,7 @@ pub async fn autocomplete(
         "autocomplete resolved locale"
     );
 
-    // 3c: replace with TenantContext extractor driven by the JWT
-    // middleware. Until then every request resolves to the `public`
-    // tenant.
-    let tctx = TenantContext::public();
+    // 3c.2: tctx now arrives via the `TenantCtx` extractor (above).
 
     match state
         .suggestion_service

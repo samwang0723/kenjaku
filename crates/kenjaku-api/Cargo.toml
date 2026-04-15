@@ -27,9 +27,22 @@ futures = { workspace = true }
 tokio-stream = { workspace = true }
 accept-language = "3"
 async-trait = { workspace = true }
+# Principal-ID hashing for tracing spans (Phase 3c.2). Single helper
+# path; raw `principal_id` MUST never reach a log line. Both `sha2`
+# and `hex` are already transitively in Cargo.lock via aws-lc-rs /
+# jsonwebtoken / qdrant-client, so zero net-new supply-chain review.
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 tokio = { workspace = true }
 tokio-test = { workspace = true }
 tower = { workspace = true }
 reqwest = { workspace = true }
+# Integration test mints test JWTs at runtime against a freshly
+# generated RSA-2048 keypair (no hardcoded credentials). `rsa` is
+# already transitively in Cargo.lock; pinned 0.9 to match. RNG is
+# `rand 0.8` (already pinned at workspace level via kenjaku-infra).
+jsonwebtoken = { version = "10.3", features = ["aws_lc_rs"] }
+rsa = { version = "0.9", features = ["pem"] }
+rand = "0.8"

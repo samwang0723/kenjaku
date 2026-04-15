@@ -112,3 +112,22 @@ tenancy:
   header_name: "X-Tenant-Id"
   default_tenant: "public"
   collection_name_template: "{base}_{tenant}"
+
+# Rate-limit key strategy (Phase 3c.2). `ip` is the backward-compatible
+# default — identical to pre-3c.2 behavior. Switch to `tenant_ip` or
+# `tenant_principal_ip` only after tenancy is enabled (flipping
+# `tenancy.enabled=true` without re-keying the limiter is still safe —
+# the strategy reads `TenantContext` from request extensions and falls
+# back to the public tenant for unauthenticated traffic).
+#
+# NOTE — `plan_*_per_second` fields below are **reserved for a
+# follow-up slice** and NOT currently consumed by the governor. Active
+# bucket sizing still comes from `server.rate_limit_per_second` +
+# `server.rate_limit_burst`. Setting these values today has no runtime
+# effect; we keep the YAML shape stable so operators can wire it up
+# later without a config migration.
+rate_limit:
+  key_strategy: "ip"
+  plan_free_per_second: 1          # reserved — not yet enforced
+  plan_pro_per_second: 4           # reserved — not yet enforced
+  plan_enterprise_per_second: 100  # reserved — not yet enforced

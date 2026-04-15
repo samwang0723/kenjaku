@@ -25,6 +25,10 @@ pub struct AppConfig {
     /// Multi-tenancy scaffolding. Phase 3a introduces this as a required
     /// block; slice 3b/3c/3d will read it. In 3a the fields are inert.
     pub tenancy: TenancyConfig,
+    /// Rate-limit key strategy + per-plan bucket sizes. Default
+    /// `key_strategy = ip` preserves pre-3c.2 behavior byte-for-byte.
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
 }
 
 impl AppConfig {
@@ -732,6 +736,98 @@ impl JwtAlgorithm {
 }
 
 // ===========================================================================
+// Rate-limit key strategy (Phase 3c.2)
+// ===========================================================================
+
+/// Rate-limit key strategy.
+///
+/// Decides what tuple the `tower_governor` `KeyExtractor` builds for
+/// each request. `Ip` preserves the pre-3c.2 behavior byte-for-byte and
+/// is the default — switching to `TenantIp` or `TenantPrincipalIp` is
+/// an explicit operator action taken after auth is enabled.
+///
+/// **Security note**: `TenantIp` / `TenantPrincipalIp` read
+/// `TenantContext` from the request extensions placed by the auth
+/// middleware. If the auth middleware did not run, the extractor falls
+/// back to the public tenant — matching the auth middleware's own
+/// "enabled=false → public" short-circuit. No branch silently disables
+/// rate limiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitKeyStrategy {
+    /// Per-IP limiting. Backward-compatible default — identical to the
+    /// behavior shipped before 3c.2.
+    #[default]
+    Ip,
+    /// Per-(tenant, IP) tuple. Recommended default once tenancy is
+    /// enabled in production — prevents a single noisy tenant behind
+    /// one NAT from drowning out other tenants on the same public IP.
+    TenantIp,
+    /// Per-(tenant, principal-or-ip, IP) triple. For deployments that
+    /// need per-user fairness inside a tenant (e.g. a shared enterprise
+    /// IP pool). Falls back to IP when the principal is absent.
+    TenantPrincipalIp,
+}
+
+/// Future-only rate-limit scaffolding for upcoming key-strategy and
+/// per-plan settings. This block is not yet enforced by the router;
+/// the active governor configuration still comes from
+/// `server.rate_limit_per_second` / `server.rate_limit_burst`.
+/// Keeping this explicit avoids two apparent sources of truth until
+/// enforcement is consolidated onto a single config surface.
+///
+/// In 3c.2, only [`RateLimitConfig::key_strategy`] has an active
+/// read path — it's consumed by
+/// [`kenjaku_api::middleware::rate_limit::TenantPrincipalIpExtractor`]
+/// to decide the governor's key shape. The `plan_*_per_second`
+/// fields are reserved for a follow-up slice that consolidates
+/// per-plan + per-tenant bucket sizing onto this struct.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    #[serde(default)]
+    pub key_strategy: RateLimitKeyStrategy,
+    /// Reserved for a follow-up slice. Not currently consumed by the
+    /// governor — active bucket sizing comes from
+    /// `server.rate_limit_per_second` / `server.rate_limit_burst`.
+    #[serde(default = "default_plan_free_per_second")]
+    pub plan_free_per_second: u64,
+    /// Reserved for a follow-up slice. See
+    /// [`RateLimitConfig::plan_free_per_second`].
+    #[serde(default = "default_plan_pro_per_second")]
+    pub plan_pro_per_second: u64,
+    /// Reserved for a follow-up slice. Intended as "effectively
+    /// unlimited" for the `public` internal tenant and enterprise
+    /// customers once the per-plan wiring lands. See
+    /// [`RateLimitConfig::plan_free_per_second`].
+    #[serde(default = "default_plan_enterprise_per_second")]
+    pub plan_enterprise_per_second: u64,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            key_strategy: RateLimitKeyStrategy::default(),
+            plan_free_per_second: default_plan_free_per_second(),
+            plan_pro_per_second: default_plan_pro_per_second(),
+            plan_enterprise_per_second: default_plan_enterprise_per_second(),
+        }
+    }
+}
+
+// Per-plan defaults (per-second buckets). 1/s ≈ 60/min = free default;
+// 4/s ≈ 240/min = pro default; 100/s = effectively unbounded for
+// enterprise. Operators can override per-env.
+fn default_plan_free_per_second() -> u64 {
+    1
+}
+fn default_plan_pro_per_second() -> u64 {
+    4
+}
+fn default_plan_enterprise_per_second() -> u64 {
+    100
+}
+
+// ===========================================================================
 // FAQ tool
 // ===========================================================================
 
@@ -938,6 +1034,7 @@ contextualizer:
                 collection_name_template: "{base}_{tenant}".into(),
                 jwt: None,
             },
+            rate_limit: RateLimitConfig::default(),
         };
 
         let result = cfg.validate_secrets();
@@ -1030,6 +1127,7 @@ contextualizer:
                 collection_name_template: "{base}_{tenant}".into(),
                 jwt: None,
             },
+            rate_limit: RateLimitConfig::default(),
         };
 
         assert!(cfg.validate_secrets().is_ok());
@@ -1289,6 +1387,7 @@ clock_skew_secs: 60
             locale_memory: LocaleMemoryConfig::default(),
             web_search: WebSearchConfig::default(),
             tenancy,
+            rate_limit: RateLimitConfig::default(),
         }
     }
 
@@ -1358,5 +1457,42 @@ clock_skew_secs: 60
             }),
         });
         assert!(cfg.validate_secrets().is_ok());
+    }
+
+    // ---- Phase 3c.2: rate-limit key strategy -----------------------------
+
+    #[test]
+    fn test_rate_limit_key_strategy_default_is_ip() {
+        // Backward-compat invariant: the default strategy MUST be `Ip`
+        // so every existing deployment keeps the pre-3c.2 behavior.
+        assert_eq!(RateLimitKeyStrategy::default(), RateLimitKeyStrategy::Ip);
+    }
+
+    #[test]
+    fn test_rate_limit_key_strategy_serde_snake_case() {
+        for (strat, expected) in [
+            (RateLimitKeyStrategy::Ip, "\"ip\""),
+            (RateLimitKeyStrategy::TenantIp, "\"tenant_ip\""),
+            (
+                RateLimitKeyStrategy::TenantPrincipalIp,
+                "\"tenant_principal_ip\"",
+            ),
+        ] {
+            let j = serde_json::to_string(&strat).unwrap();
+            assert_eq!(j, expected);
+            let back: RateLimitKeyStrategy = serde_json::from_str(&j).unwrap();
+            assert_eq!(back, strat);
+        }
+    }
+
+    #[test]
+    fn test_rate_limit_config_parses_partial_yaml() {
+        // Only `key_strategy` overridden; per-plan defaults hold.
+        let yaml = "key_strategy: tenant_ip\n";
+        let cfg: RateLimitConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.key_strategy, RateLimitKeyStrategy::TenantIp);
+        assert_eq!(cfg.plan_free_per_second, 1);
+        assert_eq!(cfg.plan_pro_per_second, 4);
+        assert_eq!(cfg.plan_enterprise_per_second, 100);
     }
 }

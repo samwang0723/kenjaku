@@ -267,57 +267,52 @@ fn build_decoding_key(
 mod tests {
     use super::*;
 
+    use std::sync::OnceLock;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use jsonwebtoken::{EncodingKey, Header, encode};
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+    use rsa::RsaPrivateKey;
+    use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 
     // ---------- Fixtures --------------------------------------------------
+    //
+    // Historically this module embedded a hardcoded RSA-2048 PEM pair.
+    // PR #17 Copilot review #5 flagged that as a CWE-798 hardcoded-
+    // credentials smell. Migrated to runtime keygen matching the
+    // pattern already in `kenjaku-api` (`tests/auth_flow.rs` and
+    // `src/middleware/auth.rs` tests). ~200ms keygen cost amortized
+    // across all tests via `OnceLock`; seeded RNG keeps the
+    // materialized key deterministic + reproducible.
 
-    /// Test RSA-2048 keypair. Generated once via `openssl genrsa 2048`
-    /// for deterministic, fast tests (no runtime RNG). NEVER used in
-    /// production; only in this file's cfg(test) block.
-    const TEST_RSA_PRIVATE_PEM: &str = "-----BEGIN PRIVATE KEY-----
-MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDAJQWvA8pvDZ6C
-IuvY10hfj8HYdHwsYBGmskms8VDpzmn4uxTJ4xuGTHMVvHZxXFf78baHFl67tJY0
-juXMKy79lX8zG2HrXFJAFYb5+HCS0fJl/4QEBYKMXlfrkmu4VYSIaH+Srh6bJH7y
-GOqfpc9YHb66EKdv+invF9cWC952nrCYC8c65KIndmU/qkwo1w6imqT+PxODIH32
-AqmKK+PCGYYr+OnKCDyhvbP9NxbgW4m/NwFSC3j5kNR7X97OB3PqU5x6OUXamGGd
-d40EjmLpoxaVLFs4uXA49I2oDaT3tgW7Syeb2XEI48uO2oz1dPZBcAmnH0zFy2A8
-N7UA3OurAgMBAAECggEAP4ve+ddUm27TJfH7sz7b4jLuprI7oQdyvwFG6Ynzuye3
-l3nz8aMJJtzg0Ob/+xTRynLR7ZJh6U1bwe0ipegARgCrzVC4jTj+wM/90G0wefYy
-ZzZeyF+0Ic1P4YqO0quBxgVdb7rjR2cGDvZbnkodrWRFAE9iuN9w//CQA2wQeoUE
-qn5nNZOjZs9nmsvtvhoF2t0/v54Vey2eyr30gnfMITGQyeeMAQ5mxv3leqjy482H
-JplY5bwZSpHfNYJaFUI743xlzo4agIm0l7yChB6k8VzRhk2zSX2E3+WtY3hryLDL
-hvXZaxi+KHBWIMwNwbh04BgQV75wUDFwdoFOga7UpQKBgQD1WBwO7oJQL9o9+Ijb
-/YF+CJ8BLddK3ssEUqZ06uPUMb4/auMx95Kwwit1xqeCGCWraQtZipKMPLXA6xAV
-LS9WxWqoORfj5BISzHILt+rEv3GX9ga6cBatb/aKx96TQxHArYTliNeGui3ci+4k
-guDEtWj6pkguQ8z0e68haFc4nQKBgQDIfWgSoUi+VDMYNdzEk7lATI9UpVCFRi4u
-D3hlTXfacw0FpVSmFKHN+bmUjTzR8uiYRwjcIYg7TaJtUVoP67wXGaaN8nUm/ow/
-UKm6z+NkJgbeoHqeqVCjybA/18tYTKHPeiAKrkZE4n9P9hy2/oCsruOIEcky+A+H
-B891971O5wKBgQDMRuN9zzrzVxSIurIBMW8rKDRz/94dOamh3Ms52AWAPTahiPbI
-ONGLmPAkrRX1rPNYaCsKD+X7G+VdTpridu/OeKtYi8kHd3NQ8acXeLfhv2DuXOu3
-OfK3z9xgKxB4XsSeQBvCHhEN3WCoHF5ZShupzT4uTFsXIl65RW5JC55rxQKBgQCC
-V72EdySi0HzTXZkkl+GVIvEAF+XMb37wZRBh08Z619d8dyscOkejcJotMNF8sQ50
-iaIB8y7tVyClL4F83kZPQlbc6+csLcsiEp/2Gtd7sZk/vVdatTr+8M3MA9BonJGK
-IJyaNQjsGdCpPJkYg0dGfQDh4qZKo6j8oaBH0oNZuwKBgQCwzIYjvP5dy39a8ZTq
-Wa1dUXBIflS4RC8AI1fL2L0G9o9VGMoBOcyQxk985PwQPgf9aeOKrZcOQvqZS8IB
-w7KzVbxMxttIqKe7ji0b1u8AXfMJ6Fq+vnh+a3ILhWrBnSgUxRCiW7fKRrDwXjjS
-jwgqNZx/qADYhiBGaZ8ul31JWw==
------END PRIVATE KEY-----
-";
+    /// Process-wide test keypair.
+    struct TestKeypair {
+        private_pem: String,
+        public_pem: String,
+    }
 
-    const TEST_RSA_PUBLIC_PEM: &str = "-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwCUFrwPKbw2egiLr2NdI
-X4/B2HR8LGARprJJrPFQ6c5p+LsUyeMbhkxzFbx2cVxX+/G2hxZeu7SWNI7lzCsu
-/ZV/Mxth61xSQBWG+fhwktHyZf+EBAWCjF5X65JruFWEiGh/kq4emyR+8hjqn6XP
-WB2+uhCnb/op7xfXFgvedp6wmAvHOuSiJ3ZlP6pMKNcOopqk/j8TgyB99gKpiivj
-whmGK/jpygg8ob2z/TcW4FuJvzcBUgt4+ZDUe1/ezgdz6lOcejlF2phhnXeNBI5i
-6aMWlSxbOLlwOPSNqA2k97YFu0snm9lxCOPLjtqM9XT2QXAJpx9MxctgPDe1ANzr
-qwIDAQAB
------END PUBLIC KEY-----
-";
+    fn keypair() -> &'static TestKeypair {
+        static KP: OnceLock<TestKeypair> = OnceLock::new();
+        KP.get_or_init(|| {
+            let mut rng = StdRng::seed_from_u64(0xDEADBEEF_CAFEBABE);
+            let priv_key = RsaPrivateKey::new(&mut rng, 2048).expect("rsa keygen");
+            let pub_key = priv_key.to_public_key();
+            let private_pem = priv_key
+                .to_pkcs8_pem(LineEnding::LF)
+                .expect("pkcs8 priv pem")
+                .to_string();
+            let public_pem = pub_key
+                .to_public_key_pem(LineEnding::LF)
+                .expect("spki pub pem");
+            TestKeypair {
+                private_pem,
+                public_pem,
+            }
+        })
+    }
 
     const TEST_ISSUER: &str = "kenjaku-test-issuer";
     const TEST_AUDIENCE: &str = "kenjaku-test-audience";
@@ -339,7 +334,7 @@ qwIDAQAB
             algorithm: JwtAlgorithm::RS256,
             clock_skew_secs: 5,
         };
-        JwtValidator::new(&cfg, TEST_RSA_PUBLIC_PEM.as_bytes()).expect("validator constructed")
+        JwtValidator::new(&cfg, keypair().public_pem.as_bytes()).expect("validator constructed")
     }
 
     fn now_secs() -> u64 {
@@ -353,7 +348,7 @@ qwIDAQAB
     /// as RS256. Callers pass a `serde_json::Value` so they can omit
     /// or tamper with specific fields.
     fn mint_rs256(claims: &serde_json::Value) -> String {
-        let enc_key = EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE_PEM.as_bytes())
+        let enc_key = EncodingKey::from_rsa_pem(keypair().private_pem.as_bytes())
             .expect("encoding key from private PEM");
         encode(&Header::new(Algorithm::RS256), claims, &enc_key).expect("mint rs256")
     }
@@ -515,7 +510,7 @@ qwIDAQAB
         let v = make_validator();
         // HMAC-sign with the public PEM as the shared secret — the
         // classic algorithm-confusion attack.
-        let hs_key = EncodingKey::from_secret(TEST_RSA_PUBLIC_PEM.as_bytes());
+        let hs_key = EncodingKey::from_secret(keypair().public_pem.as_bytes());
         let token = encode(&Header::new(Algorithm::HS256), &default_claims(), &hs_key)
             .expect("hs256 mint succeeds — but validator must still reject");
         let err = v.validate(&token).expect_err(
@@ -767,7 +762,7 @@ qwIDAQAB
             clock_skew_secs: 30,
         };
         // ...but bytes are RSA.
-        let err = JwtValidator::new(&cfg, TEST_RSA_PUBLIC_PEM.as_bytes())
+        let err = JwtValidator::new(&cfg, keypair().public_pem.as_bytes())
             .expect_err("RSA PEM for ES256 must fail");
         assert!(matches!(err, Error::Config(_)));
     }
@@ -784,7 +779,7 @@ qwIDAQAB
             algorithm: JwtAlgorithm::RS256,
             clock_skew_secs: 60,
         };
-        let v = JwtValidator::new(&cfg, TEST_RSA_PUBLIC_PEM.as_bytes()).unwrap();
+        let v = JwtValidator::new(&cfg, keypair().public_pem.as_bytes()).unwrap();
 
         // Just-expired within leeway: must accept.
         let now = now_secs();
