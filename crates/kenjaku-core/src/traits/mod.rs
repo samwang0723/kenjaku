@@ -1,6 +1,7 @@
 pub mod brain;
 pub mod classifier;
 pub mod clusterer;
+pub mod collection;
 pub mod embedding;
 pub mod generator;
 pub mod intent;
@@ -12,3 +13,4 @@ pub mod translator;
 pub mod web_search;
 
 pub use clusterer::{Cluster, Clusterer};
+pub use collection::{CollectionResolver, PrefixCollectionResolver};
