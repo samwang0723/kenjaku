@@ -7,10 +7,9 @@ use tracing::{debug, error};
 
 use crate::AppState;
 use crate::dto::response::{ApiResponse, BlendedItemDto, TopSearchesResponse};
-use crate::extractors::ResolvedLocale;
+use crate::extractors::{ResolvedLocale, TenantCtx};
 
 use kenjaku_core::types::suggestion::SuggestionSource;
-use kenjaku_core::types::tenant::TenantContext;
 
 /// Maximum result limit for top searches.
 const MAX_LIMIT: usize = 100;
@@ -46,6 +45,7 @@ fn default_limit() -> usize {
 /// delegates to `SuggestionService` for the blended top-searches path (per
 /// architect.md sync contract — the DTO shape does not change).
 pub async fn top_searches(
+    TenantCtx(tctx): TenantCtx,
     State(state): State<Arc<AppState>>,
     resolved: ResolvedLocale,
     Query(params): Query<TopSearchesQuery>,
@@ -62,10 +62,7 @@ pub async fn top_searches(
         "top_searches resolved locale"
     );
 
-    // 3c: replace with TenantContext extractor driven by the JWT
-    // middleware. Until then every request resolves to the `public`
-    // tenant.
-    let tctx = TenantContext::public();
+    // 3c.2: tctx now arrives via the `TenantCtx` extractor (above).
 
     match state
         .suggestion_service

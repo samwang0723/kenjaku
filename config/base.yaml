@@ -112,3 +112,15 @@ tenancy:
   header_name: "X-Tenant-Id"
   default_tenant: "public"
   collection_name_template: "{base}_{tenant}"
+
+# Rate-limit key strategy (Phase 3c.2). `ip` is the backward-compatible
+# default — identical to pre-3c.2 behavior. Switch to `tenant_ip` or
+# `tenant_principal_ip` only after tenancy is enabled (flipping
+# `tenancy.enabled=true` without re-keying the limiter is still safe —
+# the strategy reads `TenantContext` from request extensions and falls
+# back to the public tenant for unauthenticated traffic).
+rate_limit:
+  key_strategy: "ip"
+  plan_free_per_second: 1
+  plan_pro_per_second: 4
+  plan_enterprise_per_second: 100

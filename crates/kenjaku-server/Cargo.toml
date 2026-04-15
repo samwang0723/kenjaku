@@ -18,3 +18,12 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true }
 async-trait = { workspace = true }
+# JWT public-key fingerprint hashing for the audit log + the
+# `sha256_first_8` helper. Both crates are already transitively in
+# Cargo.lock via aws-lc-rs / jsonwebtoken / qdrant-client, so zero
+# net-new supply chain.
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
