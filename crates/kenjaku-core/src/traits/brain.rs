@@ -20,6 +20,15 @@ use crate::types::search::{LlmResponse, RetrievedChunk, StreamChunk, Translation
 /// The `SearchOrchestrator` depends on `Arc<dyn Brain>` and routes all
 /// intent classification, translation, generation, and suggestion calls
 /// through this trait.
+///
+/// **Phase 2 note:** `Brain` is still the orchestrator-facing contract,
+/// but the concrete implementation wired into the pipeline is now
+/// [`CompositeBrain`](../../../../../kenjaku-service/src/brain/composite.rs)
+/// which composes three sub-traits (`Classifier`, `Translator`,
+/// `Generator`). The default methods [`has_web_grounding`] and
+/// [`model_name`] replace two Phase 1 leaks — the hardcoded
+/// `has_web_grounding: bool` constructor arg on `SinglePassPipeline`
+/// and the hardcoded `"gemini"` model name in streaming `done` metadata.
 #[async_trait]
 pub trait Brain: Send + Sync {
     /// Classify the intent of a user query.
@@ -71,4 +80,22 @@ pub trait Brain: Send + Sync {
         answer: &str,
         cancel: &CancellationToken,
     ) -> Result<Vec<String>>;
+
+    /// Whether the underlying Generator attaches its own built-in
+    /// web-grounding tool (e.g. Gemini's `google_search`).
+    ///
+    /// The pipeline queries this before assembling the conversation so
+    /// the `ConversationAssembler` can pick the right system-instruction
+    /// variant. Default: `false`. `CompositeBrain` overrides this to
+    /// forward to its `Generator`.
+    fn has_web_grounding(&self) -> bool {
+        false
+    }
+
+    /// Short identifier for the Generator's underlying model, echoed in
+    /// streaming `done` metadata. Default: `"unknown"`. `CompositeBrain`
+    /// overrides this to forward to its `Generator`.
+    fn model_name(&self) -> &str {
+        "unknown"
+    }
 }

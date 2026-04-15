@@ -7,9 +7,11 @@
 //!
 //! Forward-compat notes (tracked in
 //! `docs/architecture/flexibility-refactor-tech-spec.md`):
-//! - Phase 2 will swap `Arc<dyn Brain>` for a composed
-//!   `Classifier + Translator + Generator` triple without changing
-//!   the [`SearchPipeline`] trait signature.
+//! - Phase 2 (LANDED): the `Arc<dyn Brain>` is now a `CompositeBrain`
+//!   composing `Classifier + Translator + Generator`. The pipeline
+//!   signature is unchanged; the `has_web_grounding: bool` and
+//!   hardcoded `"gemini"` model-name leaks are gone — both are now
+//!   read via `Brain::has_web_grounding()` / `Brain::model_name()`.
 //! - Phase 3 will thread `TenantContext` through `search`,
 //!   `search_stream`, and `complete_stream` — that is the breaking
 //!   change called out in the trait's rustdoc.
@@ -67,10 +69,6 @@ pub struct SinglePassPipeline {
     suggestion_count: usize,
     /// Per-tool timeout in milliseconds.
     tool_budget_ms: u64,
-    /// Whether the Brain has Gemini's built-in `google_search` tool.
-    /// Used by the `ConversationAssembler` to select the correct system
-    /// instruction variant.
-    has_web_grounding: bool,
 }
 
 impl SinglePassPipeline {
@@ -87,7 +85,6 @@ impl SinglePassPipeline {
         web_search_config: &WebSearchConfig,
         collection_name: String,
         suggestion_count: usize,
-        has_web_grounding: bool,
     ) -> Self {
         let tunnel = ToolTunnel::new(tools);
         Self {
@@ -102,7 +99,6 @@ impl SinglePassPipeline {
             collection_name,
             suggestion_count,
             tool_budget_ms: web_search_config.timeout_ms,
-            has_web_grounding,
         }
     }
 
@@ -199,7 +195,7 @@ impl SinglePassPipeline {
     }
 
     fn llm_model_name(&self) -> String {
-        "gemini".to_string()
+        self.brain.model_name().to_string()
     }
 }
 
@@ -294,7 +290,7 @@ impl SearchPipeline for SinglePassPipeline {
             &history,
             &search_query,
             detected_locale,
-            self.has_web_grounding,
+            self.brain.has_web_grounding(),
             &chunks,
         );
 
@@ -514,7 +510,7 @@ impl SearchPipeline for SinglePassPipeline {
             &history,
             &search_query,
             detected_locale,
-            self.has_web_grounding,
+            self.brain.has_web_grounding(),
             &chunks,
         );
 
@@ -823,7 +819,6 @@ mod tests {
             collection_name: "test-collection".into(),
             suggestion_count: 3,
             tool_budget_ms: 5000,
-            has_web_grounding: false,
         };
         (pipeline, conv_rx)
     }
@@ -1259,9 +1254,11 @@ mod tests {
     }
 
     #[test]
-    fn llm_model_name_returns_gemini() {
+    fn llm_model_name_reads_from_brain_default() {
+        // MockBrain uses Brain trait default model_name() -> "unknown".
+        // Real GeminiBrain provides the configured model name.
         let brain = MockBrain::new();
         let (pipeline, _rx) = make_pipeline(brain, vec![]);
-        assert_eq!(pipeline.llm_model_name(), "gemini");
+        assert_eq!(pipeline.llm_model_name(), "unknown");
     }
 }
