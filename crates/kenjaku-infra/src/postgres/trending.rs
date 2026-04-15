@@ -35,11 +35,19 @@ impl TrendingRepository {
     ) -> Result<()> {
         let period_str = period.to_string();
 
+        // Phase 3a migration dropped the old UNIQUE(locale, query, period,
+        // period_date) constraint in favor of the tenant-scoped composite
+        // `uniq_popular_query_tenant_locale`. The INSERT still omits
+        // `tenant_id` — the column's DEFAULT 'public' fills it — but the
+        // ON CONFLICT target must name every column in the new unique index,
+        // otherwise Postgres raises "no unique or exclusion constraint
+        // matching the ON CONFLICT specification" and the flush worker
+        // error-loops every 5 min. Phase 3b will thread &TenantContext here.
         sqlx::query(
             r#"
             INSERT INTO popular_queries (locale, query, search_count, period, period_date)
             VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (locale, query, period, period_date)
+            ON CONFLICT (tenant_id, locale, query, period, period_date)
             DO UPDATE SET search_count = EXCLUDED.search_count,
                           updated_at = NOW()
             "#,

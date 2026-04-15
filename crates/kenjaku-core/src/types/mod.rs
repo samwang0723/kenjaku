@@ -6,6 +6,7 @@ pub mod locale;
 pub mod message;
 pub mod search;
 pub mod suggestion;
+pub mod tenant;
 pub mod tool;
 pub mod trending;
 
@@ -14,3 +15,4 @@ pub use suggestion::{
     BlendedSuggestion, ClusterQuestions, DefaultSuggestion, RefreshBatch, RefreshStatus,
     SuggestionSource,
 };
+pub use tenant::{MAX_ID_LEN, PlanTier, PrincipalId, TenantContext, TenantId};

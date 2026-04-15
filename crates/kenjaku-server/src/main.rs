@@ -6,6 +6,7 @@ use tracing::info;
 use kenjaku_core::config::load_config;
 use kenjaku_core::traits::brain::Brain;
 use kenjaku_core::traits::classifier::Classifier;
+use kenjaku_core::traits::collection::{CollectionResolver, PrefixCollectionResolver};
 use kenjaku_core::traits::generator::Generator;
 use kenjaku_core::traits::tool::Tool;
 use kenjaku_core::traits::translator::Translator;
@@ -163,6 +164,16 @@ async fn main() -> anyhow::Result<()> {
     let generator: Arc<dyn Generator> = gemini_brain.clone();
 
     let brain: Arc<dyn Brain> = Arc::new(CompositeBrain::new(classifier, translator, generator));
+
+    // Phase 3a: construct the CollectionResolver so DI wiring is
+    // validated at startup. Slice 3b threads this into DocRagTool +
+    // HybridRetriever so each tenant reads from its own Qdrant
+    // collection. In 3a the resolver is unused by the retrieval path —
+    // the bare `config.qdrant.collection_name` is still threaded
+    // through the existing Tool constructors a few lines below.
+    let _collection_resolver: Arc<dyn CollectionResolver> = Arc::new(
+        PrefixCollectionResolver::new(config.qdrant.collection_name.clone()),
+    );
 
     // Build the Tool list — DocRag (tier 1) then BraveWeb (tier 2).
     let doc_rag: Arc<dyn Tool> = Arc::new(DocRagTool::new(
