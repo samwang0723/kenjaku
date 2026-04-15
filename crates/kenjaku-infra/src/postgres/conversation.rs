@@ -90,17 +90,26 @@ impl ConversationRepository {
         Ok(inserted)
     }
 
-    /// Get conversations by session ID.
+    /// Get conversations by (tenant_id, session_id).
+    ///
+    /// H2 (3d.1 fix): `tenant_id` is bound alongside `session_id` so a
+    /// session_id shared across tenants cannot cross-read. Callers pass
+    /// `tctx.tenant_id.as_str()` so the query stays tenant-scoped.
     #[instrument(skip(self))]
-    pub async fn get_by_session(&self, session_id: &str) -> Result<Vec<Conversation>> {
+    pub async fn get_by_session(
+        &self,
+        tenant_id: &str,
+        session_id: &str,
+    ) -> Result<Vec<Conversation>> {
         let rows = sqlx::query_as::<_, ConversationRow>(
             r#"
             SELECT id, session_id, request_id, query, response_text, locale, intent, meta, created_at
             FROM conversations
-            WHERE session_id = $1
+            WHERE tenant_id = $1 AND session_id = $2
             ORDER BY created_at ASC
             "#,
         )
+        .bind(tenant_id)
         .bind(session_id)
         .fetch_all(&self.pool)
         .await

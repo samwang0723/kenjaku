@@ -46,9 +46,19 @@ impl FeedbackService {
         self.repo.get_by_id(id).await
     }
 
-    /// Get all feedback for a session.
-    pub async fn get_by_session(&self, session_id: &str) -> Result<Vec<Feedback>> {
-        self.repo.get_by_session(session_id).await
+    /// Get all feedback for a (tenant, session) pair.
+    ///
+    /// H2 (3d.1 fix): `tctx` is required so the repo query binds
+    /// `tenant_id` — a session_id shared across tenants cannot
+    /// cross-read. Currently unreached from any live handler.
+    pub async fn get_by_session(
+        &self,
+        tctx: &TenantContext,
+        session_id: &str,
+    ) -> Result<Vec<Feedback>> {
+        self.repo
+            .get_by_session(tctx.tenant_id.as_str(), session_id)
+            .await
     }
 
     /// List available reason categories.
