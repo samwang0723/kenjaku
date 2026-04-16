@@ -303,7 +303,10 @@ impl SearchPipeline for SinglePassPipeline {
             .collection_resolver
             .resolve(&tctx.tenant_id)
             .await
-            .map_err(|e| Error::Validation(format!("collection resolve failed: {e}")))?;
+            .map_err(|e| {
+                tracing::warn!(tenant_id = %tctx.tenant_id, error = %e, "Collection resolution failed");
+                Error::Validation("collection resolve failed".to_string())
+            })?;
 
         let tool_req = ToolRequest::new(
             req.query.clone(),
@@ -527,7 +530,10 @@ impl SearchPipeline for SinglePassPipeline {
             .collection_resolver
             .resolve(&tctx.tenant_id)
             .await
-            .map_err(|e| Error::Validation(format!("collection resolve failed: {e}")))?;
+            .map_err(|e| {
+                tracing::warn!(tenant_id = %tctx.tenant_id, error = %e, "Collection resolution failed");
+                Error::Validation("collection resolve failed".to_string())
+            })?;
 
         let tool_req = ToolRequest::new(
             req.query.clone(),

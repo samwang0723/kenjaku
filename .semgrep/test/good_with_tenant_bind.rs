@@ -1,6 +1,6 @@
-// Fixture: query where tenant_id appears only in a `.bind(...)` call
-// (e.g. table-qualified SQL `c.tenant_id`). The rule MUST NOT fire —
-// the substring `tenant_id` is present in the matched builder chain.
+// Fixture: query where tenant_id appears in the SQL as a table-qualified
+// column reference (`c.tenant_id`). The rule MUST NOT fire for this
+// qualified SQL usage in the matched builder chain.
 // Not compiled.
 
 #![allow(unused)]

@@ -53,6 +53,13 @@ rules:
       `INSERT INTO ... (tenant_id, ...)` column, and a matching
       `.bind(...)` for the tenant_id value.
 
+      Limitation: this rule checks for the substring `tenant_id` anywhere
+      in the matched sqlx builder chain (SQL text + .bind() calls). It
+      will NOT catch a query that references `tenant_id` as a SELECT column
+      or in a comment without actually using it for WHERE/INSERT scoping.
+      Compile-time signature guards (fn-pointer coercion requiring
+      &TenantContext) provide the complementary Rust-API-level enforcement.
+
       If the query is legitimately cross-tenant (audit / admin / global
       reference table), add `// nosemgrep: tenant-scope-required` on the
       preceding line with a one-line justification comment.

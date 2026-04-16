@@ -11,11 +11,13 @@ Run from the repository root:
 semgrep --config .semgrep/tenant-scope.yml .semgrep/test/
 ```
 
-Expected output: **exactly one finding**, in `bad_missing_tenant.rs`.
+Expected output: **exactly two findings**, in `bad_missing_tenant.rs` and
+`bad_get_by_id_no_tenant.rs`.
 
 | Fixture | Expected | Why |
 |---|---|---|
 | `bad_missing_tenant.rs` | **FIRES** | Pre-H2 shape: `WHERE session_id = $1` with no tenant_id anywhere. |
+| `bad_get_by_id_no_tenant.rs` | **FIRES** | Lookup-by-id shape with no tenant_id predicate or tenant-scoped bind. |
 | `good_with_tenant_in_sql.rs` | silent | `tenant_id` appears in the SQL string. |
 | `good_with_tenant_bind.rs` | silent | `tenant_id` appears via `c.tenant_id` and `.bind(tctx_tenant_id)`. |
 
