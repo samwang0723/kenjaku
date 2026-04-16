@@ -266,44 +266,41 @@ impl SearchPipeline for SinglePassPipeline {
         let cancel = CancellationToken::new();
         let usage_tracker = SharedUsageTracker::new();
 
-        // Step 1 + 2: Classify intent AND translate/normalize+detect-locale
-        // in parallel. Both are independent LLM calls, so we save ~1s by
-        // issuing them together.
-        let (intent_result, translate_result) = tokio::join!(
-            self.brain.classify_intent(&req.query, &cancel),
-            self.brain.translate(&req.query, &cancel),
-        );
-
-        let intent = match intent_result {
-            Ok((classification, call)) => {
-                if let Some(c) = call {
+        // Step 1 + 2: Merged preamble — classify intent + translate/normalize
+        // + detect-locale.
+        //
+        // `brain.preprocess` decides at runtime which call shape to use:
+        //   - `pipeline.mode = single_pass` (default): parallel
+        //     classify_intent ∥ translate (today's behavior, 2 LLM calls)
+        //   - `pipeline.mode = two_call`: one merged Gemini call with
+        //     structured-output JSON (Phase A, 1 LLM call)
+        //
+        // Either way, the pipeline downstream consumes one
+        // `QueryPreprocessing` plus the LlmCall accounting entries.
+        // On any failure (rare — fallback paths are layered through
+        // CompositeBrain and GeminiProvider), we degrade to (Unknown
+        // intent, raw query, en locale) and continue.
+        let (intent, translate_for_resolver) = match self
+            .brain
+            .preprocess(&req.query, &cancel)
+            .await
+        {
+            Ok((preprocessing, calls)) => {
+                for c in calls {
                     usage_tracker.record(c);
                 }
                 info!(
-                    intent = %classification.intent,
-                    confidence = classification.confidence,
-                    "Query intent classified"
+                    intent = %preprocessing.intent.intent,
+                    confidence = preprocessing.intent.confidence,
+                    "Query preprocessed"
                 );
-                classification.intent
+                (preprocessing.intent.intent, Ok(preprocessing.translation))
             }
             Err(e) => {
-                warn!(error = %e, "Intent classification failed, defaulting to Unknown");
-                Intent::Unknown
+                warn!(error = %e, "Preprocess failed, defaulting to Unknown intent + raw query");
+                (Intent::Unknown, Err(e))
             }
         };
-
-        // Unpack translate result: propagate the usage, then hand the
-        // bare translation result back to `resolve_translation`.
-        let translate_for_resolver: Result<kenjaku_core::types::search::TranslationResult> =
-            match translate_result {
-                Ok((tr, call)) => {
-                    if let Some(c) = call {
-                        usage_tracker.record(c);
-                    }
-                    Ok(tr)
-                }
-                Err(e) => Err(e),
-            };
 
         let (search_query, detected_locale, locale_source) =
             resolve_translation(&req.query, translate_for_resolver);

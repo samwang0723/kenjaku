@@ -136,3 +136,21 @@ rate_limit:
   plan_free_per_second: 1          # reserved — not yet enforced
   plan_pro_per_second: 4           # reserved — not yet enforced
   plan_enterprise_per_second: 100  # reserved — not yet enforced
+
+# Pipeline call-shape selector. Phase A (this slice) ships only the
+# preamble half — when `mode = two_call`, classify + translate +
+# locale-detect collapse into one Gemini structured-output call. The
+# generate + suggest pair is unchanged until Phase B.
+#
+# Modes:
+#   - single_pass: today's behavior. Parallel classify ∥ translate,
+#     separate generate, separate suggest. 4 LLM calls per request.
+#   - two_call:    merged preamble (1 call) + separate generate +
+#                  separate suggest. 3 LLM calls per request.
+#                  (Phase B will collapse generate+suggest to make
+#                  this 2 LLM calls total.)
+#
+# Default `single_pass` preserves byte-for-byte legacy behavior. Flip
+# to `two_call` per environment to A/B latency + cost.
+pipeline:
+  mode: single_pass

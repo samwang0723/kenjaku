@@ -29,6 +29,14 @@ pub struct AppConfig {
     /// `key_strategy = ip` preserves pre-3c.2 behavior byte-for-byte.
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
+    /// Pipeline call-shape selector. Default `mode = single_pass`
+    /// preserves today's 4-call layout (classify ∥ translate, generate,
+    /// suggest). `mode = two_call` collapses the preamble pair into one
+    /// merged Gemini call with structured-output JSON, then (Phase B)
+    /// will also merge generate+suggest. Phase A ships only the
+    /// preamble half.
+    #[serde(default)]
+    pub pipeline: PipelineConfig,
 }
 
 impl AppConfig {
@@ -277,6 +285,38 @@ fn default_chunk_size() -> usize {
 
 fn default_chunk_overlap() -> usize {
     50
+}
+
+/// Pipeline call-shape selector — controls how preamble (and, in
+/// Phase B, generate+suggest) are issued to the LLM provider.
+///
+/// `single_pass` (default): today's behavior. Two parallel preamble
+/// calls (`classify_intent` ∥ `translate`), separate `generate`,
+/// separate `suggest` — 4 LLM calls total per request.
+///
+/// `two_call`: merged preamble (one structured-output Gemini call)
+/// plus, once Phase B ships, merged generate+suggest with sentinel
+/// delimiter — 2 LLM calls total.
+///
+/// Phase A only honors the preamble switch; the generate+suggest path
+/// is unchanged regardless of `mode` until Phase B lands.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineConfig {
+    #[serde(default)]
+    pub mode: PipelineMode,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineMode {
+    /// Today's behavior: parallel classify+translate, separate generate,
+    /// separate suggest. 4 LLM calls per request.
+    #[default]
+    SinglePass,
+    /// Experimental: merged preamble (Phase A) + later merged
+    /// generate+suggest (Phase B). Behind this flag so we can A/B
+    /// safely in production.
+    TwoCall,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1011,6 +1051,7 @@ contextualizer:
                 },
             },
             rate_limit: RateLimitConfig::default(),
+            pipeline: PipelineConfig::default(),
         };
 
         let result = cfg.validate_secrets();
@@ -1107,6 +1148,7 @@ contextualizer:
                 },
             },
             rate_limit: RateLimitConfig::default(),
+            pipeline: PipelineConfig::default(),
         };
 
         assert!(cfg.validate_secrets().is_ok());
@@ -1377,6 +1419,7 @@ clock_skew_secs: 60
                 },
             },
             rate_limit: RateLimitConfig::default(),
+            pipeline: PipelineConfig::default(),
         };
         let err = cfg.validate_secrets().unwrap_err().to_string();
         assert!(err.contains("tenancy.jwt.issuer"), "got: {err}");

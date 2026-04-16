@@ -5,6 +5,7 @@ use futures::Stream;
 
 use crate::error::{Error, Result};
 use crate::types::message::Message;
+use crate::types::preprocess::QueryPreprocessing;
 use crate::types::search::{LlmResponse, LlmUsage, StreamChunk, TranslationResult};
 use crate::types::suggestion::ClusterQuestions;
 
@@ -63,6 +64,28 @@ pub trait LlmProvider: Send + Sync {
     /// per-call cost in the API response. `None` when the provider
     /// cannot report usage for this call.
     async fn translate(&self, text: &str) -> Result<(TranslationResult, Option<LlmUsage>)>;
+
+    /// **Two-call pipeline (Phase A)** — merged preamble: classify intent
+    /// + translate/normalize + detect locale in a single LLM call.
+    ///
+    /// Replaces the parallel `classify_intent` + `translate` pair when
+    /// `pipeline.mode = two_call` is set. Implementations should issue
+    /// exactly one provider call and return the unified preprocessing
+    /// result.
+    ///
+    /// Default impl returns [`Error::Internal`] so providers that don't
+    /// support structured-output preprocessing (e.g. Claude
+    /// contextualizer, OpenAI embedding-only providers) compile without
+    /// rewrites. The pipeline gracefully falls back to the parallel
+    /// path when this returns `Err`.
+    async fn preprocess_query(
+        &self,
+        _query: &str,
+    ) -> Result<(QueryPreprocessing, Option<LlmUsage>)> {
+        Err(Error::Internal(
+            "preprocess_query not implemented for this LlmProvider".to_string(),
+        ))
+    }
 
     /// Generate follow-up query suggestions based on the query and answer.
     ///

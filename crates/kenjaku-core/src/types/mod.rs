@@ -4,6 +4,7 @@ pub mod feedback;
 pub mod intent;
 pub mod locale;
 pub mod message;
+pub mod preprocess;
 pub mod search;
 pub mod suggestion;
 pub mod tenant;
