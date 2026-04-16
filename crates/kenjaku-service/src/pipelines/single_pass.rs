@@ -1385,4 +1385,125 @@ mod tests {
         let (pipeline, _rx) = make_pipeline(brain, vec![]);
         assert_eq!(pipeline.llm_model_name(), "unknown");
     }
+
+    // ---- 3d.2 CollectionResolver plumbing tests -----------------------------
+
+    /// **Backward-compat invariant (PM non-negotiable).**
+    ///
+    /// Pre-3d.2, `SinglePassPipeline` held `collection_name: String` that was
+    /// a bare clone of `config.qdrant.collection_name`. After 3d.2 the field
+    /// is gone and the pipeline calls `CollectionResolver::resolve` per
+    /// request. For this refactor to be a zero-runtime-change swap in
+    /// disabled-tenancy deployments, `PrefixCollectionResolver::resolve` on
+    /// the `public` tenant MUST return the bare base name byte-for-byte —
+    /// otherwise disabled-tenancy reads route to a nonexistent
+    /// `{base}_public` collection and search returns zero chunks.
+    ///
+    /// This test locks that invariant. If a future resolver impl drifts,
+    /// this test fails loud before docker-smoke or production.
+    #[tokio::test]
+    async fn resolver_produces_legacy_name_for_public_tenant() {
+        use kenjaku_core::types::tenant::TenantId;
+
+        // Reconstruct a resolver with the same shape DI wires in main.rs:
+        // `PrefixCollectionResolver::new(config.qdrant.collection_name.clone())`.
+        let resolver = PrefixCollectionResolver::new("documents");
+
+        let tctx = TenantContext::public();
+        let resolved = resolver.resolve(&tctx.tenant_id).await.unwrap();
+
+        // Byte-for-byte match with the pre-3d.2 hardcoded value. If this
+        // ever drifts, disabled-tenancy deployments will be reading from an
+        // empty Qdrant collection.
+        assert_eq!(resolved, "documents");
+
+        // Belt-and-suspenders: the TenantId literal must remain "public"
+        // so TenantContext::public() still hits the zero-overhead branch.
+        assert_eq!(tctx.tenant_id.as_str(), "public");
+        assert_eq!(
+            TenantId::new("public").unwrap().as_str(),
+            tctx.tenant_id.as_str()
+        );
+    }
+
+    /// Verifies that `SinglePassPipeline` actually threads the resolver
+    /// output into `ToolRequest.collection_name`. Paired with the invariant
+    /// test above — together they prove: (1) the resolver maps public to the
+    /// bare base, and (2) the pipeline respects that mapping on the hot path.
+    #[tokio::test]
+    async fn pipeline_populates_tool_request_collection_from_resolver() {
+        let brain = MockBrain::new();
+        // Keep a concrete-typed handle so we can call `last_collection()`
+        // after `invoke` has run. The pipeline gets an `Arc<dyn Tool>` view
+        // of the same allocation.
+        let mock = Arc::new(MockTool::new("doc_rag"));
+        let tool: Arc<dyn Tool> = mock.clone();
+        let (pipeline, _rx) = make_pipeline(brain, vec![tool]);
+
+        // The make_pipeline helper wires `PrefixCollectionResolver::new("test-collection")`.
+        // For the `public` tenant this resolves to bare "test-collection".
+        let req = make_request();
+        let _ = pipeline
+            .search(&req, &TenantContext::public(), None)
+            .await
+            .unwrap();
+
+        // The pipeline must have written the resolver output into
+        // `ToolRequest.collection_name` — which MockTool records on invoke.
+        assert_eq!(mock.last_collection().as_deref(), Some("test-collection"));
+    }
+
+    /// Non-public tenants get `{base}_{tenant}`. Exercises the pipeline's
+    /// resolver call for a non-default tenant end-to-end.
+    #[tokio::test]
+    async fn pipeline_populates_tool_request_collection_for_non_public_tenant() {
+        use kenjaku_core::types::tenant::TenantId;
+
+        let brain = MockBrain::new();
+        let mock = Arc::new(MockTool::new("doc_rag"));
+        let tool: Arc<dyn Tool> = mock.clone();
+        let (pipeline, _rx) = make_pipeline(brain, vec![tool]);
+
+        let mut tctx_acme = TenantContext::public();
+        tctx_acme.tenant_id = TenantId::new("acme").unwrap();
+
+        let req = make_request();
+        let _ = pipeline.search(&req, &tctx_acme, None).await.unwrap();
+
+        assert_eq!(
+            mock.last_collection().as_deref(),
+            Some("test-collection_acme"),
+            "PrefixCollectionResolver should map non-public tenants to {{base}}_{{tenant}}"
+        );
+    }
+
+    /// Resolver failures must surface as `Error::Validation` (a
+    /// misconfigured tenant is a 4xx condition), NOT fall through as an
+    /// empty collection name that Qdrant would reject with an opaque 404.
+    #[tokio::test]
+    async fn pipeline_resolver_error_returns_validation_error() {
+        use kenjaku_core::types::tenant::TenantId;
+
+        struct BrokenResolver;
+        #[async_trait]
+        impl CollectionResolver for BrokenResolver {
+            async fn resolve(&self, _: &TenantId) -> Result<String> {
+                Err(Error::Config("broken".into()))
+            }
+        }
+
+        let brain = MockBrain::new();
+        let (mut pipeline, _rx) = make_pipeline(brain, vec![]);
+        pipeline.collection_resolver = Arc::new(BrokenResolver);
+
+        let req = make_request();
+        let err = pipeline
+            .search(&req, &TenantContext::public(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Validation(_)),
+            "resolver errors must surface as Validation, got: {err:?}"
+        );
+    }
 }
