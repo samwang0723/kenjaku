@@ -1102,8 +1102,17 @@ async function handleStreamResponse(resp) {
             // (it may have been refreshed during the stream when Gemini
             // attached groundingMetadata) and fall back to start.
             grounding: done.grounding || m.grounding || null,
+            // Per-request LLM token usage + estimated cost. Only known
+            // at stream completion, so it lives on `done`, not `start`.
+            // Mirror the non-streaming envelope so the debug panel
+            // shows parity regardless of which path the client took.
+            usage: done.usage || null,
           },
         };
+        // Attach the raw SSE events below the synthesized envelope so
+        // the debug panel always reflects the complete server payload
+        // verbatim — no field drift if new SSE metadata is added later.
+        fullResponse._sse_events = { start: m, done: done };
         rawJsonPre.textContent = toRawJson(fullResponse);
         hideLoading();
         renderResults(fullResponse);
