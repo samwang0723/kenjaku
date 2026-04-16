@@ -69,7 +69,7 @@ pub trait LlmProvider: Send + Sync {
     /// + translate/normalize + detect locale in a single LLM call.
     ///
     /// Replaces the parallel `classify_intent` + `translate` pair when
-    /// `pipeline.mode = two_call` is set. Implementations should issue
+    /// `pipeline.preamble_mode = merged_preamble` is set. Implementations should issue
     /// exactly one provider call and return the unified preprocessing
     /// result.
     ///

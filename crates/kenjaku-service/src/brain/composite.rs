@@ -21,7 +21,7 @@ use futures::Stream;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use kenjaku_core::config::PipelineMode;
+use kenjaku_core::config::PreambleMode;
 use kenjaku_core::error::Result;
 use kenjaku_core::traits::brain::Brain;
 use kenjaku_core::traits::classifier::Classifier;
@@ -45,21 +45,22 @@ pub struct CompositeBrain {
     classifier: Arc<dyn Classifier>,
     translator: Arc<dyn Translator>,
     generator: Arc<dyn Generator>,
-    /// Pipeline call-shape selector. Controls whether `preprocess`
+    /// Preamble call-shape selector. Controls whether `preprocess`
     /// runs the parallel classify+translate pair (default) or routes
     /// through `preprocessor.preprocess_query` for a single merged
-    /// LLM call. Wired from `config.pipeline.mode` at startup.
-    mode: PipelineMode,
+    /// LLM call. Wired from `config.pipeline.preamble_mode` at startup.
+    mode: PreambleMode,
     /// Optional `LlmProvider` used by the merged-preamble path. Only
-    /// consulted when `mode == TwoCall`. `None` causes a graceful
-    /// fallback to the parallel path even in `two_call` mode (with a
-    /// warning log) so misconfiguration never blocks search.
+    /// consulted when `mode == MergedPreamble`. `None` causes a graceful
+    /// fallback to the parallel path even in `merged_preamble` mode
+    /// (with a warning log) so misconfiguration never blocks search.
     preprocessor: Option<Arc<dyn LlmProvider>>,
 }
 
 impl CompositeBrain {
-    /// Construct a `CompositeBrain` in `single_pass` mode (today's
-    /// default). Use [`CompositeBrain::with_mode`] for `two_call`.
+    /// Construct a `CompositeBrain` in `parallel_preamble` mode
+    /// (today's default). Use [`CompositeBrain::with_mode`] for
+    /// `merged_preamble`.
     pub fn new(
         classifier: Arc<dyn Classifier>,
         translator: Arc<dyn Translator>,
@@ -69,20 +70,20 @@ impl CompositeBrain {
             classifier,
             translator,
             generator,
-            mode: PipelineMode::SinglePass,
+            mode: PreambleMode::ParallelPreamble,
             preprocessor: None,
         }
     }
 
-    /// Construct a `CompositeBrain` with an explicit pipeline mode.
-    /// In `two_call` mode the `preprocessor` is the `LlmProvider`
-    /// used for the merged-preamble call; pass the same `Arc` you
-    /// gave to the `Generator`.
+    /// Construct a `CompositeBrain` with an explicit preamble mode.
+    /// In `merged_preamble` mode the `preprocessor` is the
+    /// `LlmProvider` used for the merged-preamble call; pass the same
+    /// `Arc` you gave to the `Generator`.
     pub fn with_mode(
         classifier: Arc<dyn Classifier>,
         translator: Arc<dyn Translator>,
         generator: Arc<dyn Generator>,
-        mode: PipelineMode,
+        mode: PreambleMode,
         preprocessor: Option<Arc<dyn LlmProvider>>,
     ) -> Self {
         Self {
@@ -113,18 +114,18 @@ impl Brain for CompositeBrain {
         self.translator.translate(query, cancel).await
     }
 
-    /// Phase A: when `mode == TwoCall` and a preprocessor is wired,
-    /// route through `LlmProvider::preprocess_query` for one merged
-    /// Gemini call. Otherwise (single_pass mode, or two_call without
-    /// a preprocessor wired) fall back to the trait's default impl
-    /// which runs `tokio::join!(classify_intent, translate)`.
+    /// Phase A: when `mode == MergedPreamble` and a preprocessor is
+    /// wired, route through `LlmProvider::preprocess_query` for one
+    /// merged Gemini call. Otherwise (parallel_preamble mode, or
+    /// merged_preamble without a preprocessor wired) fall back to the
+    /// parallel classify+translate pair.
     async fn preprocess(
         &self,
         query: &str,
         cancel: &CancellationToken,
     ) -> Result<(QueryPreprocessing, Vec<LlmCall>)> {
         match (self.mode, &self.preprocessor) {
-            (PipelineMode::TwoCall, Some(llm)) => {
+            (PreambleMode::MergedPreamble, Some(llm)) => {
                 if cancel.is_cancelled() {
                     return Err(kenjaku_core::error::Error::Internal(
                         "request cancelled".to_string(),
@@ -163,8 +164,9 @@ impl Brain for CompositeBrain {
                     }
                 }
             }
-            // single_pass, or two_call without preprocessor — run the
-            // parallel classify+translate pair (today's default).
+            // parallel_preamble mode, or merged_preamble without a
+            // preprocessor wired — run the parallel classify+translate
+            // pair (today's default).
             _ => {
                 parallel_preprocess(
                     self.classifier.as_ref(),

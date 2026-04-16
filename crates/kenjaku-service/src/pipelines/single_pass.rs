@@ -270,10 +270,12 @@ impl SearchPipeline for SinglePassPipeline {
         // + detect-locale.
         //
         // `brain.preprocess` decides at runtime which call shape to use:
-        //   - `pipeline.mode = single_pass` (default): parallel
-        //     classify_intent ∥ translate (today's behavior, 2 LLM calls)
-        //   - `pipeline.mode = two_call`: one merged Gemini call with
-        //     structured-output JSON (Phase A, 1 LLM call)
+        //   - `pipeline.preamble_mode = parallel_preamble` (default):
+        //     parallel classify_intent ∥ translate (today's behavior,
+        //     2 LLM calls)
+        //   - `pipeline.preamble_mode = merged_preamble`: one merged
+        //     Gemini call with structured-output JSON (Phase A, 1 LLM
+        //     call)
         //
         // Either way, the pipeline downstream consumes one
         // `QueryPreprocessing` plus the LlmCall accounting entries.
@@ -537,31 +539,34 @@ impl SearchPipeline for SinglePassPipeline {
         let cancel = CancellationToken::new();
         let usage_tracker = SharedUsageTracker::new();
 
-        // Step 1 + 2: Classify intent AND translate/normalize+detect-locale
-        // in parallel.
-        let (intent_result, translate_result) = tokio::join!(
-            self.brain.classify_intent(&req.query, &cancel),
-            self.brain.translate(&req.query, &cancel),
-        );
-        let intent = match intent_result {
-            Ok((c, call)) => {
-                if let Some(lc) = call {
-                    usage_tracker.record(lc);
+        // Step 1 + 2: Merged preamble — classify intent + translate +
+        // detect-locale. Routed through `brain.preprocess` so the
+        // streaming path honors the same `pipeline.preamble_mode`
+        // switch as the non-streaming path. In `parallel_preamble`
+        // mode this still issues two parallel calls (today's
+        // behavior); in `merged_preamble` mode it collapses to one
+        // merged Gemini structured-output call.
+        let (intent, translate_for_resolver) = match self
+            .brain
+            .preprocess(&req.query, &cancel)
+            .await
+        {
+            Ok((preprocessing, calls)) => {
+                for c in calls {
+                    usage_tracker.record(c);
                 }
-                c.intent
+                info!(
+                    intent = %preprocessing.intent.intent,
+                    confidence = preprocessing.intent.confidence,
+                    "Query preprocessed (streaming)"
+                );
+                (preprocessing.intent.intent, Ok(preprocessing.translation))
             }
-            Err(_) => Intent::Unknown,
+            Err(e) => {
+                warn!(error = %e, "Preprocess failed (streaming), defaulting to Unknown intent + raw query");
+                (Intent::Unknown, Err(e))
+            }
         };
-        let translate_for_resolver: Result<kenjaku_core::types::search::TranslationResult> =
-            match translate_result {
-                Ok((tr, call)) => {
-                    if let Some(lc) = call {
-                        usage_tracker.record(lc);
-                    }
-                    Ok(tr)
-                }
-                Err(e) => Err(e),
-            };
         let (search_query, detected_locale, locale_source) =
             resolve_translation(&req.query, translate_for_resolver);
         let translated_query = if search_query != req.query {

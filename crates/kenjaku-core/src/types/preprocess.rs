@@ -2,7 +2,7 @@
 //!
 //! The classic pipeline issues `classify_intent` and `translate` as two
 //! independent LLM calls running in parallel via `tokio::join!`. The
-//! `two_call` pipeline mode replaces those with a single Gemini call
+//! `merged_preamble` pipeline mode replaces those with a single Gemini call
 //! that returns intent + translation + locale-detection in one
 //! structured-output JSON response.
 //!
@@ -18,8 +18,8 @@ use crate::types::search::TranslationResult;
 /// Combined output of the preamble step (intent + translation).
 ///
 /// Produced either by:
-/// - Two parallel LLM calls (`pipeline.mode = single_pass`, today's default), or
-/// - One merged LLM call with structured JSON output (`pipeline.mode = two_call`).
+/// - Two parallel LLM calls (`pipeline.preamble_mode = parallel_preamble`, today's default), or
+/// - One merged LLM call with structured JSON output (`pipeline.preamble_mode = merged_preamble`).
 #[derive(Debug, Clone)]
 pub struct QueryPreprocessing {
     pub intent: IntentClassification,

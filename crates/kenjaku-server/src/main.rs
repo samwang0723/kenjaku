@@ -173,19 +173,21 @@ async fn main() -> anyhow::Result<()> {
     let translator: Arc<dyn Translator> = gemini_brain.clone();
     let generator: Arc<dyn Generator> = gemini_brain.clone();
 
-    // Wire the pipeline call-shape selector. `single_pass` (default)
-    // preserves today's parallel classify+translate behavior.
-    // `two_call` routes preprocessing through the merged structured-
-    // output Gemini call (Phase A). The `Arc<dyn LlmProvider>` we pass
-    // for `preprocessor` is the same `llm_provider` used by the
-    // generator — one wire reuses one provider.
-    let pipeline_mode = config.pipeline.mode;
-    tracing::info!(?pipeline_mode, "Pipeline call-shape selected");
+    // Wire the preamble call-shape selector. `parallel_preamble`
+    // (default) preserves today's parallel classify+translate
+    // behavior. `merged_preamble` routes preprocessing through the
+    // single merged structured-output Gemini call (Phase A — saves
+    // one HTTP round-trip + ~30% of preamble input tokens). The
+    // `Arc<dyn LlmProvider>` we pass for `preprocessor` is the same
+    // `llm_provider` used by the generator — one wire reuses one
+    // provider.
+    let preamble_mode = config.pipeline.preamble_mode;
+    tracing::info!(?preamble_mode, "Preamble call-shape selected");
     let brain: Arc<dyn Brain> = Arc::new(CompositeBrain::with_mode(
         classifier,
         translator,
         generator,
-        pipeline_mode,
+        preamble_mode,
         Some(llm_provider.clone() as Arc<dyn kenjaku_core::traits::llm::LlmProvider>),
     ));
 

@@ -56,19 +56,20 @@ pub trait Brain: Send + Sync {
         cancel: &CancellationToken,
     ) -> Result<(TranslationResult, Option<LlmCall>)>;
 
-    /// **Merged preamble** (used when `pipeline.mode = two_call`):
-    /// produce intent + translation + locale-detection in one shot.
+    /// **Merged preamble** (used when
+    /// `pipeline.preamble_mode = merged_preamble`): produce intent +
+    /// translation + locale-detection in one shot.
     ///
     /// Returns the unified preprocessing result alongside the
     /// [`LlmCall`] accounting entries from however many calls the
-    /// concrete impl actually made — one in `two_call` mode, two in
-    /// `single_pass` mode.
+    /// concrete impl actually made — one in `merged_preamble` mode,
+    /// two in `parallel_preamble` mode.
     ///
     /// Default impl preserves today's pipeline behavior: runs
     /// `classify_intent` and `translate` in parallel via `futures::join!`
     /// and assembles the unified result. `CompositeBrain` overrides
     /// this to call `LlmProvider::preprocess_query` when configured
-    /// for `two_call`.
+    /// for `merged_preamble`.
     ///
     /// **Graceful degradation:** an error in either sub-call is
     /// absorbed — the failing side defaults to (Unknown intent) or
