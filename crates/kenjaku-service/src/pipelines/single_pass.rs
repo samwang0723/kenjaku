@@ -1407,28 +1407,26 @@ mod tests {
     /// `{base}_public` collection and search returns zero chunks.
     ///
     /// This test locks that invariant. If a future resolver impl drifts,
-    /// this test fails loud before docker-smoke or production.
+    /// Phase 3e: the resolver produces uniform names for all tenants.
+    /// `public` -> `documents_public`, `acme` -> `documents_acme`.
     #[tokio::test]
-    async fn resolver_produces_legacy_name_for_public_tenant() {
+    async fn resolver_produces_uniform_name_for_all_tenants() {
         use kenjaku_core::types::tenant::TenantId;
 
-        // Reconstruct a resolver with the same shape DI wires in main.rs:
-        // `PrefixCollectionResolver::new(config.qdrant.collection_name.clone())`.
         let resolver = PrefixCollectionResolver::new("documents");
-
-        let tctx = public_test_context();
-        let resolved = resolver.resolve(&tctx.tenant_id).await.unwrap();
-
-        // Byte-for-byte match with the pre-3d.2 hardcoded value. If this
-        // ever drifts, disabled-tenancy deployments will be reading from an
-        // empty Qdrant collection.
-        assert_eq!(resolved, "documents");
-
-        // Belt-and-suspenders: the TenantId literal must remain "public".
-        assert_eq!(tctx.tenant_id.as_str(), "public");
         assert_eq!(
-            TenantId::new("public").unwrap().as_str(),
-            tctx.tenant_id.as_str()
+            resolver
+                .resolve(&TenantId::new("public").unwrap())
+                .await
+                .unwrap(),
+            "documents_public"
+        );
+        assert_eq!(
+            resolver
+                .resolve(&TenantId::new("acme").unwrap())
+                .await
+                .unwrap(),
+            "documents_acme"
         );
     }
 
@@ -1456,7 +1454,11 @@ mod tests {
 
         // The pipeline must have written the resolver output into
         // `ToolRequest.collection_name` — which MockTool records on invoke.
-        assert_eq!(mock.last_collection().as_deref(), Some("test-collection"));
+        // Phase 3e: public tenant resolves to `{base}_public` like all tenants.
+        assert_eq!(
+            mock.last_collection().as_deref(),
+            Some("test-collection_public")
+        );
     }
 
     /// Non-public tenants get `{base}_{tenant}`. Exercises the pipeline's

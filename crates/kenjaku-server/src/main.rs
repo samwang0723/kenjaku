@@ -69,6 +69,12 @@ async fn main() -> anyhow::Result<()> {
     let qdrant = QdrantClient::new(config.qdrant.clone()).await?;
     qdrant.ensure_collection().await?;
 
+    // Phase 3e: create `{base}_public` alias pointing at the existing
+    // `{base}` collection. Bridges pre-3e data to uniform naming.
+    qdrant
+        .ensure_public_alias(&config.qdrant.collection_name)
+        .await?;
+
     let redis = RedisClient::new(&config.redis).await?;
 
     // Create providers

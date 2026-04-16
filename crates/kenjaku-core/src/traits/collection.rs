@@ -1,15 +1,10 @@
 //! Per-tenant collection resolution.
 //!
-//! Phase 3a introduces this trait as scaffolding. Slice 3b wires it into
-//! `DocRagTool`/`HybridRetriever` so that each tenant reads from its own
-//! Qdrant collection.
+//! # Naming contract (Phase 3e — uniform for all tenants)
 //!
-//! # Naming contract
-//!
-//! The default [`PrefixCollectionResolver`] maps the `public` tenant to
-//! the bare base name (e.g. `documents`) and every other tenant to
-//! `{base}_{tenant}` (e.g. `documents_acme`). This matches
-//! `tenancy.collection_name_template` in `config/base.yaml`.
+//! The default [`PrefixCollectionResolver`] maps **every** tenant to
+//! `{base}_{tenant}` (e.g. `documents_public`, `documents_acme`).
+//! No special case for the `public` tenant.
 //!
 //! The trait is async-only so a future `DbCollectionResolver` reading
 //! `tenants.config_overrides.collection_override` from Postgres slots in
@@ -30,8 +25,7 @@ pub trait CollectionResolver: Send + Sync {
     async fn resolve(&self, tenant: &TenantId) -> Result<String>;
 }
 
-/// Default resolver. `public` maps to the base name; every other tenant
-/// is suffixed with `_{tenant_id}`.
+/// Default resolver. Every tenant maps to `{base_name}_{tenant_id}`.
 ///
 /// `base_name` is plain config data (the Qdrant collection name from
 /// `qdrant.collection_name`), not composition — `pub` is fine here.
@@ -53,11 +47,7 @@ impl PrefixCollectionResolver {
 #[async_trait]
 impl CollectionResolver for PrefixCollectionResolver {
     async fn resolve(&self, tenant: &TenantId) -> Result<String> {
-        if tenant.as_str() == "public" {
-            Ok(self.base_name.clone())
-        } else {
-            Ok(format!("{}_{}", self.base_name, tenant.as_str()))
-        }
+        Ok(format!("{}_{}", self.base_name, tenant.as_str()))
     }
 }
 
@@ -66,17 +56,16 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn public_tenant_returns_bare_base_name() {
+    async fn resolver_produces_uniform_name_for_all_tenants() {
         let r = PrefixCollectionResolver::new("documents");
-        let out = r.resolve(&TenantId::new("public").unwrap()).await.unwrap();
-        assert_eq!(out, "documents");
-    }
-
-    #[tokio::test]
-    async fn non_public_tenant_gets_prefixed() {
-        let r = PrefixCollectionResolver::new("documents");
-        let out = r.resolve(&TenantId::new("acme").unwrap()).await.unwrap();
-        assert_eq!(out, "documents_acme");
+        assert_eq!(
+            r.resolve(&TenantId::new("public").unwrap()).await.unwrap(),
+            "documents_public"
+        );
+        assert_eq!(
+            r.resolve(&TenantId::new("acme").unwrap()).await.unwrap(),
+            "documents_acme"
+        );
     }
 
     #[tokio::test]
@@ -101,7 +90,7 @@ mod tests {
         let r = PrefixCollectionResolver::new("custom_base");
         assert_eq!(
             r.resolve(&TenantId::new("public").unwrap()).await.unwrap(),
-            "custom_base"
+            "custom_base_public"
         );
         assert_eq!(
             r.resolve(&TenantId::new("t1").unwrap()).await.unwrap(),
