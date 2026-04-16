@@ -840,7 +840,15 @@ impl LlmProvider for GeminiProvider {
                         },
                         translation: TranslationResult {
                             normalized: query.to_string(),
-                            detected_locale: DetectedLocale::Supported(Locale::En),
+                            // Emit `Unsupported { tag: "" }` so
+                            // `resolve_translation` records
+                            // `FallbackEn` provenance (not
+                            // `LlmDetected`) — matches the parallel
+                            // path's behavior and the Brain trait
+                            // default impl.
+                            detected_locale: DetectedLocale::Unsupported {
+                                tag: String::new(),
+                            },
                         },
                     },
                     usage,
