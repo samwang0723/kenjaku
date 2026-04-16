@@ -180,9 +180,11 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // Build the Tool list — DocRag (tier 1) then BraveWeb (tier 2).
+    // The same resolver Arc is shared with `SinglePassPipeline` below so
+    // both entry points agree on the collection for any given tenant.
     let doc_rag: Arc<dyn Tool> = Arc::new(DocRagTool::new(
         retriever,
-        collection_resolver,
+        collection_resolver.clone(),
         ToolConfig::default(),
     ));
 
@@ -239,7 +241,7 @@ async fn main() -> anyhow::Result<()> {
         history_store,
         tools,
         &config.web_search,
-        config.qdrant.collection_name.clone(),
+        collection_resolver,
         config.search.suggestion_count,
     ));
 

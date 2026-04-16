@@ -30,8 +30,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument, warn};
 
 use kenjaku_core::config::WebSearchConfig;
-use kenjaku_core::error::Result;
+use kenjaku_core::error::{Error, Result};
 use kenjaku_core::traits::brain::Brain;
+use kenjaku_core::traits::collection::CollectionResolver;
 use kenjaku_core::traits::pipeline::SearchPipeline;
 use kenjaku_core::traits::tool::Tool;
 use kenjaku_core::types::component::SuggestionSource;
@@ -72,7 +73,14 @@ pub struct SinglePassPipeline {
     /// DAG-based tool executor. Tools declare dependencies; the tunnel
     /// resolves execution tiers at construction time via topological sort.
     tunnel: ToolTunnel,
-    collection_name: String,
+    /// Per-tenant collection routing. 3d.2 replaced the zombie
+    /// `collection_name: String` field with the same `Arc<dyn
+    /// CollectionResolver>` already shared with `DocRagTool`. The
+    /// pipeline calls this once per request (in `search` + `search_stream`)
+    /// so the resolved name is populated into `ToolRequest.collection_name`
+    /// — any future tool that reads that field now sees a correctly
+    /// tenant-scoped value instead of a workspace default.
+    collection_resolver: Arc<dyn CollectionResolver>,
     suggestion_count: usize,
     /// Per-tool timeout in milliseconds.
     tool_budget_ms: u64,
@@ -90,7 +98,7 @@ impl SinglePassPipeline {
         history_store: SessionHistoryStore,
         tools: Vec<Arc<dyn Tool>>,
         web_search_config: &WebSearchConfig,
-        collection_name: String,
+        collection_resolver: Arc<dyn CollectionResolver>,
         suggestion_count: usize,
     ) -> Self {
         let tunnel = ToolTunnel::new(tools);
@@ -103,7 +111,7 @@ impl SinglePassPipeline {
             locale_memory: Some(locale_memory),
             history_store,
             tunnel,
-            collection_name,
+            collection_resolver,
             suggestion_count,
             tool_budget_ms: web_search_config.timeout_ms,
         }
@@ -288,12 +296,21 @@ impl SearchPipeline for SinglePassPipeline {
         }
 
         // Step 3 + 3b: Retrieve via tool fan-out (DocRag tier-1, Brave tier-2).
+        // Resolve the tenant-scoped collection name BEFORE building the
+        // ToolRequest so any tool that reads `req.collection_name` sees
+        // the correct value for this tenant, not a workspace default.
+        let collection_name = self
+            .collection_resolver
+            .resolve(&tctx.tenant_id)
+            .await
+            .map_err(|e| Error::Validation(format!("collection resolve failed: {e}")))?;
+
         let tool_req = ToolRequest::new(
             req.query.clone(),
             search_query.clone(),
             detected_locale,
             intent,
-            self.collection_name.clone(),
+            collection_name,
             req.top_k,
             req.request_id.clone(),
             req.session_id.clone(),
@@ -504,12 +521,20 @@ impl SearchPipeline for SinglePassPipeline {
         }
 
         // Step 3 + 3b: Retrieve via tool fan-out.
+        // Resolve the tenant-scoped collection name BEFORE building the
+        // ToolRequest (same contract as the non-streaming path).
+        let collection_name = self
+            .collection_resolver
+            .resolve(&tctx.tenant_id)
+            .await
+            .map_err(|e| Error::Validation(format!("collection resolve failed: {e}")))?;
+
         let tool_req = ToolRequest::new(
             req.query.clone(),
             search_query.clone(),
             detected_locale,
             intent,
-            self.collection_name.clone(),
+            collection_name,
             req.top_k,
             req.request_id.clone(),
             req.session_id.clone(),
@@ -619,6 +644,7 @@ mod tests {
 
     use kenjaku_core::config::HistoryConfig;
     use kenjaku_core::error::Error;
+    use kenjaku_core::traits::collection::PrefixCollectionResolver;
     use kenjaku_core::types::component::{Component, ComponentLayout};
     use kenjaku_core::types::intent::IntentClassification;
     use kenjaku_core::types::locale::{DetectedLocale, Locale};
@@ -760,6 +786,9 @@ mod tests {
         tool_id: String,
         output: ToolOutput,
         fire: bool,
+        /// Records `req.collection_name` on every `invoke` so tests can
+        /// assert the pipeline populated it from the `CollectionResolver`.
+        collection_seen: std::sync::Mutex<Option<String>>,
     }
 
     impl MockTool {
@@ -768,6 +797,7 @@ mod tests {
                 tool_id: id.into(),
                 output: ToolOutput::Empty,
                 fire: true,
+                collection_seen: std::sync::Mutex::new(None),
             }
         }
 
@@ -779,6 +809,10 @@ mod tests {
         fn with_fire(mut self, fire: bool) -> Self {
             self.fire = fire;
             self
+        }
+
+        fn last_collection(&self) -> Option<String> {
+            self.collection_seen.lock().unwrap().clone()
         }
     }
 
@@ -795,10 +829,11 @@ mod tests {
         }
         async fn invoke(
             &self,
-            _req: &ToolRequest,
+            req: &ToolRequest,
             _prior: &ToolOutputMap,
             _cancel: &CancellationToken,
         ) -> std::result::Result<ToolOutput, ToolError> {
+            *self.collection_seen.lock().unwrap() = Some(req.collection_name.clone());
             Ok(self.output.clone())
         }
     }
@@ -859,7 +894,7 @@ mod tests {
             locale_memory: None,
             history_store,
             tunnel,
-            collection_name: "test-collection".into(),
+            collection_resolver: Arc::new(PrefixCollectionResolver::new("test-collection")),
             suggestion_count: 3,
             tool_budget_ms: 5000,
         };
