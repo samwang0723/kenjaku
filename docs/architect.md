@@ -133,6 +133,10 @@ All external dependencies are abstracted behind traits defined in `kenjaku-core:
 | `IntentClassifier` | Query intent classification | `LlmIntentClassifier` |
 | `Retriever` | Document retrieval | `HybridRetriever` |
 | `Reranker` | Result fusion/reranking | `RrfReranker` |
+| `Tool` | Pluggable external tool contract (Phase: layered refactor) | `DocRagTool`, `BraveWebTool` |
+| `Brain` | LLM facade over a `Vec<Message>` (classify_intent, translate, generate[_stream], suggest) | `CompositeBrain` |
+| `CollectionResolver` | Per-tenant Qdrant collection routing (Phase 3a/3e) | `PrefixCollectionResolver` → `{base_name}_{tenant_id}` |
+| `SessionLocaleLookup` | Tenant-scoped locale recall for `ResolvedLocale` (Phase 3d.1) | `LocaleMemoryAdapter` over Redis |
 
 **Golden Rule: Business logic in `service` never imports concrete provider types. It depends only on `Arc<dyn Trait>`.**
 
@@ -537,9 +541,65 @@ The first review round identified these production gaps. All have been addressed
 - **Feedback dedup** — unique index on `feedback(session_id, request_id)` makes repeated like/dislike clicks upsert in place
 
 Still deferred (accepted by operator):
-- API authentication (next phase)
 - Gemini API key in URL query param (Google API design)
 - Conversation PII retention policy
+
+## 9.2 Tenancy Architecture (Phase 3a — 3e, post-implementation)
+
+Tenancy is **always-on** post-3e. No optional mode, no `TenantContext::public()` runtime fallback — every request must present a valid Bearer JWT.
+
+### Request flow
+
+```mermaid
+sequenceDiagram
+    participant C as Client (geto-web)
+    participant NX as nginx (geto-web container)
+    participant MW as auth middleware
+    participant JV as JwtValidator
+    participant TC as TenantsCache
+    participant RL as RateLimitExtractor
+    participant H as Handler
+    participant SO as SearchOrchestrator
+
+    C->>NX: GET /.dev-token (local dev, private nets only)
+    NX-->>C: Bearer JWT (or 403 in public deploys)
+    C->>MW: Request + Authorization: Bearer <jwt>
+    MW->>JV: validate(token)
+    JV-->>MW: TenantClaims { tenant_id, principal_id, plan_tier }
+    MW->>TC: get(tenant_id)
+    TC-->>MW: Arc<TenantRow>
+    MW->>MW: Build TenantContext, insert as Extension
+    MW->>RL: Rate-limit by strategy (ip / tenant_ip / tenant_principal_ip)
+    RL->>H: Handler + Extension<TenantContext>
+    H->>SO: search(req, &tctx)
+    SO->>SO: CollectionResolver::resolve(&tctx.tenant_id)<br/>returns "{base}_{tenant_id}"
+    SO-->>H: SearchResult (with UsageStats)
+    H-->>C: SSE / JSON response
+```
+
+### Components
+
+| Layer | Type | Location | Responsibility |
+|-------|------|----------|----------------|
+| core | `TenantContext`, `TenantId`, `PrincipalId`, `PlanTier` | `kenjaku-core/src/types/tenant.rs` | Validated newtypes (ASCII `[a-zA-Z0-9_-]`, ≤128 bytes — colon rejection keeps Redis key format `sl:{tenant_id}:{session_id}` unambiguous) |
+| core | `CollectionResolver` trait + `PrefixCollectionResolver` | `kenjaku-core/src/traits/collection.rs` | Per-tenant Qdrant collection name routing. Uniform `{base_name}_{tenant_id}` for all tenants including `public`. Startup creates `{base}_public → {base}` alias for legacy data. |
+| core | `TenancyConfig`, `JwtConfig` | `kenjaku-core/src/config.rs` | `tenancy.enabled` does not exist. `jwt` is non-optional; `validate_secrets()` fails fast on missing `public_key_path` / `issuer` / `audience`. |
+| infra | `JwtValidator` | `kenjaku-infra/src/auth/jwt.rs` | `jsonwebtoken` 10.3 + `aws_lc_rs`. Algorithm allowlist enum: RS256/RS384/RS512/ES256/ES384 only. Rejects `none`, HS*, PS* at type-construction time. |
+| infra | `TenantRepository`, `TenantsCache` | `kenjaku-infra/src/postgres/tenants.rs` | Startup-loaded `Arc<RwLock<HashMap<TenantId, Arc<TenantRow>>>>`. JSONB `config_overrides` supports per-tenant rate-limit overrides. |
+| api | `tenant_auth_middleware` | `kenjaku-api/src/middleware/auth.rs` | Single-path flow. No `if enabled` branch. 401 `KNJK-4010` on missing / invalid auth. |
+| api | `TenantCtx` extractor | `kenjaku-api/src/extractors/tenant.rs` | `FromRequestParts` reading `Extension<TenantContext>`. Fail-closed: 500 if middleware didn't run. |
+| api | `ResolvedLocale` extractor (Phase 3d.1) | `kenjaku-api/src/extractors/locale.rs` | Reads tenant from request extensions, threads through `SessionLocaleLookup::lookup(&tctx, sid)`. |
+| api | `TenantPrincipalIpExtractor` | `kenjaku-api/src/middleware/rate_limit.rs` | Pluggable `tower_governor::KeyExtractor` selected by `rate_limit.key_strategy` config (`ip` / `tenant_ip` / `tenant_principal_ip`). |
+
+### Schema
+
+All tenant-scoped tables have `tenant_id TEXT NOT NULL` with no DEFAULT (migration `20260416000001`). Every write binds `tenant_id` explicitly; every `ON CONFLICT` clause includes it. A semgrep rule (`.semgrep/tenant-scope.yml`) blocks raw `sqlx::query!` / `sqlx::query(...)` usage that doesn't reference `tenant_id`, with per-file exclusions only for schema-global tables (`tenants`, `pool`).
+
+### Dev ergonomics
+
+- `make dev-setup` → generates RSA-2048 keypair at `config/dev/{private,public}.pem` (gitignored) + mints a `public`-tenant JWT into `config/dev/dev-token.txt`.
+- Docker compose mounts the keypair read-only into kenjaku and the token into geto-web with `create_host_path: false` (fail-fast when missing).
+- nginx serves `/.dev-token` only to private networks (loopback + RFC1918) with an explicit `Host: localhost` header guard to prevent reverse-proxy bypass.
 
 ## 10. Key Decision Records
 
