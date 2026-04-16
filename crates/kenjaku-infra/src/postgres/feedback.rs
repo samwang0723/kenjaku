@@ -79,14 +79,21 @@ impl FeedbackRepository {
         row.map(|r| row_to_feedback(&r)).transpose()
     }
 
-    /// Get all feedback for a session.
-    pub async fn get_by_session(&self, session_id: &str) -> Result<Vec<Feedback>> {
+    /// Get all feedback for a (tenant_id, session_id) pair.
+    ///
+    /// H2 (3d.1 fix): `tenant_id` is bound alongside `session_id` so a
+    /// session_id shared across tenants cannot cross-read. Callers pass
+    /// `tctx.tenant_id.as_str()` so the query stays tenant-scoped.
+    pub async fn get_by_session(&self, tenant_id: &str, session_id: &str) -> Result<Vec<Feedback>> {
         let rows = sqlx::query(
             r#"
             SELECT id, session_id, request_id, action, reason_category_id, description, created_at
-            FROM feedback WHERE session_id = $1 ORDER BY created_at DESC
+            FROM feedback
+            WHERE tenant_id = $1 AND session_id = $2
+            ORDER BY created_at DESC
             "#,
         )
+        .bind(tenant_id)
         .bind(session_id)
         .fetch_all(&self.pool)
         .await

@@ -23,6 +23,7 @@ use tracing::{debug, info};
 
 use kenjaku_core::config::HistoryConfig;
 use kenjaku_core::types::conversation::ConversationTurn;
+use kenjaku_core::types::tenant::{TenantContext, TenantId};
 
 #[derive(Debug)]
 struct SessionEntry {
@@ -31,9 +32,15 @@ struct SessionEntry {
 }
 
 /// Thread-safe in-memory conversation history store.
+///
+/// Keyed on `(tenant_id, session_id)` since 3d.1 H1. Two tenants sharing
+/// a `session_id` string (accidental collision or adversarial replay)
+/// MUST NOT see each other's conversation turns, otherwise the LLM
+/// context echoes the other tenant's prior queries and answers —
+/// the worst-case PII/regulatory leak.
 #[derive(Clone)]
 pub struct SessionHistoryStore {
-    inner: Arc<DashMap<String, SessionEntry>>,
+    inner: Arc<DashMap<(TenantId, String), SessionEntry>>,
     config: HistoryConfig,
 }
 
@@ -49,18 +56,19 @@ impl SessionHistoryStore {
     /// over `max_turns_per_session` after the push, the oldest turn is
     /// dropped. No-op when `config.enabled` is false or the session id
     /// is empty.
-    pub fn append(&self, session_id: &str, turn: ConversationTurn) {
+    ///
+    /// Scoped by `tctx.tenant_id` so cross-tenant session_id collisions
+    /// cannot cross-read.
+    pub fn append(&self, tctx: &TenantContext, session_id: &str, turn: ConversationTurn) {
         if !self.config.enabled || session_id.is_empty() {
             return;
         }
         let cap = self.config.max_turns_per_session.max(1);
-        let mut entry = self
-            .inner
-            .entry(session_id.to_string())
-            .or_insert_with(|| SessionEntry {
-                turns: std::collections::VecDeque::with_capacity(cap),
-                last_touched: Instant::now(),
-            });
+        let key = (tctx.tenant_id.clone(), session_id.to_string());
+        let mut entry = self.inner.entry(key).or_insert_with(|| SessionEntry {
+            turns: std::collections::VecDeque::with_capacity(cap),
+            last_touched: Instant::now(),
+        });
         entry.turns.push_back(turn);
         while entry.turns.len() > cap {
             entry.turns.pop_front();
@@ -73,7 +81,12 @@ impl SessionHistoryStore {
     /// Vec when disabled, session is empty, or nothing has been recorded.
     ///
     /// Touches `last_touched` so active sessions aren't evicted mid-flow.
-    pub fn snapshot_for_llm(&self, session_id: &str) -> Vec<ConversationTurn> {
+    /// Scoped by `tctx.tenant_id`.
+    pub fn snapshot_for_llm(
+        &self,
+        tctx: &TenantContext,
+        session_id: &str,
+    ) -> Vec<ConversationTurn> {
         if !self.config.enabled || session_id.is_empty() {
             return Vec::new();
         }
@@ -81,7 +94,9 @@ impl SessionHistoryStore {
         if limit == 0 {
             return Vec::new();
         }
-        let mut entry = match self.inner.get_mut(session_id) {
+        // DashMap::get_mut with a tuple key requires the exact tuple.
+        let key = (tctx.tenant_id.clone(), session_id.to_string());
+        let mut entry = match self.inner.get_mut(&key) {
             Some(e) => e,
             None => return Vec::new(),
         };
@@ -153,13 +168,18 @@ mod tests {
         }
     }
 
+    fn public_tctx() -> kenjaku_core::types::tenant::TenantContext {
+        kenjaku_core::types::tenant::TenantContext::public()
+    }
+
     #[test]
     fn append_caps_at_max_and_drops_oldest() {
         let store = SessionHistoryStore::new(cfg(3, 3));
+        let tctx = public_tctx();
         for i in 0..5 {
-            store.append("s1", turn(&format!("q{i}"), &format!("a{i}")));
+            store.append(&tctx, "s1", turn(&format!("q{i}"), &format!("a{i}")));
         }
-        let snap = store.snapshot_for_llm("s1");
+        let snap = store.snapshot_for_llm(&tctx, "s1");
         assert_eq!(snap.len(), 3);
         assert_eq!(snap[0].user, "q2");
         assert_eq!(snap[2].user, "q4");
@@ -168,10 +188,11 @@ mod tests {
     #[test]
     fn snapshot_respects_inject_cap() {
         let store = SessionHistoryStore::new(cfg(10, 2));
+        let tctx = public_tctx();
         for i in 0..5 {
-            store.append("s1", turn(&format!("q{i}"), &format!("a{i}")));
+            store.append(&tctx, "s1", turn(&format!("q{i}"), &format!("a{i}")));
         }
-        let snap = store.snapshot_for_llm("s1");
+        let snap = store.snapshot_for_llm(&tctx, "s1");
         assert_eq!(snap.len(), 2);
         assert_eq!(snap[0].user, "q3");
         assert_eq!(snap[1].user, "q4");
@@ -182,25 +203,88 @@ mod tests {
         let mut c = cfg(5, 5);
         c.enabled = false;
         let store = SessionHistoryStore::new(c);
-        store.append("s1", turn("q", "a"));
-        assert!(store.snapshot_for_llm("s1").is_empty());
+        let tctx = public_tctx();
+        store.append(&tctx, "s1", turn("q", "a"));
+        assert!(store.snapshot_for_llm(&tctx, "s1").is_empty());
         assert_eq!(store.session_count(), 0);
     }
 
     #[test]
     fn empty_session_id_is_noop() {
         let store = SessionHistoryStore::new(cfg(5, 5));
-        store.append("", turn("q", "a"));
+        let tctx = public_tctx();
+        store.append(&tctx, "", turn("q", "a"));
         assert_eq!(store.session_count(), 0);
     }
 
     #[test]
     fn sessions_are_isolated() {
         let store = SessionHistoryStore::new(cfg(5, 5));
-        store.append("s1", turn("q1", "a1"));
-        store.append("s2", turn("q2", "a2"));
-        assert_eq!(store.snapshot_for_llm("s1").len(), 1);
-        assert_eq!(store.snapshot_for_llm("s1")[0].user, "q1");
-        assert_eq!(store.snapshot_for_llm("s2")[0].user, "q2");
+        let tctx = kenjaku_core::types::tenant::TenantContext::public();
+        store.append(&tctx, "s1", turn("q1", "a1"));
+        store.append(&tctx, "s2", turn("q2", "a2"));
+        assert_eq!(store.snapshot_for_llm(&tctx, "s1").len(), 1);
+        assert_eq!(store.snapshot_for_llm(&tctx, "s1")[0].user, "q1");
+        assert_eq!(store.snapshot_for_llm(&tctx, "s2")[0].user, "q2");
+    }
+
+    /// H1 regression: two tenants sharing the same `session_id` string must
+    /// not see each other's conversation history. Before the fix, the
+    /// `DashMap` was keyed on `session_id` only — tenant A could read
+    /// tenant B's turns (or vice versa) by using the same id. The fix keys
+    /// on `(tenant_id, session_id)`.
+    #[test]
+    fn snapshot_for_llm_does_not_leak_across_tenants_sharing_session_id() {
+        use kenjaku_core::types::tenant::{TenantContext, TenantId};
+
+        let store = SessionHistoryStore::new(cfg(5, 5));
+
+        let mut tctx_a = TenantContext::public();
+        tctx_a.tenant_id = TenantId::new("tenant-a").unwrap();
+        let mut tctx_b = TenantContext::public();
+        tctx_b.tenant_id = TenantId::new("tenant-b").unwrap();
+
+        let shared_sid = "shared-session-id-xyz";
+
+        // Tenant A records a turn with a distinctive marker.
+        store.append(
+            &tctx_a,
+            shared_sid,
+            turn("tenant-a-secret-marker", "tenant-a-assistant-marker"),
+        );
+
+        // Tenant B reads their own history under the same session id.
+        let b_snapshot = store.snapshot_for_llm(&tctx_b, shared_sid);
+
+        assert!(
+            b_snapshot.is_empty(),
+            "CRITICAL: SessionHistoryStore leaked tenant A's turn to tenant B \
+             via shared session_id (got {} turns, expected 0)",
+            b_snapshot.len()
+        );
+
+        // Positive control: tenant A still reads its own turn.
+        let a_snapshot = store.snapshot_for_llm(&tctx_a, shared_sid);
+        assert_eq!(a_snapshot.len(), 1, "tenant A must see its own turn");
+        assert_eq!(a_snapshot[0].user, "tenant-a-secret-marker");
+
+        // Reverse direction: tenant B writes, tenant A must not see it.
+        store.append(
+            &tctx_b,
+            shared_sid,
+            turn("tenant-b-secret-marker", "tenant-b-assistant-marker"),
+        );
+        let a_snapshot_after = store.snapshot_for_llm(&tctx_a, shared_sid);
+        assert_eq!(
+            a_snapshot_after.len(),
+            1,
+            "tenant A snapshot must not grow after tenant B writes"
+        );
+        assert!(
+            !a_snapshot_after
+                .iter()
+                .any(|t| t.user.contains("tenant-b-secret-marker")),
+            "CRITICAL: tenant B's write leaked into tenant A's history"
+        );
     }
 }

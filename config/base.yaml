@@ -103,12 +103,15 @@ telemetry:
   service_name: "kenjaku"
   log_level: "info"
 
-# Multi-tenancy scaffolding (Phase 3a). Inert at runtime — nothing reads
-# these fields yet. Slice 3b wires `collection_name_template` into the
-# retriever; slice 3c honors `enabled` + `header_name` in the auth
-# extractor. Keep this block present in every env override.
+# Multi-tenancy (Phase 3d.1 — enabled by default).
+#
+# `enabled=true` turns on the JWT auth middleware + tenant-scoped
+# routing. `AppConfig::validate_secrets()` fails fast at startup if
+# `tenancy.jwt.public_key_path` is not configured (see the `secrets.*`
+# overlay for production; local/docker overlays pin `enabled=false` so
+# `make run` works without minted JWTs).
 tenancy:
-  enabled: false
+  enabled: true
   header_name: "X-Tenant-Id"
   default_tenant: "public"
   collection_name_template: "{base}_{tenant}"

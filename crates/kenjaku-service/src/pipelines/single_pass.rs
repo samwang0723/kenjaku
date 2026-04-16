@@ -189,8 +189,11 @@ impl SinglePassPipeline {
             .await;
 
         // Append to in-memory session history (streaming path).
+        // H1: scoped by ctx.tenant so cross-tenant session_id collisions
+        // cannot cross-read.
         if !accumulated_answer.is_empty() {
             self.history_store.append(
+                &ctx.tenant,
                 &ctx.history_key,
                 ConversationTurn {
                     user: ctx.query.clone(),
@@ -306,8 +309,10 @@ impl SearchPipeline for SinglePassPipeline {
         let chunks = context::merge_tool_outputs(&tool_outputs);
 
         // Session-scoped conversation history for follow-up context.
+        // H1: scoped by tctx so cross-tenant session_id collisions
+        // cannot cross-read.
         let history_key = device_session_id.unwrap_or(&req.session_id);
-        let history = self.history_store.snapshot_for_llm(history_key);
+        let history = self.history_store.snapshot_for_llm(tctx, history_key);
 
         // Build the message sequence via ConversationAssembler.
         let messages = ConversationAssembler::build(
@@ -428,8 +433,10 @@ impl SearchPipeline for SinglePassPipeline {
 
         // Append to in-memory session history so the next turn from the
         // same device can see this exchange.
+        // H1: scoped by tctx.
         if !answer_text.is_empty() {
             self.history_store.append(
+                tctx,
                 history_key,
                 ConversationTurn {
                     user: req.query.clone(),
@@ -535,8 +542,9 @@ impl SearchPipeline for SinglePassPipeline {
             .collect();
 
         // Pull session history for follow-up context.
+        // H1: scoped by tctx.
         let history_key = device_session_id.unwrap_or(&req.session_id);
-        let history = self.history_store.snapshot_for_llm(history_key);
+        let history = self.history_store.snapshot_for_llm(tctx, history_key);
 
         // Build the message sequence via ConversationAssembler.
         let messages = ConversationAssembler::build(
@@ -1016,7 +1024,9 @@ mod tests {
             .unwrap();
 
         // History should now have one turn
-        let history = pipeline.history_store.snapshot_for_llm("sess-1");
+        let history = pipeline
+            .history_store
+            .snapshot_for_llm(&TenantContext::public(), "sess-1");
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].user, "test query");
         assert_eq!(history[0].assistant, "Mock answer");
@@ -1271,7 +1281,9 @@ mod tests {
             .complete_stream(ctx, "history answer", vec![])
             .await;
 
-        let history = pipeline.history_store.snapshot_for_llm("history-key");
+        let history = pipeline
+            .history_store
+            .snapshot_for_llm(&TenantContext::public(), "history-key");
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].user, "history query");
         assert_eq!(history[0].assistant, "history answer");
@@ -1299,7 +1311,9 @@ mod tests {
 
         let _done = pipeline.complete_stream(ctx, "", vec![]).await;
 
-        let history = pipeline.history_store.snapshot_for_llm("empty-key");
+        let history = pipeline
+            .history_store
+            .snapshot_for_llm(&TenantContext::public(), "empty-key");
         assert!(history.is_empty());
     }
 
@@ -1316,11 +1330,15 @@ mod tests {
             .unwrap();
 
         // History should be keyed by device session id
-        let device_history = pipeline.history_store.snapshot_for_llm("device-123");
+        let device_history = pipeline
+            .history_store
+            .snapshot_for_llm(&TenantContext::public(), "device-123");
         assert_eq!(device_history.len(), 1);
 
         // Body session_id should have no history
-        let body_history = pipeline.history_store.snapshot_for_llm("sess-1");
+        let body_history = pipeline
+            .history_store
+            .snapshot_for_llm(&TenantContext::public(), "sess-1");
         assert!(body_history.is_empty());
     }
 

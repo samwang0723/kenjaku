@@ -3,5 +3,5 @@
 pub mod locale;
 pub mod tenant;
 
-pub use locale::{ResolvedLocale, ResolvedLocaleSource, SessionLocaleLookup};
+pub use locale::{LocaleRejection, ResolvedLocale, ResolvedLocaleSource, SessionLocaleLookup};
 pub use tenant::TenantCtx;
