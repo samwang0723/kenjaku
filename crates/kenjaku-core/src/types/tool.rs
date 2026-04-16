@@ -33,9 +33,11 @@ pub struct ToolRequest {
     pub request_id: String,
     pub session_id: String,
     /// Request-scoped tenancy context. Private by design — tools read via
-    /// [`ToolRequest::tenant`] and MUST NOT mutate it. In Phase 3b every
-    /// request resolves to [the auth middleware's `TenantContext`]; slice 3c populates
-    /// this from the JWT extractor.
+    /// [`ToolRequest::tenant`] and MUST NOT mutate it. Every request resolves
+    /// to the auth middleware's `TenantContext` extracted from the JWT.
+    /// `public_test_context()` is a test-only helper that returns a
+    /// well-known context for unit tests; production always uses the real
+    /// auth-injected context.
     tenant: TenantContext,
 }
 

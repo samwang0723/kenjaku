@@ -45,7 +45,7 @@ clean:
 docker-build:
 	docker compose build
 
-docker-up: docker-build
+docker-up: dev-setup docker-build
 	docker compose up -d
 
 docker-down:

@@ -38,9 +38,8 @@ use crate::types::tenant::TenantContext;
 ///
 /// - **Phase 3b (LANDED)**: `tctx` is threaded. `ToolRequest` now carries
 ///   a private `tenant: TenantContext` field so tools can route per
-///   tenant without a separate argument. Every call site currently
-///   passes `the auth middleware's TenantContext` — slice 3c wires the real
-///   extractor and ungates the `tenancy.enabled` flag.
+///   tenant without a separate argument. Every call site passes the
+///   auth middleware's `TenantContext` resolved from the JWT extractor.
 /// - **Phase 3c (pending)**: `complete_stream` promotion onto this trait
 ///   once the auth extractor + error-code surface stabilizes. Until then
 ///   the constructors noted above continue to accept `Arc<SinglePassPipeline>`.

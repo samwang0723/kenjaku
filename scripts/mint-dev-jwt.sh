@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mint a dev JWT signed with the dev keypair.
-# Requires: openssl, jq, base64.
+# Requires: openssl, base64.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,6 +23,13 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
+
+# Validate TTL_HOURS is a positive integer
+if ! [[ "$TTL_HOURS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "[mint-dev-jwt] Error: --ttl must be a positive integer of hours (e.g. '24h'), got '$TTL_HOURS'"
+  echo "Usage: mint-dev-jwt.sh [--tenant ID] [--principal ID] [--ttl Nh]"
+  exit 1
+fi
 
 PRIVATE_KEY="$DEV_DIR/private.pem"
 if [[ ! -f "$PRIVATE_KEY" ]]; then

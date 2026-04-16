@@ -23,6 +23,7 @@ fi
 
 echo "[generate-dev-keypair] Generating RSA-2048 keypair..."
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$DEV_DIR/private.pem" 2>/dev/null
+chmod 600 "$DEV_DIR/private.pem"
 openssl pkey -in "$DEV_DIR/private.pem" -pubout -out "$DEV_DIR/public.pem" 2>/dev/null
 
 echo "[generate-dev-keypair] Keypair written to $DEV_DIR/{private,public}.pem"

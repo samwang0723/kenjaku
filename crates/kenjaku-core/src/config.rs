@@ -626,6 +626,7 @@ pub struct TenancyConfig {
     pub collection_name_template: String,
     /// JWT validator config. Always required — every field must be
     /// non-empty. [`AppConfig::validate_secrets`] enforces this at startup.
+    #[serde(default)]
     pub jwt: JwtConfig,
 }
 
@@ -660,6 +661,18 @@ pub struct JwtConfig {
     /// skew between issuer and validator. Default 30s.
     #[serde(default = "default_clock_skew_secs")]
     pub clock_skew_secs: u64,
+}
+
+impl Default for JwtConfig {
+    fn default() -> Self {
+        Self {
+            issuer: String::new(),
+            audience: String::new(),
+            public_key_path: String::new(),
+            algorithm: default_jwt_algorithm(),
+            clock_skew_secs: default_clock_skew_secs(),
+        }
+    }
 }
 
 fn default_jwt_algorithm() -> JwtAlgorithm {

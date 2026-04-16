@@ -35,7 +35,9 @@
 #     keyed by (batch_id, locale, topic_cluster_id, question_lower).
 #     Scoping deferred to 3e.2 (dev-2).
 #   NOTE: refresh_batches.rs was removed from the allowlist in 3e —
-#   it already binds tenant_id explicitly.
+#   legitimate workspace-level queries there now carry inline
+#   `// nosemgrep: tenant-scope-required` justifications instead of a
+#   blanket file exclusion.
 #
 # Inline escape hatch: any OTHER legitimately cross-tenant query can
 # use `// nosemgrep: tenant-scope-required` with a one-line

@@ -111,6 +111,10 @@ telemetry:
 # from `secrets.{APP_ENV}.yaml`.
 tenancy:
   collection_name_template: "{base}_{tenant}"
+  jwt:
+    public_key_path: ""
+    issuer: ""
+    audience: ""
 
 # Rate-limit key strategy (Phase 3c.2). `ip` is the default — uses
 # client IP only. `tenant_ip` or `tenant_principal_ip` incorporate the
