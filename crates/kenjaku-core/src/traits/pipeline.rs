@@ -14,7 +14,7 @@ use crate::types::tenant::TenantContext;
 ///
 /// **Today (Phase 3b):** `tctx: &TenantContext` is threaded through both
 /// `search` and `search_stream`. Every request currently resolves to
-/// [`TenantContext::public`] at the handler boundary — slice 3c replaces
+/// [the auth middleware's `TenantContext`] at the handler boundary — slice 3c replaces
 /// that literal with an auth-extractor and starts reading per-tenant
 /// context from JWT claims.
 ///
@@ -39,7 +39,7 @@ use crate::types::tenant::TenantContext;
 /// - **Phase 3b (LANDED)**: `tctx` is threaded. `ToolRequest` now carries
 ///   a private `tenant: TenantContext` field so tools can route per
 ///   tenant without a separate argument. Every call site currently
-///   passes `TenantContext::public()` — slice 3c wires the real
+///   passes `the auth middleware's TenantContext` — slice 3c wires the real
 ///   extractor and ungates the `tenancy.enabled` flag.
 /// - **Phase 3c (pending)**: `complete_stream` promotion onto this trait
 ///   once the auth extractor + error-code surface stabilizes. Until then

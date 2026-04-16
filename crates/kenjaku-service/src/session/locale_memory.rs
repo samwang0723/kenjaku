@@ -140,8 +140,8 @@ mod tests {
     /// a live Redis.
     #[test]
     fn key_is_tenant_prefixed_for_public() {
-        use kenjaku_core::types::tenant::TenantContext;
-        let tctx = TenantContext::public();
+        use kenjaku_core::types::tenant::test_helpers::public_test_context;
+        let tctx = public_test_context();
         let config = cfg(true);
         // Inline-mirror of LocaleMemory::key — same format string.
         let key = format!(

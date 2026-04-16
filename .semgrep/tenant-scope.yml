@@ -33,9 +33,9 @@
 #   - pool.rs — pool lifecycle + `SELECT 1` health check.
 #   - default_suggestions.rs — global LLM-generated suggestion pool,
 #     keyed by (batch_id, locale, topic_cluster_id, question_lower).
-#     Intentionally cross-tenant by construction.
-#   - refresh_batches.rs — workspace-level cron batch state; one job
-#     operates across all tenants by design.
+#     Scoping deferred to 3e.2 (dev-2).
+#   NOTE: refresh_batches.rs was removed from the allowlist in 3e —
+#   it already binds tenant_id explicitly.
 #
 # Inline escape hatch: any OTHER legitimately cross-tenant query can
 # use `// nosemgrep: tenant-scope-required` with a one-line
@@ -75,8 +75,8 @@ rules:
       exclude:
         - "**/crates/kenjaku-infra/src/postgres/tenants.rs"
         - "**/crates/kenjaku-infra/src/postgres/pool.rs"
+        # default_suggestions.rs: scoping deferred to 3e.2 (dev-2)
         - "**/crates/kenjaku-infra/src/postgres/default_suggestions.rs"
-        - "**/crates/kenjaku-infra/src/postgres/refresh_batches.rs"
     patterns:
       - pattern-either:
           - pattern: sqlx::query($SQL, ...)

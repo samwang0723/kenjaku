@@ -10,6 +10,9 @@
 
 # Environment & Secrets
 .env
+config/dev/
+config/secrets.*.yaml
+geto-web/.dev-token
 
 # Claude Code project state — keep skills, ignore everything else
 .claude/*

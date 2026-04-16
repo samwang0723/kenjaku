@@ -169,7 +169,7 @@ mod tests {
     }
 
     fn public_tctx() -> kenjaku_core::types::tenant::TenantContext {
-        kenjaku_core::types::tenant::TenantContext::public()
+        kenjaku_core::types::tenant::test_helpers::public_test_context()
     }
 
     #[test]
@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn sessions_are_isolated() {
         let store = SessionHistoryStore::new(cfg(5, 5));
-        let tctx = kenjaku_core::types::tenant::TenantContext::public();
+        let tctx = kenjaku_core::types::tenant::test_helpers::public_test_context();
         store.append(&tctx, "s1", turn("q1", "a1"));
         store.append(&tctx, "s2", turn("q2", "a2"));
         assert_eq!(store.snapshot_for_llm(&tctx, "s1").len(), 1);
@@ -235,13 +235,14 @@ mod tests {
     /// on `(tenant_id, session_id)`.
     #[test]
     fn snapshot_for_llm_does_not_leak_across_tenants_sharing_session_id() {
-        use kenjaku_core::types::tenant::{TenantContext, TenantId};
+        use kenjaku_core::types::tenant::TenantId;
+        use kenjaku_core::types::tenant::test_helpers::public_test_context;
 
         let store = SessionHistoryStore::new(cfg(5, 5));
 
-        let mut tctx_a = TenantContext::public();
+        let mut tctx_a = public_test_context();
         tctx_a.tenant_id = TenantId::new("tenant-a").unwrap();
-        let mut tctx_b = TenantContext::public();
+        let mut tctx_b = public_test_context();
         tctx_b.tenant_id = TenantId::new("tenant-b").unwrap();
 
         let shared_sid = "shared-session-id-xyz";

@@ -92,10 +92,8 @@ pub async fn search(
         top_k,
     };
 
-    // 3c.2: tctx now arrives via the `TenantCtx` extractor (above),
-    // populated by the auth middleware. Pre-3c.2 used a hard-coded
-    // `TenantContext::public()` shim; the middleware preserves that
-    // behavior when `tenancy.enabled=false` (the default today).
+    // Phase 3e: tctx arrives via the `TenantCtx` extractor, populated
+    // by the auth middleware (always on — every request is JWT-validated).
 
     if req.streaming {
         return search_streaming(state, req, tctx, device_session_id)

@@ -54,7 +54,7 @@ impl SearchService {
     /// Execute a non-streaming search.
     ///
     /// Phase 3b: threads `&TenantContext` through to the orchestrator.
-    /// Handlers inject `TenantContext::public()` at the boundary (slice 3c
+    /// Handlers inject `the auth middleware's TenantContext` at the boundary (slice 3c
     /// replaces that with an auth extractor).
     pub async fn search(
         &self,

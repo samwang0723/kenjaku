@@ -318,8 +318,7 @@ pub struct StreamContext {
     pub intent: Intent,
     /// Request-scoped tenancy context carried forward so `complete_stream`
     /// can route its downstream calls (trending, conversations) to the
-    /// owning tenant. Phase 3b: always `TenantContext::public()`. Phase 3c
-    /// populates this from the auth extractor.
+    /// owning tenant. Phase 3e: populated from the auth extractor.
     pub tenant: TenantContext,
     /// Cancellation guard that fires on drop, ensuring in-flight work
     /// is cancelled when the SSE connection disconnects.

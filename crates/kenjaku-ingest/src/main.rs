@@ -36,8 +36,9 @@ enum Commands {
         #[arg(long, default_value = "2")]
         depth: usize,
 
-        /// Qdrant collection name
-        #[arg(long, default_value = "documents")]
+        /// Qdrant collection name (Phase 3e: use `documents_public` for
+        /// the default tenant — matches the uniform resolver naming).
+        #[arg(long, default_value = "documents_public")]
         collection: String,
 
         /// Chunk size in TOKENS (not characters). 500-800 is a good default.
@@ -62,8 +63,9 @@ enum Commands {
         #[arg(long)]
         path: String,
 
-        /// Qdrant collection name
-        #[arg(long, default_value = "documents")]
+        /// Qdrant collection name (Phase 3e: use `documents_public` for
+        /// the default tenant — matches the uniform resolver naming).
+        #[arg(long, default_value = "documents_public")]
         collection: String,
 
         /// Chunk size in TOKENS
