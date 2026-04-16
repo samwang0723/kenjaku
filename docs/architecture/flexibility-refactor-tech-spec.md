@@ -1,6 +1,21 @@
 # Tech Spec: Kenjaku Flexibility Refactor — SearchPipeline + TenantContext + Brain Decomposition
 
-> **IMPLEMENTED** — Phases 1, 2, 3a, 3b, 3c.1, 3c.2, 3d.1, 3d.2, 3e all merged to `main` as of 2026-04-16. See PRs #12–#20. This document is retained as the design record; post-implementation runtime details live in `docs/architect.md` §9.2 (Tenancy Architecture) and `CLAUDE.md` (Tenancy section).
+> ## ⚠️ HISTORICAL DESIGN DOCUMENT — DO NOT USE AS RUNTIME REFERENCE
+>
+> **Status**: Implemented across Phases 1, 2, 3a, 3b, 3c.1, 3c.2, 3d.1, 3d.2, 3e — merged to `main` as of 2026-04-16 (PRs #12–#20). Several design elements were intentionally changed during implementation and **the text below reflects pre-implementation design intent, not shipped behavior**:
+>
+> - **`tenancy.enabled` config key does not exist** (removed in Phase 3e). Tenancy is always-on — no disabled-mode fallback.
+> - **`TenancyConfig` does not have `header_name` or `default_tenant` fields** (removed in Phase 3e). The only runtime config is `tenancy.jwt.*` + `tenancy.collection_name_template`.
+> - **`X-Tenant-Id` header is ignored entirely** by the auth middleware (defense against header spoofing). Tenant identity comes only from signed JWT claims.
+> - **Missing or invalid JWT is always a 401** in all environments (`/health` + `/ready` excepted).
+> - **Rollback is not "flip `tenancy.enabled=false`"** (that flag is gone). Real rollback: redeploy with corrected JWT config, or apply temporary auth bypass at the edge under incident controls.
+> - **`PrefixCollectionResolver` returns `{base_name}_{tenant_id}` uniformly** for all tenants including `public`; a Qdrant alias bridges legacy `documents` data.
+>
+> **For current runtime behavior, consult:**
+> - `docs/architect.md` §9.2 (Tenancy Architecture) — sequence diagram, components, schema, dev ergonomics
+> - `CLAUDE.md` (Tenancy section) — type conventions, config shape, dev provisioning
+>
+> Config tables, compatibility matrices, and fallback plans below are retained for audit trail — what was proposed vs. what shipped.
 
 | Items         | Details                                                                        |
 | ------------- | ------------------------------------------------------------------------------ |

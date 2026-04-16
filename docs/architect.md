@@ -546,7 +546,7 @@ Still deferred (accepted by operator):
 
 ## 9.2 Tenancy Architecture (Phase 3a — 3e, post-implementation)
 
-Tenancy is **always-on** post-3e. No optional mode, no `TenantContext::public()` runtime fallback — every request must present a valid Bearer JWT.
+Tenancy is **always-on** post-3e. No optional mode, no `TenantContext::public()` runtime fallback — every authenticated API request under `/api/v1` must present a valid Bearer JWT. `/health` and `/ready` are public (load-balancer probes) and bypass the auth middleware by design.
 
 ### Request flow
 

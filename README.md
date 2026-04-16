@@ -56,7 +56,7 @@ make dev-setup
 make docker-up
 ```
 
-`make dev-setup` generates an RSA-2048 keypair at `config/dev/` (gitignored) and mints a signed JWT for the `public` tenant at `config/dev/dev-token.txt`. The kenjaku container mounts the public key for validation; the geto-web container mounts the token read-only and serves it at `/.dev-token` (localhost-only, blocked in public deployments). Without this step, kenjaku-server refuses to start (`validate_secrets()` fails fast on missing JWT config).
+`make dev-setup` generates an RSA-2048 keypair at `config/dev/` (gitignored) and mints a signed JWT for the `public` tenant at `config/dev/dev-token.txt`. The kenjaku container mounts the public key for validation; the geto-web container mounts the token read-only and serves it at `/.dev-token` (localhost-only, blocked in public deployments). Without this step, kenjaku-server refuses to start when it later loads/stats `tenancy.jwt.public_key_path` — the configured key file is missing or not a regular file.
 
 - Backend API: `http://localhost:18080`
 - Visual frontend (geto-web): `http://localhost:3000` — mobile phone-frame
