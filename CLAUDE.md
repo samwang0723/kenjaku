@@ -10,7 +10,8 @@ make test               # cargo test --workspace
 make test-verbose       # cargo test --workspace -- --nocapture
 make lint               # cargo clippy --workspace --all-targets -- -D warnings
 make fmt                # cargo fmt --all
-make run                # APP_ENV=local cargo run --bin kenjaku-server
+make dev-setup          # generate RSA keypair + mint dev JWT under config/dev/ (required for tenancy)
+make run                # APP_ENV=local cargo run --bin kenjaku-server (prereqs dev-setup)
 make docker-up          # build image + start full stack (qdrant, postgres, redis, otel, kenjaku)
 make docker-test        # spin up infra, run tests, tear down
 ```
@@ -69,6 +70,19 @@ The search pipeline is orchestrated by `SearchOrchestrator` in `harness/mod.rs` 
 
 `kenjaku_core::error::Error` is the single error type. In API handlers, always use `e.user_message()` instead of `e.to_string()` — it returns safe messages that don't leak DB connection strings, API errors, or internal details. `Validation` and `NotFound` pass through their message; all infra errors return generic "service unavailable" strings.
 
+## Tenancy (always-on post-3e)
+
+Tenancy is **not optional** — every request goes through JWT validation. Shipped across Phase 3a → 3e:
+
+- **`TenantContext` / `TenantId` / `PrincipalId`** (`kenjaku-core/src/types/tenant.rs`) — newtypes validated as ASCII `[a-zA-Z0-9_-]`, ≤128 bytes (colon-rejection for Redis key safety). `TenantContext { tenant_id, principal_id: Option<PrincipalId>, plan_tier: PlanTier }`. `PlanTier::Free|Pro|Enterprise`. **No `TenantContext::public()` runtime constructor** — a `test_helpers::public_test_context()` exists under `#[cfg(test)]`-style convention (not `cfg(test)` gated due to cross-crate Rust limitation; name is deliberately verbose to scream "test shortcut").
+- **Auth middleware** (`kenjaku-api/src/middleware/auth.rs`) — single-path flow: validate Bearer JWT → DB tenant lookup via `TenantsCache` → build `Extension<TenantContext>` on the request. No `enabled=false` branch. Missing JWT returns 401 `KNJK-4010 Unauthorized tenant`.
+- **`JwtValidator`** (`kenjaku-infra/src/auth/jwt.rs`) — `jsonwebtoken` 10.3 with `aws_lc_rs` backend. Algorithm allowlist: RS256/RS384/RS512/ES256/ES384 only (rejects `none`, all `HS*`/`PS*`). `TenancyConfig.jwt` is non-optional post-3e (`JwtConfig`, not `Option<JwtConfig>`) and `validate_secrets()` unconditionally verifies public key path + issuer + audience at startup.
+- **`TenantsCache`** — startup-loaded `Arc<RwLock<HashMap<TenantId, Arc<TenantRow>>>>` from the `tenants` table. JSONB `config_overrides` column supports per-tenant rate-limit overrides (wired through `TenantPrincipalIpExtractor`).
+- **`CollectionResolver`** (`kenjaku-core/src/traits/collection.rs`) — `PrefixCollectionResolver { base_name }` returns `{base_name}_{tenant_id}` for **all** tenants including `public` (no special case post-3e). A Qdrant alias `{base}_public → {base}` is created at startup for legacy data.
+- **Schema**: all tenant-scoped tables have `tenant_id TEXT NOT NULL` (no DEFAULT post-3e migration `20260416000001`). Upsert audit: every `INSERT INTO conversations|feedback|popular_queries|refresh_batches` binds `tenant_id` explicitly; `ON CONFLICT` clauses include it.
+- **Dev JWT**: `make dev-setup` → `scripts/generate-dev-keypair.sh` (RSA-2048 into `config/dev/`, gitignored) + `scripts/mint-dev-jwt.sh` (mints a `public` tenant token into `config/dev/dev-token.txt`). geto-web auto-loads the token from `/.dev-token` on local env (nginx denies the path outside private networks). For docker, `docker-compose.yaml` mounts `config/dev/dev-token.txt` read-only with `create_host_path: false` so a missing file fails fast.
+- **Semgrep guardrail** (`.semgrep/tenant-scope.yml`) — CI rule blocks raw `sqlx::query!` / `sqlx::query(...)` in `crates/kenjaku-infra/src/postgres/**` that don't reference `tenant_id`. File-level exclusions for genuinely global tables (`tenants.rs`, `pool.rs`). Self-test fixtures under `.semgrep/test/`.
+
 ## Config & Secrets
 
 4-layer hierarchy: `config/base.yaml` → `config/{APP_ENV}.yaml` → `config/secrets.{APP_ENV}.yaml` → `KENJAKU__*` env vars. Secrets files are gitignored. `AppConfig::validate_secrets()` runs at startup and fails fast listing all missing secrets. Env var example: `KENJAKU__LLM__API_KEY=xxx`.
@@ -109,7 +123,7 @@ Two fire-and-forget pipelines decouple the search hot path from persistence:
 - **Trending**: `TrendingService::record_query(locale, raw, normalized)` first runs `quality::is_gibberish(raw)` (length caps, no-space Latin, single-char dominance) and drops obviously bad queries; then stores via `quality::normalize_for_trending` (English: translator-normalized, capitalized; other locales: raw, capitalized). Errors swallowed. `TrendingFlushWorker` periodically SCAN+flushes entries above `popularity_threshold` to PostgreSQL. The read paths (autocomplete + top-searches) additionally enforce `crowd_sourcing_min_count` (default 2) so anything that slips past the record-time guard still needs independent repeated searches before surfacing.
 - **Conversations**: `ConversationService::record()` sends via bounded `mpsc::channel(1024)` with `try_send` (never blocks). `ConversationFlushWorker` batch-inserts up to 64 records per flush.
 - **Feedback**: Now upserts on `(session_id, request_id)` (unique index added in migration `20260407000001_feedback_unique`) — repeated like/dislike clicks update the existing row in place instead of duplicating.
-- **Locale memory**: `LocaleMemory::record(session_id, locale)` writes a sticky per-device locale to Redis (key prefix `sl:`, 2h TTL). Bounded at 128 chars on both write and read. Errors swallowed.
+- **Locale memory**: `LocaleMemory::record(&TenantContext, session_id, locale)` writes a sticky per-device locale to Redis with the tenant-scoped key format `sl:{tenant_id}:{session_id}` (2h TTL). Tenant-scoping from Phase 3d.1 prevents cross-tenant locale collisions when two tenants share a session_id. Bounded at 128 chars on both write and read. Errors swallowed.
 - **Default suggestions refresh**: `SuggestionRefreshWorker::run_scheduled` runs on a cron schedule (default `0 0 3 * * *`) and is also exposed via `kenjaku-ingest seed-refresh-now [--force] [--dry-run]`. Holds a PG advisory lock on a pinned `PoolConnection`, computes a SHA-256 corpus fingerprint over `(collection_name, points_count, sorted first 32 point ids)`, short-circuits if unchanged. Otherwise: scrolls Qdrant points-with-vectors → mini-batch k-means via `linfa-clustering` (deterministic seeded `StdRng`) → one multi-locale Gemini call per cluster (`responseMimeType=application/json` + 8-locale `responseSchema`, wrapped in `tokio::time::timeout`) → safety regex filter (price/forecast/buy-sell prompts dropped) → atomic swap via `refresh_batches.status` enum (`running`/`active`/`superseded`/`failed`, single-active partial unique index) → retain last N batches via FK `ON DELETE CASCADE` (excluding `running` rows). Steady-state: ~0 LLM calls/day; on corpus change: ~20 calls.
 
 ## Suggestion Blending
@@ -118,7 +132,7 @@ Two fire-and-forget pipelines decouple the search hot path from persistence:
 
 ## Input Validation Bounds
 
-Query: max 2000 chars. `top_k`: max 100. Autocomplete limit: max 50. Top-searches limit: max 100. Rate limit: 60 req/min per IP via `tower_governor` with `SmartIpKeyExtractor` (requires `into_make_service_with_connect_info::<SocketAddr>()` on the listener to expose the peer address). Body limit: 64KB. Request timeout: 30s.
+Query: max 2000 chars. `top_k`: max 100. Autocomplete limit: max 50. Top-searches limit: max 100. Rate limit: 60 req/min via `tower_governor` with a pluggable `KeyExtractor` selected by `rate_limit.key_strategy` config: `ip` (default, uses `SmartIpKeyExtractor`), `tenant_ip`, or `tenant_principal_ip` (combines `TenantContext` from request extensions with client IP for per-tenant buckets). Requires `into_make_service_with_connect_info::<SocketAddr>()` on the listener to expose the peer address. Body limit: 64KB. Request timeout: 30s.
 
 ## SSE Streaming
 

@@ -1,5 +1,12 @@
 # Tech Spec: Dynamic Default Suggestions + Locale Resolution
 
+> **Note (post-3d.1):** the session-memory Redis key shape referenced in this
+> spec has since been tenant-scoped from `sl:{session_id}` to
+> `sl:{tenant_id}:{session_id}` to prevent cross-tenant locale leakage
+> when two tenants share a session_id. The resolution chain
+> (`?locale=` → session memory → `Accept-Language` → `en`) is otherwise
+> unchanged. See `docs/architect.md` §9.2 for the current tenancy model.
+
 | Field | Value |
 |---|---|
 | Team | Kenjaku |

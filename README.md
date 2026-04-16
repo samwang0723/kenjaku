@@ -49,9 +49,14 @@ cp config/secrets.example.yaml config/secrets.docker.yaml
 #   - llm.api_key (Google Gemini)
 #   - contextualizer.api_key (Anthropic Claude)
 
+# Provision dev JWT keypair (required — tenancy is always-on)
+make dev-setup
+
 # Start everything
 make docker-up
 ```
+
+`make dev-setup` generates an RSA-2048 keypair at `config/dev/` (gitignored) and mints a signed JWT for the `public` tenant at `config/dev/dev-token.txt`. The kenjaku container mounts the public key for validation; the geto-web container mounts the token read-only and serves it at `/.dev-token` (localhost-only, blocked in public deployments). Without this step, kenjaku-server refuses to start when it later loads/stats `tenancy.jwt.public_key_path` — the configured key file is missing or not a regular file.
 
 - Backend API: `http://localhost:18080`
 - Visual frontend (geto-web): `http://localhost:3000` — mobile phone-frame
@@ -105,10 +110,15 @@ make lint
 
 ### Search Example
 
+All authenticated endpoints require a Bearer JWT (tenancy-first — no anonymous access). For local dev, read the minted token and attach it:
+
 ```bash
+export DEV_JWT=$(cat config/dev/dev-token.txt)
+
 # Non-streaming — locale is auto-detected by the translator from the query text
 curl -X POST http://localhost:18080/api/v1/search \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $DEV_JWT" \
   -H "X-Session-Id: sess-001" \
   -d '{
     "query": "How do I reset my password?",
@@ -121,9 +131,12 @@ curl -X POST http://localhost:18080/api/v1/search \
 # Streaming (SSE) — set streaming: true
 curl -N -X POST http://localhost:18080/api/v1/search \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $DEV_JWT" \
   -H "X-Session-Id: s" \
   -d '{"query":"How do I reset my password?","session_id":"s","request_id":"r","streaming":true,"top_k":5}'
 ```
+
+Requests without a valid Bearer JWT return `401 {"success":false,"error":"Unauthorized tenant"}`. The response metadata includes per-request LLM `usage` (token counts + estimated cost per call) for observability.
 
 ### Supported Locales
 
@@ -171,10 +184,17 @@ Layered YAML config with secrets separation:
 config/base.yaml              Defaults (committed)
 config/{APP_ENV}.yaml          Environment overrides (committed)
 config/secrets.{env}.yaml     API keys, DB credentials (gitignored)
-KENJAKU__* env vars            Final override (e.g. KENJAKU__LLM__API_KEY)
+config/dev/                   Dev JWT keypair + minted token (gitignored, via make dev-setup)
+KENJAKU__* env vars            Final override (e.g. KENJAKU__LLM__API_KEY, KENJAKU__TENANCY__JWT__ISSUER)
 ```
 
 `APP_ENV` values: `local` (default), `docker`, `staging`, `production`
+
+### Tenancy
+
+Tenancy is **always-on** post-3e. Every request requires a valid Bearer JWT (RS256/RS384/RS512/ES256/ES384 — `none` and HS* rejected). Required `tenancy.jwt.*` fields: `public_key_path`, `issuer`, `audience`. Staging and production deployments must provision these before boot or `validate_secrets()` fails fast.
+
+Tenants are seeded in the `tenants` table (public seeded by the 3a migration). Collections are routed per-tenant via `{base_name}_{tenant_id}` naming (the `public` alias bridges legacy data).
 
 ## Makefile Targets
 
@@ -184,7 +204,8 @@ KENJAKU__* env vars            Final override (e.g. KENJAKU__LLM__API_KEY)
 | `make test` | Run all workspace tests |
 | `make lint` | Clippy with warnings as errors |
 | `make fmt` | Format all code |
-| `make run` | Run server locally (APP_ENV=local) |
+| `make dev-setup` | Generate RSA-2048 keypair + mint dev JWT (required for tenancy-first auth) |
+| `make run` | Run server locally (APP_ENV=local; prereqs `dev-setup`) |
 | `make docker-build` | Build Docker image |
 | `make docker-up` | Build + start full stack |
 | `make docker-down` | Stop all containers |
@@ -223,9 +244,20 @@ GitHub Actions runs on every push to `main` and every PR
 
 - **Rust stable** — `cargo fmt --check`, `cargo clippy -D warnings`,
   `cargo build --locked`, `cargo test --locked` (cached via
-  `Swatinem/rust-cache`)
+  `Swatinem/rust-cache`), plus a **semgrep** step that runs
+  `.semgrep/tenant-scope.yml` against `crates/kenjaku-infra/src/postgres/`
+  to block tenant-blind SQL regressions
 - **Docker build** — validates `docker compose config`, then builds
   both the `kenjaku` and `geto-web` images via Buildx with GHA cache
+
+### Local regression matrix
+
+A project-local `/regression` skill (under `.claude/skills/regression/`)
+bundles the full 6-phase verification: local Rust build/test, canonical
+Docker build+test (`make docker-test`), semgrep guardrail + fixture
+self-test, docker deploy + authenticated API e2e smoke, optional
+chrome-cdp web UI verification, and fire-and-forget worker health log
+scan. Useful before opening a PR.
 
 ## License
 
