@@ -155,4 +155,4 @@ rate_limit:
 # Default `parallel_preamble` preserves byte-for-byte legacy behavior.
 # Flip to `merged_preamble` per environment to A/B latency + cost.
 pipeline:
-  preamble_mode: parallel_preamble
+  preamble_mode: merged_preamble
