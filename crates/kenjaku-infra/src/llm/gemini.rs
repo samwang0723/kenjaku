@@ -846,9 +846,7 @@ impl LlmProvider for GeminiProvider {
                             // `LlmDetected`) — matches the parallel
                             // path's behavior and the Brain trait
                             // default impl.
-                            detected_locale: DetectedLocale::Unsupported {
-                                tag: String::new(),
-                            },
+                            detected_locale: DetectedLocale::Unsupported { tag: String::new() },
                         },
                     },
                     usage,
