@@ -110,7 +110,7 @@ async fn process_document(
         // Step 3: Build Qdrant points.
         let points: Vec<PointData> = batch
             .iter()
-            .zip(embeddings.into_iter())
+            .zip(embeddings)
             .map(|((original, contextualized), embedding)| PointData {
                 point_id: Uuid::new_v4().to_string(),
                 doc_id: doc_id.to_string(),
