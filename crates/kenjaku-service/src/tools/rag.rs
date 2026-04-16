@@ -115,6 +115,7 @@ mod tests {
     use kenjaku_core::types::intent::Intent;
     use kenjaku_core::types::locale::Locale;
     use kenjaku_core::types::search::RetrievedChunk;
+    use kenjaku_core::types::tenant::test_helpers::public_test_context;
     use kenjaku_core::types::tenant::{TenantContext, TenantId};
     use std::sync::Mutex;
     use std::sync::{
@@ -184,7 +185,7 @@ mod tests {
             StdArc::new(PrefixCollectionResolver::new("documents")),
             ToolConfig::default(),
         );
-        let tctx = TenantContext::public();
+        let tctx = public_test_context();
         let req = make_request(&tctx);
         assert!(tool.should_fire(&req, &ToolOutputMap::new()));
     }
@@ -201,7 +202,7 @@ mod tests {
                 rollout_pct: None,
             },
         );
-        let tctx = TenantContext::public();
+        let tctx = public_test_context();
         let req = make_request(&tctx);
         assert!(!tool.should_fire(&req, &ToolOutputMap::new()));
     }
@@ -215,7 +216,7 @@ mod tests {
             StdArc::new(PrefixCollectionResolver::new("documents")),
             ToolConfig::default(),
         );
-        let tctx = TenantContext::public();
+        let tctx = public_test_context();
         let req = make_request(&tctx);
         let cancel = CancellationToken::new();
         let result = tool.invoke(&req, &ToolOutputMap::new(), &cancel).await;
@@ -238,7 +239,7 @@ mod tests {
             StdArc::new(PrefixCollectionResolver::new("documents")),
             ToolConfig::default(),
         );
-        let tctx = TenantContext::public();
+        let tctx = public_test_context();
         let req = make_request(&tctx);
         let cancel = CancellationToken::new();
         cancel.cancel();
@@ -268,7 +269,7 @@ mod tests {
 
         let tool = DocRagTool::new(retriever.clone(), resolver.clone(), ToolConfig::default());
 
-        let tctx = TenantContext::public();
+        let tctx = public_test_context();
         let req = make_request(&tctx);
 
         // When: invoke runs.
@@ -306,7 +307,7 @@ mod tests {
             collection_seen: Mutex::new(None),
         });
         let tool = DocRagTool::new(retriever.clone(), resolver.clone(), ToolConfig::default());
-        let mut tctx = TenantContext::public();
+        let mut tctx = public_test_context();
         tctx.tenant_id = TenantId::new("acme").unwrap();
         let req = make_request(&tctx);
 

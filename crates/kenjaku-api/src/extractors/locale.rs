@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use kenjaku_core::types::locale::{DetectedLocale, Locale};
 use kenjaku_core::types::tenant::TenantContext;
+    use kenjaku_core::types::tenant::test_helpers::public_test_context;
 
 /// Provenance of the resolved locale, serialized as snake_case strings matching
 /// the DTO contract locked in `architect.md`.
@@ -120,7 +121,7 @@ impl ResolvedLocale {
     /// building an entire `http::Request`.
     ///
     /// Phase 3d.1: `tctx` is required so the session-memory lookup is
-    /// tenant-scoped. Callers in tests can pass `&TenantContext::public()`;
+    /// tenant-scoped. Callers in tests can pass a test helper context;
     /// in production the value comes from `Extension<TenantContext>` inserted
     /// by the auth middleware.
     pub async fn resolve(
@@ -263,7 +264,7 @@ mod tests {
     }
 
     fn public_tctx() -> TenantContext {
-        TenantContext::public()
+        public_test_context()
     }
 
     fn acme_tctx() -> TenantContext {

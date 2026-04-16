@@ -34,7 +34,7 @@ pub struct ToolRequest {
     pub session_id: String,
     /// Request-scoped tenancy context. Private by design — tools read via
     /// [`ToolRequest::tenant`] and MUST NOT mutate it. In Phase 3b every
-    /// request resolves to [`TenantContext::public`]; slice 3c populates
+    /// request resolves to [the auth middleware's `TenantContext`]; slice 3c populates
     /// this from the JWT extractor.
     tenant: TenantContext,
 }
@@ -74,7 +74,7 @@ impl ToolRequest {
     /// Tools use this to drive per-tenant behavior (e.g. the default
     /// `DocRagTool` hands `self.tenant().tenant_id` to a
     /// `CollectionResolver` so each tenant reads from its own Qdrant
-    /// collection). In 3b this always returns `TenantContext::public()`.
+    /// collection). In 3b this always returns `public_test_context()`.
     pub fn tenant(&self) -> &TenantContext {
         &self.tenant
     }
@@ -247,7 +247,7 @@ impl ToolOutputMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::tenant::TenantContext;
+    use crate::types::tenant::test_helpers::public_test_context;
 
     // ---- ToolRequest tenant threading (Phase 3b) --------------------------
 
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn tool_request_new_stores_tenant_and_accessor_returns_it() {
-        let tctx = TenantContext::public();
+        let tctx = public_test_context();
         let req = sample_request(&tctx);
         assert_eq!(req.tenant().tenant_id.as_str(), "public");
         assert!(req.tenant().principal_id.is_none());
@@ -277,7 +277,7 @@ mod tests {
     fn tool_request_new_clones_tctx_so_caller_retains_ownership() {
         // Caller's tctx must still be usable after ToolRequest::new consumed
         // a borrow.
-        let tctx = TenantContext::public();
+        let tctx = public_test_context();
         let _req = sample_request(&tctx);
         // Would not compile if `new` took ownership.
         assert_eq!(tctx.tenant_id.as_str(), "public");
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn tool_request_clone_preserves_tenant() {
-        let tctx = TenantContext::public();
+        let tctx = public_test_context();
         let req = sample_request(&tctx);
         let dup = req.clone();
         assert_eq!(dup.tenant().tenant_id.as_str(), "public");

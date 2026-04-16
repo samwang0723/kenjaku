@@ -159,16 +159,24 @@ pub struct TenantContext {
     pub plan_tier: PlanTier,
 }
 
-impl TenantContext {
-    /// The default context for single-tenant / un-authenticated requests.
-    ///
-    /// Returns `tenant_id = "public"`, `principal_id = None`,
-    /// `plan_tier = Enterprise`. `Enterprise` because there are no limits
-    /// on the internal default tenant — it's the server owner's own data.
-    pub fn public() -> Self {
-        Self {
-            // SAFETY: "public" is 6 ASCII chars in [a-z], well within the
-            // charset + length rules. unwrap never fires.
+/// Test-only helpers for constructing `TenantContext` without real auth.
+///
+/// The longer name `public_test_context()` is deliberate — it screams
+/// "this is a test shortcut, not a production API." Production code
+/// MUST construct `TenantContext` from real JWT claims via the auth
+/// middleware.
+///
+/// NOT gated with `#[cfg(test)]` because Rust's `cfg(test)` is crate-local:
+/// downstream crates (`kenjaku-service`, `kenjaku-api`) cannot import a
+/// `#[cfg(test)]` module from `kenjaku-core` even in their own test builds.
+/// The naming convention provides sufficient deterrence.
+pub mod test_helpers {
+    use super::*;
+
+    /// Construct a `TenantContext` for the "public" tenant in tests.
+    /// Do NOT call from production code — use the auth middleware instead.
+    pub fn public_test_context() -> TenantContext {
+        TenantContext {
             tenant_id: TenantId::new("public").expect("'public' is a valid tenant id"),
             principal_id: None,
             plan_tier: PlanTier::Enterprise,
@@ -330,11 +338,11 @@ mod tests {
         assert_eq!(p.as_str(), "svc_ingest");
     }
 
-    // ---- TenantContext::public -------------------------------------------
+    // ---- TenantContext test helpers ----------------------------------------
 
     #[test]
-    fn public_context_is_public_tenant_enterprise_no_principal() {
-        let ctx = TenantContext::public();
+    fn public_test_context_is_public_tenant_enterprise_no_principal() {
+        let ctx = test_helpers::public_test_context();
         assert_eq!(ctx.tenant_id.as_str(), "public");
         assert!(ctx.principal_id.is_none());
         assert_eq!(ctx.plan_tier, PlanTier::Enterprise);
@@ -342,10 +350,7 @@ mod tests {
 
     #[test]
     fn tenant_context_is_clone() {
-        // Forward-compat contract: 3b threads &TenantContext through
-        // SearchPipeline::search. Clone must work so extractors can hand
-        // out owned contexts per-request.
-        let ctx = TenantContext::public();
+        let ctx = test_helpers::public_test_context();
         let dup = ctx.clone();
         assert_eq!(dup.tenant_id.as_str(), ctx.tenant_id.as_str());
     }

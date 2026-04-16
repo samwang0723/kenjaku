@@ -16,8 +16,7 @@
 //!   accept `&TenantContext` and the pipeline forwards it into every
 //!   downstream call (tools, trending, conversations, locale memory).
 //!   `StreamContext.tenant` persists the context for `complete_stream`.
-//!   In 3b every call site resolves to `TenantContext::public()`; slice
-//!   3c wires the JWT extractor at the handler boundary.
+//!   Phase 3e: every request goes through JWT auth; no fallback context.
 //! - Phase 3c/3d will decide whether `complete_stream` is promoted onto
 //!   the `SearchPipeline` trait. Until then it remains an inherent method
 //!   on this concrete type.
@@ -43,6 +42,7 @@ use kenjaku_core::types::search::{
     StreamContext, StreamDoneMetadata, StreamStartMetadata,
 };
 use kenjaku_core::types::tenant::TenantContext;
+    use kenjaku_core::types::tenant::test_helpers::public_test_context;
 use kenjaku_core::types::tool::ToolRequest;
 
 use crate::brain::ConversationAssembler;
@@ -659,6 +659,7 @@ mod tests {
         StreamChunk, StreamChunkType, TranslationResult,
     };
     use kenjaku_core::types::tenant::TenantContext;
+    use kenjaku_core::types::tenant::test_helpers::public_test_context;
     use kenjaku_core::types::tool::{ToolConfig, ToolError, ToolId, ToolOutput, ToolOutputMap};
 
     // ---- MockBrain -----------------------------------------------------------
@@ -930,7 +931,7 @@ mod tests {
         let (pipeline, _rx) = make_pipeline(brain, vec![tool]);
         let req = make_request();
         let response = pipeline
-            .search(&req, &TenantContext::public(), None)
+            .search(&req, &public_test_context(), None)
             .await
             .unwrap();
 
@@ -967,7 +968,7 @@ mod tests {
         let (pipeline, _rx) = make_pipeline(brain, vec![tool]);
         let req = make_request();
         let response = pipeline
-            .search(&req, &TenantContext::public(), None)
+            .search(&req, &public_test_context(), None)
             .await
             .unwrap();
 
@@ -989,7 +990,7 @@ mod tests {
         let (pipeline, _rx) = make_pipeline(brain, vec![]);
         let req = make_request();
         let response = pipeline
-            .search(&req, &TenantContext::public(), None)
+            .search(&req, &public_test_context(), None)
             .await
             .unwrap();
 
@@ -1006,7 +1007,7 @@ mod tests {
         let (pipeline, _rx) = make_pipeline(brain, vec![]);
         let req = make_request();
         let response = pipeline
-            .search(&req, &TenantContext::public(), None)
+            .search(&req, &public_test_context(), None)
             .await
             .unwrap();
 
@@ -1020,7 +1021,7 @@ mod tests {
         let (pipeline, _rx) = make_pipeline(brain, vec![]);
         let req = make_request();
         let response = pipeline
-            .search(&req, &TenantContext::public(), None)
+            .search(&req, &public_test_context(), None)
             .await
             .unwrap();
 
@@ -1040,7 +1041,7 @@ mod tests {
         let (pipeline, mut rx) = make_pipeline(brain, vec![]);
         let req = make_request();
         let _response = pipeline
-            .search(&req, &TenantContext::public(), None)
+            .search(&req, &public_test_context(), None)
             .await
             .unwrap();
 
@@ -1060,14 +1061,14 @@ mod tests {
         let (pipeline, _rx) = make_pipeline(brain, vec![]);
         let req = make_request();
         let _response = pipeline
-            .search(&req, &TenantContext::public(), None)
+            .search(&req, &public_test_context(), None)
             .await
             .unwrap();
 
         // History should now have one turn
         let history = pipeline
             .history_store
-            .snapshot_for_llm(&TenantContext::public(), "sess-1");
+            .snapshot_for_llm(&public_test_context(), "sess-1");
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].user, "test query");
         assert_eq!(history[0].assistant, "Mock answer");
@@ -1089,7 +1090,7 @@ mod tests {
         let (pipeline, _rx) = make_pipeline(brain, vec![tool]);
         let req = make_request();
         let response = pipeline
-            .search(&req, &TenantContext::public(), None)
+            .search(&req, &public_test_context(), None)
             .await
             .unwrap();
 
@@ -1128,7 +1129,7 @@ mod tests {
         };
 
         let output = pipeline
-            .search_stream(&req, &TenantContext::public(), None)
+            .search_stream(&req, &public_test_context(), None)
             .await
             .unwrap();
 
@@ -1171,7 +1172,7 @@ mod tests {
             query: "test".into(),
             locale: Locale::En,
             intent: Intent::Factual,
-            tenant: TenantContext::public(),
+            tenant: public_test_context(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
@@ -1217,7 +1218,7 @@ mod tests {
             query: "test".into(),
             locale: Locale::En,
             intent: Intent::Factual,
-            tenant: TenantContext::public(),
+            tenant: public_test_context(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
@@ -1257,7 +1258,7 @@ mod tests {
             query: "test".into(),
             locale: Locale::En,
             intent: Intent::Factual,
-            tenant: TenantContext::public(),
+            tenant: public_test_context(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
@@ -1283,7 +1284,7 @@ mod tests {
             query: "streamed query".into(),
             locale: Locale::Ja,
             intent: Intent::Navigational,
-            tenant: TenantContext::public(),
+            tenant: public_test_context(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
@@ -1314,7 +1315,7 @@ mod tests {
             query: "history query".into(),
             locale: Locale::En,
             intent: Intent::Factual,
-            tenant: TenantContext::public(),
+            tenant: public_test_context(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
@@ -1324,7 +1325,7 @@ mod tests {
 
         let history = pipeline
             .history_store
-            .snapshot_for_llm(&TenantContext::public(), "history-key");
+            .snapshot_for_llm(&public_test_context(), "history-key");
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].user, "history query");
         assert_eq!(history[0].assistant, "history answer");
@@ -1346,7 +1347,7 @@ mod tests {
             query: "q".into(),
             locale: Locale::En,
             intent: Intent::Factual,
-            tenant: TenantContext::public(),
+            tenant: public_test_context(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
@@ -1354,7 +1355,7 @@ mod tests {
 
         let history = pipeline
             .history_store
-            .snapshot_for_llm(&TenantContext::public(), "empty-key");
+            .snapshot_for_llm(&public_test_context(), "empty-key");
         assert!(history.is_empty());
     }
 
@@ -1366,20 +1367,20 @@ mod tests {
 
         // Pass a device session id different from the body session_id
         let _response = pipeline
-            .search(&req, &TenantContext::public(), Some("device-123"))
+            .search(&req, &public_test_context(), Some("device-123"))
             .await
             .unwrap();
 
         // History should be keyed by device session id
         let device_history = pipeline
             .history_store
-            .snapshot_for_llm(&TenantContext::public(), "device-123");
+            .snapshot_for_llm(&public_test_context(), "device-123");
         assert_eq!(device_history.len(), 1);
 
         // Body session_id should have no history
         let body_history = pipeline
             .history_store
-            .snapshot_for_llm(&TenantContext::public(), "sess-1");
+            .snapshot_for_llm(&public_test_context(), "sess-1");
         assert!(body_history.is_empty());
     }
 
@@ -1415,7 +1416,7 @@ mod tests {
         // `PrefixCollectionResolver::new(config.qdrant.collection_name.clone())`.
         let resolver = PrefixCollectionResolver::new("documents");
 
-        let tctx = TenantContext::public();
+        let tctx = public_test_context();
         let resolved = resolver.resolve(&tctx.tenant_id).await.unwrap();
 
         // Byte-for-byte match with the pre-3d.2 hardcoded value. If this
@@ -1423,8 +1424,7 @@ mod tests {
         // empty Qdrant collection.
         assert_eq!(resolved, "documents");
 
-        // Belt-and-suspenders: the TenantId literal must remain "public"
-        // so TenantContext::public() still hits the zero-overhead branch.
+        // Belt-and-suspenders: the TenantId literal must remain "public".
         assert_eq!(tctx.tenant_id.as_str(), "public");
         assert_eq!(
             TenantId::new("public").unwrap().as_str(),
@@ -1450,7 +1450,7 @@ mod tests {
         // For the `public` tenant this resolves to bare "test-collection".
         let req = make_request();
         let _ = pipeline
-            .search(&req, &TenantContext::public(), None)
+            .search(&req, &public_test_context(), None)
             .await
             .unwrap();
 
@@ -1470,7 +1470,7 @@ mod tests {
         let tool: Arc<dyn Tool> = mock.clone();
         let (pipeline, _rx) = make_pipeline(brain, vec![tool]);
 
-        let mut tctx_acme = TenantContext::public();
+        let mut tctx_acme = public_test_context();
         tctx_acme.tenant_id = TenantId::new("acme").unwrap();
 
         let req = make_request();
@@ -1504,7 +1504,7 @@ mod tests {
 
         let req = make_request();
         let err = pipeline
-            .search(&req, &TenantContext::public(), None)
+            .search(&req, &public_test_context(), None)
             .await
             .unwrap_err();
         assert!(
