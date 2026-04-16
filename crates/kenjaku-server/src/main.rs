@@ -300,6 +300,8 @@ async fn main() -> anyhow::Result<()> {
     info!(
         tenancy_enabled = config.tenancy.enabled,
         validator_constructed = jwt_validator.is_some(),
+        key_strategy = ?config.rate_limit.key_strategy,
+        jwt_configured = config.tenancy.jwt.is_some(),
         "Tenancy auth state"
     );
 
