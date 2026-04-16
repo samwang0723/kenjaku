@@ -9,6 +9,7 @@
 
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use futures::Stream;
@@ -25,7 +26,10 @@ use kenjaku_core::traits::translator::Translator;
 use kenjaku_core::types::intent::IntentClassification;
 use kenjaku_core::types::locale::Locale;
 use kenjaku_core::types::message::Message;
-use kenjaku_core::types::search::{LlmResponse, RetrievedChunk, StreamChunk, TranslationResult};
+use kenjaku_core::types::search::{
+    LlmResponse, LlmUsage, RetrievedChunk, StreamChunk, TranslationResult,
+};
+use kenjaku_core::types::usage::LlmCall;
 
 /// Default `Brain` implementation backed by a single `LlmProvider`.
 ///
@@ -72,6 +76,25 @@ impl GeminiBrain {
 // ---- Brain impl (preserved for backwards-compat with any direct
 // ---- Arc<dyn Brain> consumer) --------------------------------------------
 
+/// Build an `LlmCall` from optional usage + provider-reported model +
+/// measured latency. Returns `None` when the provider didn't attach
+/// usage metadata so the aggregator can skip this call.
+fn build_call(
+    purpose: &str,
+    model: String,
+    usage: Option<&LlmUsage>,
+    latency_ms: u64,
+) -> Option<LlmCall> {
+    usage.map(|u| LlmCall {
+        purpose: purpose.to_string(),
+        model,
+        input_tokens: u.prompt_tokens,
+        output_tokens: u.completion_tokens,
+        cost_usd: u.cost_usd.unwrap_or(0.0),
+        latency_ms,
+    })
+}
+
 #[async_trait]
 impl Brain for GeminiBrain {
     #[instrument(skip(self, _cancel), fields(query = %query))]
@@ -79,7 +102,7 @@ impl Brain for GeminiBrain {
         &self,
         query: &str,
         _cancel: &CancellationToken,
-    ) -> Result<IntentClassification> {
+    ) -> Result<(IntentClassification, Option<LlmCall>)> {
         self.intent_classifier.classify(query).await
     }
 
@@ -88,8 +111,17 @@ impl Brain for GeminiBrain {
         &self,
         query: &str,
         _cancel: &CancellationToken,
-    ) -> Result<TranslationResult> {
-        self.llm.translate(query).await
+    ) -> Result<(TranslationResult, Option<LlmCall>)> {
+        let started = Instant::now();
+        let (result, usage) = self.llm.translate(query).await?;
+        let latency_ms = started.elapsed().as_millis() as u64;
+        let call = build_call(
+            "translate",
+            self.model_name.clone(),
+            usage.as_ref(),
+            latency_ms,
+        );
+        Ok((result, call))
     }
 
     #[instrument(skip(self, messages, _chunks, _cancel), fields(locale = %locale, msg_count = messages.len()))]
@@ -99,9 +131,18 @@ impl Brain for GeminiBrain {
         _chunks: &[RetrievedChunk],
         locale: Locale,
         _cancel: &CancellationToken,
-    ) -> Result<LlmResponse> {
+    ) -> Result<(LlmResponse, Option<LlmCall>)> {
         let _ = locale; // locale is baked into the system instruction in messages
-        self.llm.generate(messages).await
+        let started = Instant::now();
+        let response = self.llm.generate(messages).await?;
+        let latency_ms = started.elapsed().as_millis() as u64;
+        let call = build_call(
+            "generate",
+            response.model.clone(),
+            response.usage.as_ref(),
+            latency_ms,
+        );
+        Ok((response, call))
     }
 
     #[instrument(skip(self, messages, _chunks, _cancel), fields(locale = %locale, msg_count = messages.len()))]
@@ -122,8 +163,17 @@ impl Brain for GeminiBrain {
         query: &str,
         answer: &str,
         _cancel: &CancellationToken,
-    ) -> Result<Vec<String>> {
-        self.llm.suggest(query, answer).await
+    ) -> Result<(Vec<String>, Option<LlmCall>)> {
+        let started = Instant::now();
+        let (suggestions, usage) = self.llm.suggest(query, answer).await?;
+        let latency_ms = started.elapsed().as_millis() as u64;
+        let call = build_call(
+            "suggest",
+            self.model_name.clone(),
+            usage.as_ref(),
+            latency_ms,
+        );
+        Ok((suggestions, call))
     }
 
     fn has_web_grounding(&self) -> bool {
@@ -143,7 +193,7 @@ impl Classifier for GeminiBrain {
         &self,
         query: &str,
         _cancel: &CancellationToken,
-    ) -> Result<IntentClassification> {
+    ) -> Result<(IntentClassification, Option<LlmCall>)> {
         self.intent_classifier.classify(query).await
     }
 }
@@ -154,8 +204,17 @@ impl Translator for GeminiBrain {
         &self,
         query: &str,
         _cancel: &CancellationToken,
-    ) -> Result<TranslationResult> {
-        self.llm.translate(query).await
+    ) -> Result<(TranslationResult, Option<LlmCall>)> {
+        let started = Instant::now();
+        let (result, usage) = self.llm.translate(query).await?;
+        let latency_ms = started.elapsed().as_millis() as u64;
+        let call = build_call(
+            "translate",
+            self.model_name.clone(),
+            usage.as_ref(),
+            latency_ms,
+        );
+        Ok((result, call))
     }
 }
 
@@ -167,8 +226,17 @@ impl Generator for GeminiBrain {
         _chunks: &[RetrievedChunk],
         _locale: Locale,
         _cancel: &CancellationToken,
-    ) -> Result<LlmResponse> {
-        self.llm.generate(messages).await
+    ) -> Result<(LlmResponse, Option<LlmCall>)> {
+        let started = Instant::now();
+        let response = self.llm.generate(messages).await?;
+        let latency_ms = started.elapsed().as_millis() as u64;
+        let call = build_call(
+            "generate",
+            response.model.clone(),
+            response.usage.as_ref(),
+            latency_ms,
+        );
+        Ok((response, call))
     }
 
     async fn generate_stream(
@@ -186,8 +254,17 @@ impl Generator for GeminiBrain {
         query: &str,
         answer: &str,
         _cancel: &CancellationToken,
-    ) -> Result<Vec<String>> {
-        self.llm.suggest(query, answer).await
+    ) -> Result<(Vec<String>, Option<LlmCall>)> {
+        let started = Instant::now();
+        let (suggestions, usage) = self.llm.suggest(query, answer).await?;
+        let latency_ms = started.elapsed().as_millis() as u64;
+        let call = build_call(
+            "suggest",
+            self.model_name.clone(),
+            usage.as_ref(),
+            latency_ms,
+        );
+        Ok((suggestions, call))
     }
 
     fn has_web_grounding(&self) -> bool {

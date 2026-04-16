@@ -9,6 +9,7 @@ use crate::types::intent::IntentClassification;
 use crate::types::locale::Locale;
 use crate::types::message::Message;
 use crate::types::search::{LlmResponse, RetrievedChunk, StreamChunk, TranslationResult};
+use crate::types::usage::LlmCall;
 
 /// LLM-agnostic facade for all model interactions in the search pipeline.
 ///
@@ -32,16 +33,27 @@ use crate::types::search::{LlmResponse, RetrievedChunk, StreamChunk, Translation
 #[async_trait]
 pub trait Brain: Send + Sync {
     /// Classify the intent of a user query.
+    ///
+    /// Returns the classification paired with an optional [`LlmCall`]
+    /// accounting entry so the pipeline can surface per-call token
+    /// usage + cost on `SearchMetadata.usage`. `None` when the
+    /// underlying provider cannot report usage for this call.
     async fn classify_intent(
         &self,
         query: &str,
         cancel: &CancellationToken,
-    ) -> Result<IntentClassification>;
+    ) -> Result<(IntentClassification, Option<LlmCall>)>;
 
     /// Normalize a query into canonical English AND detect its source
     /// locale in a single LLM call.
-    async fn translate(&self, query: &str, cancel: &CancellationToken)
-    -> Result<TranslationResult>;
+    ///
+    /// Returns the translation result paired with an optional
+    /// [`LlmCall`] accounting entry.
+    async fn translate(
+        &self,
+        query: &str,
+        cancel: &CancellationToken,
+    ) -> Result<(TranslationResult, Option<LlmCall>)>;
 
     /// Generate a complete (non-streaming) LLM response.
     ///
@@ -55,16 +67,23 @@ pub trait Brain: Send + Sync {
     ///
     /// `locale` is the detected answer locale, used to configure
     /// provider-specific features (e.g. Gemini's `google_search` tool).
+    ///
+    /// Returns the LLM response paired with an optional [`LlmCall`]
+    /// accounting entry.
     async fn generate(
         &self,
         messages: &[Message],
         chunks: &[RetrievedChunk],
         locale: Locale,
         cancel: &CancellationToken,
-    ) -> Result<LlmResponse>;
+    ) -> Result<(LlmResponse, Option<LlmCall>)>;
 
     /// Generate a streaming LLM response. Same semantics as `generate`
     /// but returns a token stream.
+    ///
+    /// Usage for streaming is attached to individual `StreamChunk`s
+    /// (typically only the terminal chunk with `finished = true`);
+    /// see [`StreamChunk::usage`].
     async fn generate_stream(
         &self,
         messages: &[Message],
@@ -74,12 +93,15 @@ pub trait Brain: Send + Sync {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>>;
 
     /// Generate follow-up query suggestions based on a query and answer.
+    ///
+    /// Returns the suggestions paired with an optional [`LlmCall`]
+    /// accounting entry.
     async fn suggest(
         &self,
         query: &str,
         answer: &str,
         cancel: &CancellationToken,
-    ) -> Result<Vec<String>>;
+    ) -> Result<(Vec<String>, Option<LlmCall>)>;
 
     /// Whether the underlying Generator attaches its own built-in
     /// web-grounding tool (e.g. Gemini's `google_search`).

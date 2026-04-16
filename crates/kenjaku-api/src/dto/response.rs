@@ -3,6 +3,7 @@ use utoipa::ToSchema;
 
 use kenjaku_core::types::component::Component;
 use kenjaku_core::types::search::SearchResponse;
+use kenjaku_core::types::usage::{LlmCall, UsageStats};
 
 /// API response envelope.
 #[derive(Debug, Serialize, ToSchema)]
@@ -92,6 +93,60 @@ pub struct SearchMetadataDto {
     /// Default-skipped on the wire when both flags are false.
     #[serde(default)]
     pub grounding: GroundingInfoDto,
+    /// Per-request LLM token usage + estimated cost. One entry per
+    /// LLM call (translator, classifier, generator, suggest). Operators
+    /// can use this to track per-request cost and spot expensive
+    /// queries without parsing logs.
+    #[serde(default)]
+    pub usage: UsageStatsDto,
+}
+
+/// Per-request LLM usage aggregate mirrored from
+/// [`kenjaku_core::types::usage::UsageStats`] for the wire.
+#[derive(Debug, Default, Serialize, ToSchema)]
+pub struct UsageStatsDto {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub total_tokens: u32,
+    pub estimated_cost_usd: f64,
+    pub calls: Vec<LlmCallDto>,
+}
+
+/// Single LLM call accounting entry mirrored from
+/// [`kenjaku_core::types::usage::LlmCall`] for the wire.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LlmCallDto {
+    pub purpose: String,
+    pub model: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cost_usd: f64,
+    pub latency_ms: u64,
+}
+
+impl From<UsageStats> for UsageStatsDto {
+    fn from(u: UsageStats) -> Self {
+        Self {
+            input_tokens: u.input_tokens,
+            output_tokens: u.output_tokens,
+            total_tokens: u.total_tokens,
+            estimated_cost_usd: u.estimated_cost_usd,
+            calls: u.calls.into_iter().map(LlmCallDto::from).collect(),
+        }
+    }
+}
+
+impl From<LlmCall> for LlmCallDto {
+    fn from(c: LlmCall) -> Self {
+        Self {
+            purpose: c.purpose,
+            model: c.model,
+            input_tokens: c.input_tokens,
+            output_tokens: c.output_tokens,
+            cost_usd: c.cost_usd,
+            latency_ms: c.latency_ms,
+        }
+    }
 }
 
 /// Mirrors `kenjaku_core::types::search::GroundingInfo` for the wire.
@@ -211,6 +266,7 @@ impl From<SearchResponse> for SearchResponseDto {
                     web_search_count: resp.metadata.grounding.web_search_count,
                     gemini_grounding_used: resp.metadata.grounding.gemini_grounding_used,
                 },
+                usage: resp.metadata.usage.into(),
             },
         }
     }
@@ -259,6 +315,7 @@ mod tests {
             retrieval_count: 3,
             latency_ms: 120,
             grounding: GroundingInfoDto::default(),
+            usage: UsageStatsDto::default(),
         };
         let v = serde_json::to_value(&meta).unwrap();
         assert_eq!(v.get("resolved_locale").unwrap(), "ja");
@@ -279,10 +336,49 @@ mod tests {
             retrieval_count: 0,
             latency_ms: 10,
             grounding: GroundingInfoDto::default(),
+            usage: UsageStatsDto::default(),
         };
         let v = serde_json::to_value(&meta).unwrap();
         assert!(v.get("resolved_locale").is_none());
         assert!(v.get("resolved_locale_source").is_none());
+    }
+
+    #[test]
+    fn search_metadata_includes_usage_payload() {
+        let meta = SearchMetadataDto {
+            original_query: "hi".into(),
+            translated_query: None,
+            locale: "en".into(),
+            detected_locale_source: "llm_detected".into(),
+            resolved_locale: None,
+            resolved_locale_source: None,
+            intent: "factual".into(),
+            retrieval_count: 2,
+            latency_ms: 200,
+            grounding: GroundingInfoDto::default(),
+            usage: UsageStatsDto {
+                input_tokens: 150,
+                output_tokens: 60,
+                total_tokens: 210,
+                estimated_cost_usd: 0.0015,
+                calls: vec![LlmCallDto {
+                    purpose: "translate".into(),
+                    model: "gemini-test".into(),
+                    input_tokens: 50,
+                    output_tokens: 10,
+                    cost_usd: 0.0003,
+                    latency_ms: 40,
+                }],
+            },
+        };
+        let v = serde_json::to_value(&meta).unwrap();
+        let usage = v.get("usage").expect("usage field present");
+        assert_eq!(usage.get("total_tokens").unwrap(), 210);
+        assert_eq!(usage.get("input_tokens").unwrap(), 150);
+        assert_eq!(usage.get("output_tokens").unwrap(), 60);
+        let calls = usage.get("calls").unwrap().as_array().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].get("purpose").unwrap(), "translate");
     }
 
     #[test]

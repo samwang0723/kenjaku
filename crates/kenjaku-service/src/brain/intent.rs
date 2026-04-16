@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use tracing::instrument;
@@ -8,6 +9,7 @@ use kenjaku_core::traits::intent::IntentClassifier;
 use kenjaku_core::traits::llm::LlmProvider;
 use kenjaku_core::types::intent::{Intent, IntentClassification};
 use kenjaku_core::types::search::LlmResponse;
+use kenjaku_core::types::usage::LlmCall;
 
 const INTENT_CLASSIFICATION_PROMPT: &str = r#"You are an intent classifier. Your ONLY job is to output one category name.
 
@@ -39,7 +41,7 @@ impl LlmIntentClassifier {
 #[async_trait]
 impl IntentClassifier for LlmIntentClassifier {
     #[instrument(skip(self), fields(query = %query))]
-    async fn classify(&self, query: &str) -> Result<IntentClassification> {
+    async fn classify(&self, query: &str) -> Result<(IntentClassification, Option<LlmCall>)> {
         // Separate system prompt from user content to prevent injection.
         // The query is passed as context, not interpolated into the prompt.
         let prompt = format!(
@@ -50,15 +52,29 @@ impl IntentClassifier for LlmIntentClassifier {
         // Intent classifier doesn't care about answer language — pass `En`
         // as a no-op; the empty-context branch in `GeminiProvider::generate`
         // skips the systemInstruction entirely anyway.
+        let started = Instant::now();
         let response: LlmResponse = self.llm.generate_brief(&prompt).await?;
+        let latency_ms = started.elapsed().as_millis() as u64;
+
+        let call = response.usage.as_ref().map(|u| LlmCall {
+            purpose: "classify_intent".to_string(),
+            model: response.model.clone(),
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+            cost_usd: u.cost_usd.unwrap_or(0.0),
+            latency_ms,
+        });
 
         let raw = response.answer.trim().to_lowercase();
         let intent = parse_intent(&raw);
 
-        Ok(IntentClassification {
-            intent,
-            confidence: if intent == Intent::Unknown { 0.0 } else { 0.85 },
-        })
+        Ok((
+            IntentClassification {
+                intent,
+                confidence: if intent == Intent::Unknown { 0.0 } else { 0.85 },
+            },
+            call,
+        ))
     }
 }
 

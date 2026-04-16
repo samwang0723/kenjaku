@@ -64,16 +64,7 @@ impl GeminiProvider {
     /// - gemini-3.1-flash-lite*:  $0.10 input,   $0.40 output
     /// - fallback (unknown):      $0.30 input,   $2.50 output (flash rate)
     fn estimate_cost(&self, prompt_tokens: u32, completion_tokens: u32) -> Option<f64> {
-        let model = &self.config.model;
-        let (input_per_m, output_per_m) = if model.contains("pro") {
-            (2.00_f64, 12.00_f64)
-        } else if model.contains("flash-lite") || model.contains("flash_lite") {
-            (0.10, 0.40)
-        } else {
-            // flash + unknown models default to flash pricing
-            (0.30, 2.50)
-        };
-
+        let (input_per_m, output_per_m) = cost_rates_for_model(&self.config.model);
         let tier_mult = self.config.service_tier.cost_multiplier();
         let cost = tier_mult
             * ((prompt_tokens as f64 / 1_000_000.0) * input_per_m
@@ -222,7 +213,9 @@ impl LlmProvider for GeminiProvider {
             LlmUsage {
                 prompt_tokens: prompt,
                 completion_tokens: completion,
-                total_tokens: u.total_token_count.unwrap_or(0),
+                total_tokens: u
+                    .total_token_count
+                    .unwrap_or(prompt.saturating_add(completion)),
                 cost_usd: self.estimate_cost(prompt, completion),
             }
         });
@@ -298,11 +291,24 @@ impl LlmProvider for GeminiProvider {
             })
             .unwrap_or_default();
 
+        let usage = result.usage_metadata.map(|u| {
+            let prompt = u.prompt_token_count.unwrap_or(0);
+            let completion = u.candidates_token_count.unwrap_or(0);
+            LlmUsage {
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                total_tokens: u
+                    .total_token_count
+                    .unwrap_or(prompt.saturating_add(completion)),
+                cost_usd: self.estimate_cost(prompt, completion),
+            }
+        });
+
         Ok(LlmResponse {
             answer,
             sources: Vec::new(),
             model: self.config.model.clone(),
-            usage: None,
+            usage,
         })
     }
 
@@ -367,104 +373,147 @@ impl LlmProvider for GeminiProvider {
         use eventsource_stream::Eventsource;
         use futures::StreamExt;
 
+        // Capture model name + pricing context so the async closure can
+        // assemble `LlmUsage` without holding `&self`.
+        let model = self.config.model.clone();
+        let tier_mult = self.config.service_tier.cost_multiplier();
+        let pricing = cost_rates_for_model(&model);
+
         let event_stream = response.bytes_stream().eventsource();
-        let stream = event_stream.filter_map(|event_result| async move {
-            match event_result {
-                Ok(event) => {
-                    tracing::info!(
-                        event_len = event.data.len(),
-                        raw = %event.data,
-                        "Gemini SSE event (full)"
-                    );
-                    if event.data.trim() == "[DONE]" {
-                        return Some(Ok(StreamChunk {
-                            delta: String::new(),
-                            chunk_type: StreamChunkType::Answer,
-                            finished: true,
-                            grounding: None,
-                        }));
-                    }
-
-                    let response: GeminiResponse = match serde_json::from_str(&event.data) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            tracing::warn!(
-                                parse_error = %e,
-                                sample = %event.data.chars().take(400).collect::<String>(),
-                                "Failed to parse Gemini SSE event — dropping"
-                            );
-                            return None;
-                        }
-                    };
-
-                    let text = response
-                        .candidates
-                        .first()
-                        .map(|c| {
-                            c.content
-                                .parts
-                                .iter()
-                                .map(|p| p.text_str())
-                                .collect::<Vec<_>>()
-                                .join("")
-                        })
-                        .unwrap_or_default();
-
-                    let finish_reason = response
-                        .candidates
-                        .first()
-                        .and_then(|c| c.finish_reason.clone());
-                    let finished = finish_reason.is_some();
-                    if let Some(reason) = finish_reason.as_ref() {
-                        info!(
-                            finish_reason = %reason,
-                            text_len = text.len(),
-                            "Gemini stream final event"
+        let stream = event_stream.filter_map(move |event_result| {
+            let model = model.clone();
+            let pricing = pricing;
+            async move {
+                match event_result {
+                    Ok(event) => {
+                        tracing::info!(
+                            event_len = event.data.len(),
+                            raw = %event.data,
+                            "Gemini SSE event (full)"
                         );
-                    }
+                        if event.data.trim() == "[DONE]" {
+                            return Some(Ok(StreamChunk {
+                                delta: String::new(),
+                                chunk_type: StreamChunkType::Answer,
+                                finished: true,
+                                grounding: None,
+                                usage: None,
+                            }));
+                        }
 
-                    // Extract google_search grounding sources from this event.
-                    // Gemini typically attaches groundingMetadata only on the
-                    // final event (where finishReason is set), but we accept
-                    // it from any event.
-                    let grounding: Option<Vec<LlmSource>> = response
-                        .candidates
-                        .first()
-                        .and_then(|c| c.grounding_metadata.as_ref())
-                        .map(|meta| {
-                            meta.grounding_chunks
-                                .iter()
-                                .filter_map(|gc| {
-                                    gc.web.as_ref().and_then(|w| {
-                                        w.uri.as_ref().map(|uri| LlmSource {
-                                            title: w.title.clone().unwrap_or_default(),
-                                            url: uri.clone(),
-                                            snippet: None,
+                        let response: GeminiResponse = match serde_json::from_str(&event.data) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                tracing::warn!(
+                                    parse_error = %e,
+                                    sample = %event.data.chars().take(400).collect::<String>(),
+                                    "Failed to parse Gemini SSE event — dropping"
+                                );
+                                return None;
+                            }
+                        };
+
+                        let text = response
+                            .candidates
+                            .first()
+                            .map(|c| {
+                                c.content
+                                    .parts
+                                    .iter()
+                                    .map(|p| p.text_str())
+                                    .collect::<Vec<_>>()
+                                    .join("")
+                            })
+                            .unwrap_or_default();
+
+                        let finish_reason = response
+                            .candidates
+                            .first()
+                            .and_then(|c| c.finish_reason.clone());
+                        let finished = finish_reason.is_some();
+                        if let Some(reason) = finish_reason.as_ref() {
+                            info!(
+                                finish_reason = %reason,
+                                text_len = text.len(),
+                                "Gemini stream final event"
+                            );
+                        }
+
+                        // Extract google_search grounding sources from this event.
+                        // Gemini typically attaches groundingMetadata only on the
+                        // final event (where finishReason is set), but we accept
+                        // it from any event.
+                        let grounding: Option<Vec<LlmSource>> = response
+                            .candidates
+                            .first()
+                            .and_then(|c| c.grounding_metadata.as_ref())
+                            .map(|meta| {
+                                meta.grounding_chunks
+                                    .iter()
+                                    .filter_map(|gc| {
+                                        gc.web.as_ref().and_then(|w| {
+                                            w.uri.as_ref().map(|uri| LlmSource {
+                                                title: w.title.clone().unwrap_or_default(),
+                                                url: uri.clone(),
+                                                snippet: None,
+                                            })
                                         })
                                     })
-                                })
-                                .collect()
-                        })
-                        .filter(|v: &Vec<LlmSource>| !v.is_empty());
-                    if let Some(g) = grounding.as_ref() {
-                        info!(
-                            grounding_count = g.len(),
-                            finished, "Captured Gemini grounding sources from stream event"
-                        );
-                    }
+                                    .collect()
+                            })
+                            .filter(|v: &Vec<LlmSource>| !v.is_empty());
+                        if let Some(g) = grounding.as_ref() {
+                            info!(
+                                grounding_count = g.len(),
+                                finished, "Captured Gemini grounding sources from stream event"
+                            );
+                        }
 
-                    if text.is_empty() && !finished && grounding.is_none() {
-                        return None;
-                    }
+                        // Harvest usageMetadata from the event (typically only
+                        // present on the finish event). Each SSE chunk may
+                        // independently carry it; we forward as-is, and the
+                        // consumer takes the last non-None.
+                        let (input_per_m, output_per_m) = pricing;
+                        let usage = response.usage_metadata.as_ref().map(|u| {
+                            let prompt = u.prompt_token_count.unwrap_or(0);
+                            let completion = u.candidates_token_count.unwrap_or(0);
+                            let cost = tier_mult
+                                * ((prompt as f64 / 1_000_000.0) * input_per_m
+                                    + (completion as f64 / 1_000_000.0) * output_per_m);
+                            let cost_rounded = (cost * 1_000_000.0).round() / 1_000_000.0;
+                            LlmUsage {
+                                prompt_tokens: prompt,
+                                completion_tokens: completion,
+                                total_tokens: u
+                                    .total_token_count
+                                    .unwrap_or(prompt.saturating_add(completion)),
+                                cost_usd: Some(cost_rounded),
+                            }
+                        });
+                        if let Some(u) = usage.as_ref() {
+                            info!(
+                                prompt_tokens = u.prompt_tokens,
+                                completion_tokens = u.completion_tokens,
+                                cost_usd = ?u.cost_usd,
+                                model = %model,
+                                "Captured Gemini usage from stream event"
+                            );
+                        }
 
-                    Some(Ok(StreamChunk {
-                        delta: text,
-                        chunk_type: StreamChunkType::Answer,
-                        finished,
-                        grounding,
-                    }))
+                        if text.is_empty() && !finished && grounding.is_none() && usage.is_none() {
+                            return None;
+                        }
+
+                        Some(Ok(StreamChunk {
+                            delta: text,
+                            chunk_type: StreamChunkType::Answer,
+                            finished,
+                            grounding,
+                            usage,
+                        }))
+                    }
+                    Err(e) => Some(Err(Error::Llm(format!("SSE parse error: {e}")))),
                 }
-                Err(e) => Some(Err(Error::Llm(format!("SSE parse error: {e}")))),
             }
         });
 
@@ -472,7 +521,7 @@ impl LlmProvider for GeminiProvider {
     }
 
     #[instrument(skip(self))]
-    async fn translate(&self, text: &str) -> Result<TranslationResult> {
+    async fn translate(&self, text: &str) -> Result<(TranslationResult, Option<LlmUsage>)> {
         let prompt = format!(
             "You are a precise search query translator, normalizer, and language detector\n\
              for a generic document search engine. Your ONLY job is to produce a clean\n\
@@ -568,6 +617,19 @@ impl LlmProvider for GeminiProvider {
             })
             .unwrap_or_default();
 
+        let usage = result.usage_metadata.as_ref().map(|u| {
+            let prompt = u.prompt_token_count.unwrap_or(0);
+            let completion = u.candidates_token_count.unwrap_or(0);
+            LlmUsage {
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                total_tokens: u
+                    .total_token_count
+                    .unwrap_or(prompt.saturating_add(completion)),
+                cost_usd: self.estimate_cost(prompt, completion),
+            }
+        });
+
         // Parse the structured output. On any failure, fall back to the
         // raw user text + en — never block search.
         match serde_json::from_str::<TranslatorJson>(&raw_text) {
@@ -578,10 +640,13 @@ impl LlmProvider for GeminiProvider {
                 } else {
                     parsed.normalized_query
                 };
-                Ok(TranslationResult {
-                    normalized,
-                    detected_locale: detected,
-                })
+                Ok((
+                    TranslationResult {
+                        normalized,
+                        detected_locale: detected,
+                    },
+                    usage,
+                ))
             }
             Err(e) => {
                 tracing::warn!(
@@ -589,16 +654,19 @@ impl LlmProvider for GeminiProvider {
                     raw = %raw_text,
                     "Translator returned malformed JSON; falling back to raw text + en"
                 );
-                Ok(TranslationResult {
-                    normalized: text.to_string(),
-                    detected_locale: DetectedLocale::Supported(Locale::En),
-                })
+                Ok((
+                    TranslationResult {
+                        normalized: text.to_string(),
+                        detected_locale: DetectedLocale::Supported(Locale::En),
+                    },
+                    usage,
+                ))
             }
         }
     }
 
     #[instrument(skip(self))]
-    async fn suggest(&self, query: &str, answer: &str) -> Result<Vec<String>> {
+    async fn suggest(&self, query: &str, answer: &str) -> Result<(Vec<String>, Option<LlmUsage>)> {
         let prompt = format!(
             "Based on the following question and answer, suggest exactly 3 follow-up questions \
             the user might want to ask. Return them as a JSON array of strings.\n\n\
@@ -660,8 +728,21 @@ impl LlmProvider for GeminiProvider {
             })
             .unwrap_or_default();
 
+        let usage = result.usage_metadata.as_ref().map(|u| {
+            let prompt = u.prompt_token_count.unwrap_or(0);
+            let completion = u.candidates_token_count.unwrap_or(0);
+            LlmUsage {
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                total_tokens: u
+                    .total_token_count
+                    .unwrap_or(prompt.saturating_add(completion)),
+                cost_usd: self.estimate_cost(prompt, completion),
+            }
+        });
+
         // Parse JSON array from response
-        serde_json::from_str::<Vec<String>>(&text).or_else(|_| {
+        let suggestions = serde_json::from_str::<Vec<String>>(&text).or_else(|_| {
             // Try to extract JSON array from markdown code block
             let trimmed = text
                 .trim()
@@ -673,7 +754,9 @@ impl LlmProvider for GeminiProvider {
                 .trim();
             serde_json::from_str::<Vec<String>>(trimmed)
                 .map_err(|e| Error::Llm(format!("Failed to parse suggestions JSON: {e}")))
-        })
+        })?;
+
+        Ok((suggestions, usage))
     }
 
     #[instrument(skip(self, excerpt))]
@@ -999,6 +1082,23 @@ struct GeminiUsageMetadata {
     total_token_count: Option<u32>,
 }
 
+/// Per-1M-token pricing rates for a given Gemini model, as `(input, output)`.
+///
+/// Factored out of `GeminiProvider::estimate_cost` so the streaming path
+/// (which assembles `LlmUsage` inside an `async move` that can't hold
+/// `&self`) can reuse the same table. Mirrors the pricing in the
+/// `estimate_cost` docstring.
+fn cost_rates_for_model(model: &str) -> (f64, f64) {
+    if model.contains("pro") {
+        (2.00_f64, 12.00_f64)
+    } else if model.contains("flash-lite") || model.contains("flash_lite") {
+        (0.10, 0.40)
+    } else {
+        // flash + unknown models default to flash pricing
+        (0.30, 2.50)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1106,5 +1206,138 @@ mod tests {
         let domain = parsed.into_domain();
         assert_eq!(domain.label, "");
         assert!(domain.questions.is_empty());
+    }
+
+    // ---- Usage capture tests ----------------------------------------------
+
+    /// Per-1M-token rates table: confirm the pro/flash/flash-lite mapping
+    /// stays stable. If anyone edits the pricing, this test forces an
+    /// explicit update instead of a silent drift.
+    #[test]
+    fn cost_rates_for_known_model_families() {
+        assert_eq!(cost_rates_for_model("gemini-3.1-pro"), (2.00, 12.00));
+        assert_eq!(cost_rates_for_model("gemini-2.5-flash"), (0.30, 2.50));
+        assert_eq!(cost_rates_for_model("gemini-2.5-flash-lite"), (0.10, 0.40));
+        // Unknown models default to flash pricing.
+        assert_eq!(cost_rates_for_model("unknown-model"), (0.30, 2.50));
+    }
+
+    /// `GeminiResponse` must deserialize the `usageMetadata` block so
+    /// translate/suggest/generate can build their `LlmUsage` from it.
+    /// This test locks the camelCase mapping that previously caused
+    /// silent empty `Option`s when missed.
+    #[test]
+    fn gemini_response_parses_usage_metadata() {
+        let raw = r#"{
+            "candidates": [{
+                "content": { "parts": [{ "text": "hi" }] }
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 150,
+                "candidatesTokenCount": 50,
+                "totalTokenCount": 200
+            }
+        }"#;
+        let parsed: GeminiResponse = serde_json::from_str(raw).unwrap();
+        let usage = parsed.usage_metadata.expect("usageMetadata must parse");
+        assert_eq!(usage.prompt_token_count, Some(150));
+        assert_eq!(usage.candidates_token_count, Some(50));
+        assert_eq!(usage.total_token_count, Some(200));
+    }
+
+    /// When the server omits `usageMetadata` (not all endpoints report
+    /// it), the parse must still succeed and yield `None` instead of
+    /// failing hard.
+    #[test]
+    fn gemini_response_handles_missing_usage_metadata() {
+        let raw = r#"{
+            "candidates": [{
+                "content": { "parts": [{ "text": "hi" }] }
+            }]
+        }"#;
+        let parsed: GeminiResponse = serde_json::from_str(raw).unwrap();
+        assert!(parsed.usage_metadata.is_none());
+    }
+
+    /// Gemini sometimes returns `promptTokenCount` + `candidatesTokenCount`
+    /// but omits `totalTokenCount`. Previously we defaulted the total to
+    /// `0`, which under-reported usage and produced an obviously
+    /// inconsistent `LlmUsage` (prompt+completion non-zero, total=0).
+    /// Fall back to `prompt.saturating_add(completion)` so downstream
+    /// usage accounting stays coherent even when the provider skips
+    /// the total field.
+    #[test]
+    fn gemini_response_fills_total_tokens_when_omitted() {
+        let raw = r#"{
+            "candidates": [{
+                "content": { "parts": [{ "text": "hi" }] }
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 120,
+                "candidatesTokenCount": 30
+            }
+        }"#;
+        let parsed: GeminiResponse = serde_json::from_str(raw).unwrap();
+        let u = parsed.usage_metadata.expect("usageMetadata must parse");
+        assert_eq!(u.prompt_token_count, Some(120));
+        assert_eq!(u.candidates_token_count, Some(30));
+        assert!(u.total_token_count.is_none());
+
+        // Simulate the production fallback — every call site in this
+        // file now mirrors this expression.
+        let prompt = u.prompt_token_count.unwrap_or(0);
+        let completion = u.candidates_token_count.unwrap_or(0);
+        let total = u
+            .total_token_count
+            .unwrap_or(prompt.saturating_add(completion));
+        assert_eq!(total, 150, "total must fall back to prompt+completion");
+    }
+
+    /// The cost math must factor in the service-tier multiplier AND
+    /// the per-model base pricing. Standard flash: 150 in + 50 out =
+    /// (150/1M * 0.30) + (50/1M * 2.50) = 0.000170. Flex cuts that to
+    /// 0.000085 (50% multiplier), Priority raises it to 0.0002975
+    /// (1.75x multiplier).
+    #[test]
+    fn estimate_cost_reflects_service_tier_and_model() {
+        use kenjaku_core::config::{LlmConfig, ServiceTier};
+
+        fn provider_with(model: &str, tier: ServiceTier) -> GeminiProvider {
+            GeminiProvider::new(
+                LlmConfig {
+                    provider: "gemini".into(),
+                    model: model.into(),
+                    api_key: "test".into(),
+                    max_tokens: 1024,
+                    temperature: 0.0,
+                    service_tier: tier,
+                    base_url: "http://localhost".into(),
+                },
+                false,
+            )
+        }
+
+        let flash_standard = provider_with("gemini-2.5-flash", ServiceTier::Standard);
+        let cost = flash_standard.estimate_cost(150, 50).unwrap();
+        assert!(
+            (cost - 0.000170).abs() < 1e-9,
+            "flash+standard cost math changed: got {cost}"
+        );
+
+        let flash_flex = provider_with("gemini-2.5-flash", ServiceTier::Flex);
+        let flex_cost = flash_flex.estimate_cost(150, 50).unwrap();
+        assert!(
+            (flex_cost - 0.000085).abs() < 1e-9,
+            "flex multiplier should halve cost: got {flex_cost}"
+        );
+
+        let pro_priority = provider_with("gemini-3.1-pro", ServiceTier::Priority);
+        // pro pricing: 150/1M * 2.00 + 50/1M * 12.00 = 0.00090
+        // priority 1.75x = 0.001575
+        let pro_cost = pro_priority.estimate_cost(150, 50).unwrap();
+        assert!(
+            (pro_cost - 0.001575).abs() < 1e-9,
+            "pro+priority cost math changed: got {pro_cost}"
+        );
     }
 }

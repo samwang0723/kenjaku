@@ -8,6 +8,7 @@ use crate::error::Result;
 use crate::types::locale::Locale;
 use crate::types::message::Message;
 use crate::types::search::{LlmResponse, RetrievedChunk, StreamChunk};
+use crate::types::usage::LlmCall;
 
 /// Generator sub-trait extracted from the `Brain` god-trait as part of
 /// the Phase 2 flexibility refactor.
@@ -33,16 +34,20 @@ use crate::types::search::{LlmResponse, RetrievedChunk, StreamChunk};
 #[async_trait]
 pub trait Generator: Send + Sync {
     /// Generate a complete (non-streaming) LLM response.
+    ///
+    /// Returns the LLM response paired with an optional [`LlmCall`]
+    /// accounting entry.
     async fn generate(
         &self,
         messages: &[Message],
         chunks: &[RetrievedChunk],
         locale: Locale,
         cancel: &CancellationToken,
-    ) -> Result<LlmResponse>;
+    ) -> Result<(LlmResponse, Option<LlmCall>)>;
 
     /// Generate a streaming LLM response. Same inputs as `generate`;
-    /// returns a token stream.
+    /// returns a token stream. Usage is attached to `StreamChunk`s
+    /// rather than returned here since it arrives on the final event.
     async fn generate_stream(
         &self,
         messages: &[Message],
@@ -52,12 +57,15 @@ pub trait Generator: Send + Sync {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>>;
 
     /// Generate follow-up query suggestions based on a query and answer.
+    ///
+    /// Returns the suggestions paired with an optional [`LlmCall`]
+    /// accounting entry.
     async fn suggest(
         &self,
         query: &str,
         answer: &str,
         cancel: &CancellationToken,
-    ) -> Result<Vec<String>>;
+    ) -> Result<(Vec<String>, Option<LlmCall>)>;
 
     /// Whether this Generator attaches its own built-in web-grounding
     /// tool (e.g. Gemini's `google_search`). Default: `false`.

@@ -5,7 +5,7 @@ use futures::Stream;
 
 use crate::error::{Error, Result};
 use crate::types::message::Message;
-use crate::types::search::{LlmResponse, StreamChunk, TranslationResult};
+use crate::types::search::{LlmResponse, LlmUsage, StreamChunk, TranslationResult};
 use crate::types::suggestion::ClusterQuestions;
 
 /// Trait for LLM providers. Implementations can use Gemini, OpenAI, Claude, etc.
@@ -57,10 +57,20 @@ pub trait LlmProvider: Send + Sync {
     /// Normalize a query into canonical English AND detect its source
     /// locale in a single LLM call. Source language is auto-detected;
     /// the implementation MUST NOT take a target locale (always English).
-    async fn translate(&self, text: &str) -> Result<TranslationResult>;
+    ///
+    /// Returns the translation result paired with optional usage
+    /// accounting (token counts + cost) so the pipeline can surface
+    /// per-call cost in the API response. `None` when the provider
+    /// cannot report usage for this call.
+    async fn translate(&self, text: &str) -> Result<(TranslationResult, Option<LlmUsage>)>;
 
     /// Generate follow-up query suggestions based on the query and answer.
-    async fn suggest(&self, query: &str, answer: &str) -> Result<Vec<String>>;
+    ///
+    /// Returns the suggestions paired with optional usage accounting
+    /// so the pipeline can roll up per-call cost into
+    /// `SearchMetadata.usage`. `None` when the provider cannot report
+    /// usage for this call.
+    async fn suggest(&self, query: &str, answer: &str) -> Result<(Vec<String>, Option<LlmUsage>)>;
 
     /// Generate a topic label + 3-5 native-phrased questions for every
     /// supported locale, given a representative excerpt of clustered

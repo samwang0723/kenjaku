@@ -2019,6 +2019,7 @@ dependencies = [
  "chrono",
  "config",
  "futures",
+ "parking_lot",
  "pin-project-lite",
  "serde",
  "serde_json",

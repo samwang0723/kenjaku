@@ -12,6 +12,7 @@ use kenjaku_core::types::search::{
     LlmSource, SearchRequest, SearchResponse, SearchStreamOutput, StreamContext, StreamDoneMetadata,
 };
 use kenjaku_core::types::tenant::TenantContext;
+use kenjaku_core::types::usage::LlmCall;
 
 use crate::pipelines::SinglePassPipeline;
 
@@ -84,14 +85,19 @@ impl SearchOrchestrator {
     /// Finalize a streamed search. The tenant context is read from
     /// `ctx.tenant` (populated by `search_stream`) — no separate tctx
     /// argument is required.
+    ///
+    /// `generator_call` carries the streaming generator's token usage
+    /// (harvested from the final SSE chunk's `usageMetadata`) so
+    /// `StreamDoneMetadata.usage` includes it.
     pub(crate) async fn complete_stream(
         &self,
         ctx: StreamContext,
         accumulated_answer: &str,
         grounding_sources: Vec<LlmSource>,
+        generator_call: Option<LlmCall>,
     ) -> StreamDoneMetadata {
         self.single_pass
-            .complete_stream(ctx, accumulated_answer, grounding_sources)
+            .complete_stream(ctx, accumulated_answer, grounding_sources, generator_call)
             .await
     }
 

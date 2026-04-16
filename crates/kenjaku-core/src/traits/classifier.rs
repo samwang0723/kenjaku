@@ -3,6 +3,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::Result;
 use crate::types::intent::IntentClassification;
+use crate::types::usage::LlmCall;
 
 /// Classifier sub-trait extracted from the `Brain` god-trait as part of
 /// the Phase 2 flexibility refactor.
@@ -17,9 +18,13 @@ use crate::types::intent::IntentClassification;
 #[async_trait]
 pub trait Classifier: Send + Sync {
     /// Classify the intent of a user query.
+    ///
+    /// Returns the classification paired with an optional [`LlmCall`]
+    /// accounting entry so the pipeline can aggregate token usage +
+    /// cost across all LLM calls in the request.
     async fn classify(
         &self,
         query: &str,
         cancel: &CancellationToken,
-    ) -> Result<IntentClassification>;
+    ) -> Result<(IntentClassification, Option<LlmCall>)>;
 }

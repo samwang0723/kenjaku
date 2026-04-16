@@ -9,6 +9,7 @@ use kenjaku_core::types::search::{
     TranslationResult,
 };
 use kenjaku_core::types::tenant::TenantContext;
+use kenjaku_core::types::usage::LlmCall;
 
 // Re-export streaming types for backward-compat with `kenjaku-api` callers.
 // The canonical paths now live in `kenjaku_core::types::search`.
@@ -85,14 +86,19 @@ impl SearchService {
 
     /// Called by the handler after the token stream finishes. Produces the
     /// final `done` metadata and queues the conversation for async persistence.
+    ///
+    /// `generator_call` is the streaming generator's token usage
+    /// harvested from the final SSE chunk's `usageMetadata`; pass
+    /// `None` when the provider didn't report usage.
     pub async fn complete_stream(
         &self,
         ctx: StreamContext,
         accumulated_answer: &str,
         grounding_sources: Vec<LlmSource>,
+        generator_call: Option<LlmCall>,
     ) -> StreamDoneMetadata {
         self.orchestrator
-            .complete_stream(ctx, accumulated_answer, grounding_sources)
+            .complete_stream(ctx, accumulated_answer, grounding_sources, generator_call)
             .await
     }
 }
