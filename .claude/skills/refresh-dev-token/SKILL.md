@@ -33,13 +33,22 @@ If the keypair is missing entirely (first-time setup), bail and tell the user to
 
 ### 2. Show current token status (before re-minting)
 
-Decode the existing token's expiry so the user can sanity-check. Use a plain bash one-liner (no `jq` dependency since Copilot flagged that earlier):
+Decode the existing token's expiry so the user can sanity-check. JWTs use base64url-**without-padding** (per RFC 7519), so we must translate `-_` → `+/` AND re-pad before decoding. `openssl base64` is portable across macOS BSD and Linux GNU (`base64 -d` flags differ between the two):
 
 ```bash
+decode_jwt_payload() {
+  # JWT base64url (no padding) → standard base64 (padded) → decoded JSON.
+  local b64 pad
+  b64=$(cut -d. -f2 "$1" | tr '_-' '/+')
+  pad=$(( (4 - ${#b64} % 4) % 4 ))
+  [ "$pad" -gt 0 ] && b64="${b64}$(printf '=%.0s' $(seq 1 "$pad"))"
+  printf '%s' "$b64" | openssl base64 -d -A 2>/dev/null || true
+}
+
 if [ -f config/dev/dev-token.txt ]; then
-  PAYLOAD=$(cut -d. -f2 config/dev/dev-token.txt | tr -- '-_' '+/' | base64 -d 2>/dev/null || true)
+  PAYLOAD=$(decode_jwt_payload config/dev/dev-token.txt)
   EXP=$(echo "$PAYLOAD" | grep -o '"exp":[0-9]*' | cut -d: -f2)
-  if [ -n "$EXP" ]; then
+  if [ -n "$EXP" ] && echo "$EXP" | grep -Eq '^[0-9]+$'; then
     NOW=$(date +%s)
     if [ "$EXP" -gt "$NOW" ]; then
       REMAINING=$(( (EXP - NOW) / 60 ))
@@ -48,6 +57,8 @@ if [ -f config/dev/dev-token.txt ]; then
       AGO=$(( (NOW - EXP) / 60 ))
       echo "Current token EXPIRED $AGO minutes ago (exp=$EXP)"
     fi
+  else
+    echo "Current token present but exp could not be decoded (corrupt or non-JWT?)."
   fi
 fi
 ```
@@ -68,11 +79,17 @@ The script writes the new JWT to `config/dev/dev-token.txt`. Docker's bind-mount
 ### 4. Verify the new token
 
 ```bash
-# Decode the new exp
-NEW_EXP=$(cut -d. -f2 config/dev/dev-token.txt | tr -- '-_' '+/' | base64 -d 2>/dev/null \
+# Decode the new exp (using the portable decode_jwt_payload helper from step 2)
+NEW_EXP=$(decode_jwt_payload config/dev/dev-token.txt \
   | grep -o '"exp":[0-9]*' | cut -d: -f2)
-HUMAN_EXP=$(date -r "$NEW_EXP" 2>/dev/null || date -d "@$NEW_EXP" 2>/dev/null)
-echo "New token valid until: $HUMAN_EXP"
+
+if [ -n "$NEW_EXP" ] && echo "$NEW_EXP" | grep -Eq '^[0-9]+$'; then
+  HUMAN_EXP=$(date -r "$NEW_EXP" 2>/dev/null || date -d "@$NEW_EXP" 2>/dev/null)
+  echo "New token valid until: $HUMAN_EXP"
+else
+  echo "Token re-minted, but could not decode the new exp locally."
+  echo "Inspect config/dev/dev-token.txt manually if the smoke test also fails."
+fi
 
 # Smoke test — does it work end-to-end?
 DEV_JWT=$(cat config/dev/dev-token.txt)
