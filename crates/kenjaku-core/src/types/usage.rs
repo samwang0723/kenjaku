@@ -16,9 +16,19 @@
 //! via [`UsageStats::push`] or — in concurrent contexts — share a
 //! [`SharedUsageTracker`] and drain it at the end of the request.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+
+/// Round a USD value to 6 decimal places to avoid JSON float artifacts
+/// like `0.000859999999`. Cost estimates only need microdollar
+/// resolution; anything beyond that is meaningless f64 drift from
+/// repeated floating-point addition.
+#[inline]
+fn round_6dp(x: f64) -> f64 {
+    (x * 1_000_000.0).round() / 1_000_000.0
+}
 
 /// Per-call LLM accounting entry.
 ///
@@ -72,11 +82,18 @@ impl UsageStats {
     }
 
     /// Append a single [`LlmCall`] and update running totals.
+    ///
+    /// `estimated_cost_usd` is rounded to 6 decimals after each add so
+    /// repeated f64 accumulation doesn't surface artifacts like
+    /// `0.000859999999` in the JSON response. Per-call `cost_usd`
+    /// should already be rounded at construction time (see
+    /// `GeminiProvider::estimate_cost`); this is a defense-in-depth
+    /// guard.
     pub fn push(&mut self, call: LlmCall) {
         self.input_tokens = self.input_tokens.saturating_add(call.input_tokens);
         self.output_tokens = self.output_tokens.saturating_add(call.output_tokens);
         self.total_tokens = self.input_tokens.saturating_add(self.output_tokens);
-        self.estimated_cost_usd += call.cost_usd;
+        self.estimated_cost_usd = round_6dp(self.estimated_cost_usd + call.cost_usd);
         self.calls.push(call);
     }
 }
@@ -99,28 +116,33 @@ impl SharedUsageTracker {
     }
 
     /// Record a single call. Non-blocking apart from the mutex acquire
-    /// (held only for the append). Silently drops on mutex poisoning
-    /// — usage accounting is non-critical telemetry and should never
-    /// fail the search request.
+    /// (held only for the append).
+    ///
+    /// Uses `parking_lot::Mutex` rather than `std::sync::Mutex` for two
+    /// reasons. First, concurrent `tokio::join!` brain calls
+    /// (translator, classifier, generator) share this tracker; a
+    /// poisoned std mutex would silently drop telemetry. Second, the
+    /// critical section is microseconds — one `Vec::push` plus a few
+    /// integer adds — so a blocking lock beats `tokio::sync::Mutex`
+    /// for this workload: no await points, no async overhead.
+    /// `parking_lot` is also non-poisoning.
     pub fn record(&self, call: LlmCall) {
-        if let Ok(mut guard) = self.inner.lock() {
-            guard.push(call);
-        }
+        self.inner.lock().push(call);
     }
 
     /// Consume the tracker and return the accumulated stats. Intended
-    /// to be called once at the end of request processing. Recovers
-    /// from mutex poisoning by returning an empty `UsageStats` rather
-    /// than panicking.
+    /// to be called once at the end of request processing. Falls back
+    /// to a clone if the `Arc` still has outstanding references (e.g.
+    /// the tracker was leaked into a detached task).
     pub fn into_stats(self) -> UsageStats {
         Arc::try_unwrap(self.inner)
-            .map(|m| m.into_inner().unwrap_or_default())
-            .unwrap_or_else(|arc| arc.lock().map(|g| g.clone()).unwrap_or_default())
+            .map(|m| m.into_inner())
+            .unwrap_or_else(|arc| arc.lock().clone())
     }
 
     /// Snapshot the accumulator without consuming it.
     pub fn snapshot(&self) -> UsageStats {
-        self.inner.lock().map(|g| g.clone()).unwrap_or_default()
+        self.inner.lock().clone()
     }
 }
 
@@ -195,6 +217,30 @@ mod tests {
         clone.record(sample_call("b", 2, 2, 0.0));
         let stats = tracker.into_stats();
         assert_eq!(stats.calls.len(), 2);
+    }
+
+    /// Repeated f64 accumulation produces JSON artifacts like
+    /// `0.000859999999`. `push` now rounds to 6 decimals on each add,
+    /// so the surfaced `estimated_cost_usd` stays at microdollar
+    /// resolution without drift.
+    #[test]
+    fn push_rounds_cost_to_six_decimals() {
+        let mut stats = UsageStats::new();
+        // Three adds that, without rounding, produce
+        // 0.0001 + 0.0003 + 0.00046 = 0.0008599999999999999 in f64.
+        stats.push(sample_call("a", 1, 1, 0.0001));
+        stats.push(sample_call("b", 1, 1, 0.0003));
+        stats.push(sample_call("c", 1, 1, 0.00046));
+
+        // Exact equality: the rounded result is 0.00086 on the nose.
+        assert_eq!(stats.estimated_cost_usd, 0.00086);
+
+        // JSON must not carry the drift either.
+        let json = serde_json::to_string(&stats).unwrap();
+        assert!(
+            json.contains("\"estimated_cost_usd\":0.00086"),
+            "serialized cost drifted: {json}"
+        );
     }
 
     #[test]

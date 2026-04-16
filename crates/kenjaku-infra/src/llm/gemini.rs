@@ -213,7 +213,9 @@ impl LlmProvider for GeminiProvider {
             LlmUsage {
                 prompt_tokens: prompt,
                 completion_tokens: completion,
-                total_tokens: u.total_token_count.unwrap_or(0),
+                total_tokens: u
+                    .total_token_count
+                    .unwrap_or(prompt.saturating_add(completion)),
                 cost_usd: self.estimate_cost(prompt, completion),
             }
         });
@@ -295,7 +297,9 @@ impl LlmProvider for GeminiProvider {
             LlmUsage {
                 prompt_tokens: prompt,
                 completion_tokens: completion,
-                total_tokens: u.total_token_count.unwrap_or(0),
+                total_tokens: u
+                    .total_token_count
+                    .unwrap_or(prompt.saturating_add(completion)),
                 cost_usd: self.estimate_cost(prompt, completion),
             }
         });
@@ -480,7 +484,9 @@ impl LlmProvider for GeminiProvider {
                             LlmUsage {
                                 prompt_tokens: prompt,
                                 completion_tokens: completion,
-                                total_tokens: u.total_token_count.unwrap_or(0),
+                                total_tokens: u
+                                    .total_token_count
+                                    .unwrap_or(prompt.saturating_add(completion)),
                                 cost_usd: Some(cost_rounded),
                             }
                         });
@@ -617,7 +623,9 @@ impl LlmProvider for GeminiProvider {
             LlmUsage {
                 prompt_tokens: prompt,
                 completion_tokens: completion,
-                total_tokens: u.total_token_count.unwrap_or(0),
+                total_tokens: u
+                    .total_token_count
+                    .unwrap_or(prompt.saturating_add(completion)),
                 cost_usd: self.estimate_cost(prompt, completion),
             }
         });
@@ -726,7 +734,9 @@ impl LlmProvider for GeminiProvider {
             LlmUsage {
                 prompt_tokens: prompt,
                 completion_tokens: completion,
-                total_tokens: u.total_token_count.unwrap_or(0),
+                total_tokens: u
+                    .total_token_count
+                    .unwrap_or(prompt.saturating_add(completion)),
                 cost_usd: self.estimate_cost(prompt, completion),
             }
         });
@@ -1247,6 +1257,40 @@ mod tests {
         }"#;
         let parsed: GeminiResponse = serde_json::from_str(raw).unwrap();
         assert!(parsed.usage_metadata.is_none());
+    }
+
+    /// Gemini sometimes returns `promptTokenCount` + `candidatesTokenCount`
+    /// but omits `totalTokenCount`. Previously we defaulted the total to
+    /// `0`, which under-reported usage and produced an obviously
+    /// inconsistent `LlmUsage` (prompt+completion non-zero, total=0).
+    /// Fall back to `prompt.saturating_add(completion)` so downstream
+    /// usage accounting stays coherent even when the provider skips
+    /// the total field.
+    #[test]
+    fn gemini_response_fills_total_tokens_when_omitted() {
+        let raw = r#"{
+            "candidates": [{
+                "content": { "parts": [{ "text": "hi" }] }
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 120,
+                "candidatesTokenCount": 30
+            }
+        }"#;
+        let parsed: GeminiResponse = serde_json::from_str(raw).unwrap();
+        let u = parsed.usage_metadata.expect("usageMetadata must parse");
+        assert_eq!(u.prompt_token_count, Some(120));
+        assert_eq!(u.candidates_token_count, Some(30));
+        assert!(u.total_token_count.is_none());
+
+        // Simulate the production fallback — every call site in this
+        // file now mirrors this expression.
+        let prompt = u.prompt_token_count.unwrap_or(0);
+        let completion = u.candidates_token_count.unwrap_or(0);
+        let total = u
+            .total_token_count
+            .unwrap_or(prompt.saturating_add(completion));
+        assert_eq!(total, 150, "total must fall back to prompt+completion");
     }
 
     /// The cost math must factor in the service-tier multiplier AND
