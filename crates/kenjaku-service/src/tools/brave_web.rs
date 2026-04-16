@@ -161,8 +161,7 @@ mod tests {
     }
 
     fn make_request(query: &str) -> ToolRequest {
-        use kenjaku_core::types::tenant::TenantContext;
-    use kenjaku_core::types::tenant::test_helpers::public_test_context;
+        use kenjaku_core::types::tenant::test_helpers::public_test_context;
         ToolRequest::new(
             query.into(),
             query.into(),

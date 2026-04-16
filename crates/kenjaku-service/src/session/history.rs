@@ -235,8 +235,8 @@ mod tests {
     /// on `(tenant_id, session_id)`.
     #[test]
     fn snapshot_for_llm_does_not_leak_across_tenants_sharing_session_id() {
+        use kenjaku_core::types::tenant::TenantId;
         use kenjaku_core::types::tenant::test_helpers::public_test_context;
-        use kenjaku_core::types::tenant::{TenantContext, TenantId};
 
         let store = SessionHistoryStore::new(cfg(5, 5));
 

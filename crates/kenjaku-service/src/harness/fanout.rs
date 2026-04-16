@@ -207,8 +207,7 @@ mod tests {
     // ---- helpers -----------------------------------------------------------
 
     fn make_request() -> ToolRequest {
-        use kenjaku_core::types::tenant::TenantContext;
-    use kenjaku_core::types::tenant::test_helpers::public_test_context;
+        use kenjaku_core::types::tenant::test_helpers::public_test_context;
         ToolRequest::new(
             "test".into(),
             "test".into(),

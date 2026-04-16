@@ -31,7 +31,6 @@ use serde::{Deserialize, Serialize};
 
 use kenjaku_core::types::locale::{DetectedLocale, Locale};
 use kenjaku_core::types::tenant::TenantContext;
-    use kenjaku_core::types::tenant::test_helpers::public_test_context;
 
 /// Provenance of the resolved locale, serialized as snake_case strings matching
 /// the DTO contract locked in `architect.md`.
@@ -234,6 +233,7 @@ mod tests {
     use std::sync::Mutex;
 
     use axum::http::Request;
+    use kenjaku_core::types::tenant::test_helpers::public_test_context;
     use kenjaku_core::types::tenant::{TenantContext, TenantId};
 
     /// Stub that records the `(tenant_id, session_id)` it was called with,

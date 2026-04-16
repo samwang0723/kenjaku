@@ -34,7 +34,6 @@ use axum::http::StatusCode;
 use axum::http::request::Parts;
 
 use kenjaku_core::types::tenant::TenantContext;
-    use kenjaku_core::types::tenant::test_helpers::public_test_context;
 
 /// Newtype wrapper used only as an Axum extractor. Transparently
 /// derefs to the inner [`TenantContext`].
@@ -72,6 +71,7 @@ mod tests {
     use super::*;
 
     use axum::http::Request;
+    use kenjaku_core::types::tenant::test_helpers::public_test_context;
 
     fn parts_without_tctx() -> Parts {
         Request::builder().body(()).unwrap().into_parts().0

@@ -42,7 +42,6 @@ use kenjaku_core::types::search::{
     StreamContext, StreamDoneMetadata, StreamStartMetadata,
 };
 use kenjaku_core::types::tenant::TenantContext;
-    use kenjaku_core::types::tenant::test_helpers::public_test_context;
 use kenjaku_core::types::tool::ToolRequest;
 
 use crate::brain::ConversationAssembler;
@@ -658,7 +657,6 @@ mod tests {
         DetectedLocaleSource, GroundingInfo, LlmResponse, RetrievalMethod, RetrievedChunk,
         StreamChunk, StreamChunkType, TranslationResult,
     };
-    use kenjaku_core::types::tenant::TenantContext;
     use kenjaku_core::types::tenant::test_helpers::public_test_context;
     use kenjaku_core::types::tool::{ToolConfig, ToolError, ToolId, ToolOutput, ToolOutputMap};
 

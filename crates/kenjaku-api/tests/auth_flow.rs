@@ -218,16 +218,6 @@ async fn body_string(resp: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
-fn test_jwt_config() -> JwtConfig {
-    JwtConfig {
-        issuer: TEST_ISSUER.into(),
-        audience: TEST_AUDIENCE.into(),
-        public_key_path: "<test>".into(),
-        algorithm: JwtAlgorithm::RS256,
-        clock_skew_secs: 5,
-    }
-}
-
 // ---------- Tests ----------------------------------------------------------
 
 #[tokio::test]

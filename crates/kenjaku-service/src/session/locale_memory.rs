@@ -11,7 +11,6 @@ use tracing::{instrument, warn};
 use kenjaku_core::config::LocaleMemoryConfig;
 use kenjaku_core::types::locale::Locale;
 use kenjaku_core::types::tenant::TenantContext;
-    use kenjaku_core::types::tenant::test_helpers::public_test_context;
 use kenjaku_infra::redis::LocaleMemoryRedis;
 
 /// Mirror of the API extractor's session_id cap so the write path can't
@@ -141,8 +140,7 @@ mod tests {
     /// a live Redis.
     #[test]
     fn key_is_tenant_prefixed_for_public() {
-        use kenjaku_core::types::tenant::TenantContext;
-    use kenjaku_core::types::tenant::test_helpers::public_test_context;
+        use kenjaku_core::types::tenant::test_helpers::public_test_context;
         let tctx = public_test_context();
         let config = cfg(true);
         // Inline-mirror of LocaleMemory::key — same format string.

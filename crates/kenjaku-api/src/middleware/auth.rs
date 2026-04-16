@@ -320,16 +320,6 @@ mod tests {
         Arc::new(TenantsCache::from_map(m))
     }
 
-    fn test_jwt_config() -> JwtConfig {
-        JwtConfig {
-            issuer: TEST_ISSUER.into(),
-            audience: TEST_AUDIENCE.into(),
-            public_key_path: "<test>".into(),
-            algorithm: JwtAlgorithm::RS256,
-            clock_skew_secs: 5,
-        }
-    }
-
     // Small typed state used only in tests. Matches the subset of
     // `AppState` fields the middleware reads. Crucially NOT using
     // the real `AppState` — building one needs SearchService etc.
