@@ -8,10 +8,9 @@ redis:
 telemetry:
   log_level: "debug"
 
-# Phase 3d.1: base.yaml flipped `tenancy.enabled` to `true` by default.
-# Local dev has no JWT issuer wired, so `make run` would fail at
-# `validate_secrets`. Pin `enabled: false` here to preserve dev
-# ergonomics; the isolation test + docker/staging/prod paths exercise
-# the `enabled: true` branch in CI and at deploy time.
+# Phase 3e: tenancy is always on. Dev keypair provisioned via `make dev-setup`.
 tenancy:
-  enabled: false
+  jwt:
+    issuer: "kenjaku-dev"
+    audience: "kenjaku-api"
+    public_key_path: "config/dev/public.pem"
