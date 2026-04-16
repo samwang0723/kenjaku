@@ -80,7 +80,23 @@ services:
       context: ./geto-web
       dockerfile: Dockerfile
     ports:
-      - "3000:80"
+      # Bind to loopback only — LAN devices must not reach the dev UI.
+      # cloudflared (same compose network) still proxies via the docker
+      # bridge, so the public tunnel keeps working.
+      - "127.0.0.1:3000:80"
+    volumes:
+      # Mount dev-token at runtime (gitignored, never baked into the image).
+      # Long-form `bind` with create_host_path: false — if the file is
+      # missing Docker refuses to start this service instead of silently
+      # creating a directory (which nginx would then serve as a 403).
+      # nginx config further restricts this path to loopback + docker bridge,
+      # so production deployments without the mount get a clean 404.
+      - type: bind
+        source: ./config/dev/dev-token.txt
+        target: /usr/share/nginx/html/.dev-token
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       kenjaku:
         condition: service_healthy

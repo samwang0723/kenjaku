@@ -1652,6 +1652,51 @@ body {
   border: 1px solid rgba(255,59,48,0.2);
 }
 
+.error-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.error-hint {
+  color: #A0A9BE;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+
+.error-hint code {
+  background: rgba(255,255,255,0.08);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.error-details {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #A0A9BE;
+}
+
+.error-details summary {
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.7;
+}
+
+.error-details summary:hover { opacity: 1; }
+
+.error-details code {
+  display: block;
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: rgba(0,0,0,0.3);
+  border-radius: 6px;
+  font-family: ui-monospace, monospace;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
 .stopped-message {
   color: #A0A9BE;
   font-size: 13px;

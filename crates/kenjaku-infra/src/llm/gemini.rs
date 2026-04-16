@@ -239,6 +239,10 @@ impl LlmProvider for GeminiProvider {
     /// system instruction, capped tokens. Used by the intent classifier
     /// and similar utility calls. Keeps intent classification at ~1s
     /// instead of the ~5s that would apply if google_search was attached.
+    ///
+    /// Cap at 400 tokens: 256 was too tight for CJK→English translation
+    /// where a ~500-char input can produce ~280 output tokens. 400 leaves
+    /// headroom without undermining the latency characteristic.
     #[instrument(skip(self, prompt), fields(model = %self.config.model))]
     async fn generate_brief(&self, prompt: &str) -> Result<LlmResponse> {
         let request = GeminiRequest {
@@ -249,7 +253,7 @@ impl LlmProvider for GeminiProvider {
             system_instruction: None,
             tools: None,
             generation_config: Some(GeminiGenerationConfig {
-                max_output_tokens: Some(256),
+                max_output_tokens: Some(400),
                 temperature: Some(0.0),
                 response_mime_type: None,
                 response_schema: None,
