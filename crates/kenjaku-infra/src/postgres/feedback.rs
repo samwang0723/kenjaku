@@ -63,14 +63,25 @@ impl FeedbackRepository {
         row_to_feedback(&row)
     }
 
-    /// Get feedback by ID.
-    pub async fn get_by_id(&self, id: Uuid) -> Result<Option<Feedback>> {
+    /// Get feedback by (tenant_id, id).
+    ///
+    /// 3d.2 F1 fix: the previous version filtered by UUID primary key
+    /// alone. Under enabled tenancy that is a latent cross-tenant leak —
+    /// a tenant-A feedback row could be fetched by tenant-B given its
+    /// UUID. No live handler called it, but H2 taught us that latent
+    /// leaks tend to get wired up later; closing it now costs one
+    /// `.bind(...)` and stops the bug class outright.
+    ///
+    /// The SQL now scopes by `(tenant_id, id)` so `WHERE id = $1` alone
+    /// cannot resurface. Callers must pass `tctx.tenant_id.as_str()`.
+    pub async fn get_by_id(&self, tenant_id: &str, id: Uuid) -> Result<Option<Feedback>> {
         let row = sqlx::query(
             r#"
             SELECT id, session_id, request_id, action, reason_category_id, description, created_at
-            FROM feedback WHERE id = $1
+            FROM feedback WHERE tenant_id = $1 AND id = $2
             "#,
         )
+        .bind(tenant_id)
         .bind(id)
         .fetch_optional(&self.pool)
         .await
@@ -103,7 +114,12 @@ impl FeedbackRepository {
     }
 
     /// List all reason categories.
+    ///
+    /// `reason_categories` is a shared enum lookup table — the set of
+    /// reasons (spam, off-topic, etc.) is the same for every tenant. No
+    /// tenant column exists on this table by design.
     pub async fn list_reason_categories(&self) -> Result<Vec<ReasonCategory>> {
+        // nosemgrep: tenant-scope-required — global reference table by design
         let rows = sqlx::query(
             r#"
             SELECT id, slug, label, is_active
