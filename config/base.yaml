@@ -37,7 +37,14 @@ contextualizer:
   base_url: "https://api.anthropic.com/v1"
 
 trending:
-  popularity_threshold: 5
+  # Minimum Redis score for a query to flush from Redis → popular_queries.
+  # Lowered from 5 → 2 (aligned with `crowd_sourcing_min_count` below) so
+  # low-traffic locales (zh/ja/ko/de/fr/es) can accumulate crowdsourced
+  # trending data instead of sitting in Redis until the daily/weekly
+  # sorted-set TTLs expire. At our current traffic profile, no non-en query
+  # was reaching 5 within a day/week, so ja/zh trending never showed up
+  # in /top-searches or /autocomplete despite being recorded correctly.
+  popularity_threshold: 2
   flush_interval_secs: 300
   daily_ttl_secs: 172800
   weekly_ttl_secs: 1209600

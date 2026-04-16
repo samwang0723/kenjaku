@@ -244,7 +244,7 @@ pub struct TrendingConfig {
 }
 
 fn default_popularity_threshold() -> i64 {
-    5
+    2
 }
 
 fn default_flush_interval_secs() -> u64 {
@@ -866,7 +866,7 @@ contextualizer:
   model: "claude-haiku-4-5"
   base_url: "https://api.anthropic.com/v1"
 trending:
-  popularity_threshold: 5
+  popularity_threshold: 2
   flush_interval_secs: 300
 chunking:
   chunk_size: 512
@@ -974,7 +974,7 @@ contextualizer:
                 base_url: "https://api.anthropic.com/v1".into(),
             },
             trending: TrendingConfig {
-                popularity_threshold: 5,
+                popularity_threshold: 2,
                 flush_interval_secs: 300,
                 daily_ttl_secs: 172800,
                 weekly_ttl_secs: 1209600,
@@ -1070,7 +1070,7 @@ contextualizer:
                 base_url: "https://api.anthropic.com/v1".into(),
             },
             trending: TrendingConfig {
-                popularity_threshold: 5,
+                popularity_threshold: 2,
                 flush_interval_secs: 300,
                 daily_ttl_secs: 172800,
                 weekly_ttl_secs: 1209600,
@@ -1340,7 +1340,7 @@ clock_skew_secs: 60
                 base_url: "https://api.anthropic.com/v1".into(),
             },
             trending: TrendingConfig {
-                popularity_threshold: 5,
+                popularity_threshold: 2,
                 flush_interval_secs: 300,
                 daily_ttl_secs: 172800,
                 weekly_ttl_secs: 1209600,
