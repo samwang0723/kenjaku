@@ -63,27 +63,25 @@ impl FeedbackRepository {
         row_to_feedback(&row)
     }
 
-    /// Get feedback by ID.
+    /// Get feedback by (tenant_id, id).
     ///
-    /// Looks up by 128-bit UUID primary key. Not currently wired into any
-    /// live handler — the service-layer wrapper exists but no HTTP route
-    /// calls it today. If a handler is added, the caller MUST scope by
-    /// tenant_id (either in the SQL here or via a post-fetch
-    /// `tctx.tenant_id == row.tenant_id` assertion) before exposing the
-    /// row to the response.
+    /// 3d.2 F1 fix: the previous version filtered by UUID primary key
+    /// alone. Under enabled tenancy that is a latent cross-tenant leak —
+    /// a tenant-A feedback row could be fetched by tenant-B given its
+    /// UUID. No live handler called it, but H2 taught us that latent
+    /// leaks tend to get wired up later; closing it now costs one
+    /// `.bind(...)` and stops the bug class outright.
     ///
-    /// Flagged for 3d.2 security-gate review — the semgrep rule
-    /// `tenant-scope-required` (added in this slice) correctly identifies
-    /// this function. Suppressed inline to keep the guardrail green;
-    /// fixing the latent leak is tracked for the next slice.
-    pub async fn get_by_id(&self, id: Uuid) -> Result<Option<Feedback>> {
-        // nosemgrep: tenant-scope-required — latent, unreachable today; see doc comment above
+    /// The SQL now scopes by `(tenant_id, id)` so `WHERE id = $1` alone
+    /// cannot resurface. Callers must pass `tctx.tenant_id.as_str()`.
+    pub async fn get_by_id(&self, tenant_id: &str, id: Uuid) -> Result<Option<Feedback>> {
         let row = sqlx::query(
             r#"
             SELECT id, session_id, request_id, action, reason_category_id, description, created_at
-            FROM feedback WHERE id = $1
+            FROM feedback WHERE tenant_id = $1 AND id = $2
             "#,
         )
+        .bind(tenant_id)
         .bind(id)
         .fetch_optional(&self.pool)
         .await
