@@ -81,6 +81,11 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:80"
+    volumes:
+      # Mount dev-token at runtime (gitignored, never baked into the image).
+      # nginx config restricts this path to private networks so production
+      # deployments — where this mount is absent — get a clean 404.
+      - ./config/dev/dev-token.txt:/usr/share/nginx/html/.dev-token:ro
     depends_on:
       kenjaku:
         condition: service_healthy

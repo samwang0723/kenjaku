@@ -507,6 +507,45 @@ function setHtml(el, html) {
 }
 function clearHtml(el) { setHtml(el, ''); }
 
+// ====== Friendly error rendering ======
+// Kenjaku returns JSON envelopes on errors: {"success": false, "error": "..."}.
+// Raw JSON is ugly for end users. This helper parses the envelope, maps
+// common error codes to human-readable messages, and keeps raw details in
+// a collapsible <details> block for debugging.
+function renderFriendlyError(status, body, statusText) {
+  var rawErr = '';
+  try {
+    var parsed = JSON.parse(body);
+    rawErr = parsed && typeof parsed === 'object'
+      ? (parsed.error || parsed.message || '')
+      : '';
+  } catch (_) { /* non-JSON body — fall through */ }
+  var raw = rawErr || body || statusText || 'Unknown error';
+
+  var heading = 'Something went wrong';
+  var hint = '';
+  if (status === 401 || status === 403 || /unauthorized/i.test(raw)) {
+    heading = 'Authentication required';
+    hint = 'Your session is not authorized. If you are running locally, run <code>make dev-setup</code> and reload the page. In staging or production, sign in with a valid Bearer token.';
+  } else if (status === 429 || /rate.?limit/i.test(raw)) {
+    heading = 'Too many requests';
+    hint = 'Please wait a moment and try again.';
+  } else if (status >= 500) {
+    heading = 'Service temporarily unavailable';
+    hint = 'Please try again shortly. If the problem persists, check the service logs.';
+  } else if (status === 400 || /validation/i.test(raw)) {
+    heading = 'Invalid request';
+    hint = escapeHtml(raw);
+  }
+
+  var out = '<div class="error-title">' + escapeHtml(heading) + '</div>';
+  if (hint) out += '<div class="error-hint">' + hint + '</div>';
+  out += '<details class="error-details"><summary>Technical details</summary>'
+      +  '<code>HTTP ' + escapeHtml(String(status)) + ' — ' + escapeHtml(raw) + '</code>'
+      +  '</details>';
+  return out;
+}
+
 // ====== Markdown Rendering ======
 function renderMarkdownBlocks(blocks) {
   var allLines = [];
@@ -938,7 +977,7 @@ async function doSearch(query, isFollowUp) {
     if (!resp.ok) {
       hideLoading();
       var errText = await resp.text();
-      setHtml(resultsDiv, '<div class="error">Error: ' + escapeHtml(errText || resp.statusText) + '</div>');
+      setHtml(resultsDiv, '<div class="error">' + renderFriendlyError(resp.status, errText, resp.statusText) + '</div>');
       return;
     }
 
