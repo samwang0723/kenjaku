@@ -7,6 +7,8 @@ description: Full regression test suite — local + Docker build/test, semgrep g
 
 Run the complete verification matrix for kenjaku. Build/test runs in **both** environments: local `cargo` for fast iteration + editor feedback, Docker for canonical truth (matches CI/prod exactly). If they disagree, Docker wins — but catching divergences early is itself useful signal.
 
+> **Note on `cargo` commands below:** If you use `rtk` (Rust Token Killer) locally, pipe them through it for reduced token output (`rtk cargo ...`). Plain `cargo` is functionally equivalent and is the assumed default for any environment that does not ship `rtk`.
+
 Covers:
 1. Local Rust build + lint + tests (fast — uses incremental host cache)
 2. Docker build + test (canonical — matches CI/prod)
@@ -30,16 +32,16 @@ Fast host-side feedback loop. Uses the incremental cargo cache so iteration is s
 
 ```bash
 # Build
-rtk cargo build --workspace
+cargo build --workspace
 
 # Lint (clippy treats warnings as errors)
-rtk cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 
 # Format check
-rtk cargo fmt --all -- --check
+cargo fmt --all -- --check
 
 # Unit + integration tests
-rtk cargo test --workspace
+cargo test --workspace
 ```
 
 **Pass criteria:**
@@ -273,7 +275,7 @@ docker compose -p kenjaku logs --since 6m kenjaku 2>&1 | grep -E "Flushed trendi
 - `suggestion refresh` sleeping until next fire OR actively running (no crash)
 - Zero `Trending flush failed` or `flush error` lines
 
-**Note:** If container uptime < 5 min, report Phase 5 as SKIPPED with note "container too fresh for flush cycle — re-run after 5 min or check manually."
+**Note:** If container uptime < 5 min, report Phase 6 as SKIPPED with note "container too fresh for flush cycle — re-run after 5 min or check manually."
 
 ## Reporting
 
@@ -298,10 +300,10 @@ If any phase FAILs, clearly list the failing check with the exact error output. 
 
 ## Tips
 
-- Run `/regression quick` for a fast pre-commit check (~2 min — docker build + semgrep)
-- Run `/regression api` before opening a PR (~5 min with docker rebuild + deploy)
-- Run `/regression full` before merging or after a significant refactor (~7-10 min)
-- Phase 4 (chrome-cdp) requires Chrome with remote debugging enabled
-- Phase 5 requires the container to have been up for at least 5 minutes for flush coverage
+- Run `/regression quick` for a fast pre-commit check (~1-2 min — phases 1+3: local cargo build/test + semgrep, no Docker)
+- Run `/regression api` before opening a PR (~5 min — phases 1-4 with docker rebuild + deploy, no chrome)
+- Run `/regression full` before merging or after a significant refactor (~7-10 min — all 6 phases)
+- Phase 5 (chrome-cdp) requires Chrome with remote debugging enabled
+- Phase 6 (worker health) requires the container to have been up for at least 5 minutes for flush coverage
 - If docker isn't running, use `make docker-up` first
 - Dev JWT must be provisioned: `make dev-setup` (auto-generates keypair + token)

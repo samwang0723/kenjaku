@@ -59,7 +59,7 @@ The search pipeline is orchestrated by `SearchOrchestrator` in `harness/mod.rs` 
 8. Trending recording (fire-and-forget to Redis) — wrapped in `quality::is_gibberish` reject + `quality::normalize_for_trending` (English: translator output, others: raw; both capitalized at first char).
 9. Conversation queuing (mpsc channel → background batch insert to PostgreSQL).
 
-**Gemini provider optimization**: `LlmProvider::generate_brief()` (default impl on the trait) wraps a single user message and calls `generate`. `GeminiProvider` overrides it to skip the `google_search` tool + cap `max_tokens` to 256. This dropped intent classification from ~5s to ~1s.
+**Gemini provider optimization**: `LlmProvider::generate_brief()` (default impl on the trait) wraps a single user message and calls `generate`. `GeminiProvider` overrides it to skip the `google_search` tool + cap `max_tokens` to 400 (raised from 256 to leave headroom for CJK→English translation outputs near the 500-char input cap). This dropped intent classification from ~5s to ~1s.
 
 **Gemini provider features**: `messages_to_wire(&[Message])` converts the LLM-agnostic `Message` type to `Vec<GeminiContent>`, extracting the system instruction separately. `estimate_cost` calculates per-call cost based on model + `ServiceTier` (standard/flex/priority). The `serviceTier` field (lowercase) is sent in every Gemini API request.
 
