@@ -112,12 +112,11 @@ telemetry:
 tenancy:
   collection_name_template: "{base}_{tenant}"
 
-# Rate-limit key strategy (Phase 3c.2). `ip` is the backward-compatible
-# default — identical to pre-3c.2 behavior. Switch to `tenant_ip` or
-# `tenant_principal_ip` only after tenancy is enabled (flipping
-# `tenancy.enabled=true` without re-keying the limiter is still safe —
-# the strategy reads `TenantContext` from request extensions and falls
-# back to the public tenant for unauthenticated traffic).
+# Rate-limit key strategy (Phase 3c.2). `ip` is the default — uses
+# client IP only. `tenant_ip` or `tenant_principal_ip` incorporate the
+# tenant context for per-tenant rate limiting. The strategy reads
+# `TenantContext` from request extensions (always available post-3e
+# since tenancy is always-on).
 #
 # NOTE — `plan_*_per_second` fields below are **reserved for a
 # follow-up slice** and NOT currently consumed by the governor. Active
