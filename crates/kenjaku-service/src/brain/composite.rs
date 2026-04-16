@@ -28,6 +28,7 @@ use kenjaku_core::types::intent::IntentClassification;
 use kenjaku_core::types::locale::Locale;
 use kenjaku_core::types::message::Message;
 use kenjaku_core::types::search::{LlmResponse, RetrievedChunk, StreamChunk, TranslationResult};
+use kenjaku_core::types::usage::LlmCall;
 
 /// Composes three independently-swappable sub-capabilities into a
 /// single `Brain` the pipeline consumes as `Arc<dyn Brain>`.
@@ -61,7 +62,7 @@ impl Brain for CompositeBrain {
         &self,
         query: &str,
         cancel: &CancellationToken,
-    ) -> Result<IntentClassification> {
+    ) -> Result<(IntentClassification, Option<LlmCall>)> {
         self.classifier.classify(query, cancel).await
     }
 
@@ -69,7 +70,7 @@ impl Brain for CompositeBrain {
         &self,
         query: &str,
         cancel: &CancellationToken,
-    ) -> Result<TranslationResult> {
+    ) -> Result<(TranslationResult, Option<LlmCall>)> {
         self.translator.translate(query, cancel).await
     }
 
@@ -79,7 +80,7 @@ impl Brain for CompositeBrain {
         chunks: &[RetrievedChunk],
         locale: Locale,
         cancel: &CancellationToken,
-    ) -> Result<LlmResponse> {
+    ) -> Result<(LlmResponse, Option<LlmCall>)> {
         self.generator
             .generate(messages, chunks, locale, cancel)
             .await
@@ -102,7 +103,7 @@ impl Brain for CompositeBrain {
         query: &str,
         answer: &str,
         cancel: &CancellationToken,
-    ) -> Result<Vec<String>> {
+    ) -> Result<(Vec<String>, Option<LlmCall>)> {
         self.generator.suggest(query, answer, cancel).await
     }
 
@@ -135,11 +136,14 @@ mod tests {
             &self,
             _query: &str,
             _cancel: &CancellationToken,
-        ) -> Result<IntentClassification> {
-            Ok(IntentClassification {
-                intent: Intent::Navigational,
-                confidence: self.sentinel_confidence,
-            })
+        ) -> Result<(IntentClassification, Option<LlmCall>)> {
+            Ok((
+                IntentClassification {
+                    intent: Intent::Navigational,
+                    confidence: self.sentinel_confidence,
+                },
+                None,
+            ))
         }
     }
 
@@ -153,11 +157,14 @@ mod tests {
             &self,
             _query: &str,
             _cancel: &CancellationToken,
-        ) -> Result<TranslationResult> {
-            Ok(TranslationResult {
-                normalized: self.sentinel_normalized.clone(),
-                detected_locale: DetectedLocale::Supported(Locale::Ja),
-            })
+        ) -> Result<(TranslationResult, Option<LlmCall>)> {
+            Ok((
+                TranslationResult {
+                    normalized: self.sentinel_normalized.clone(),
+                    detected_locale: DetectedLocale::Supported(Locale::Ja),
+                },
+                None,
+            ))
         }
     }
 
@@ -176,13 +183,16 @@ mod tests {
             _chunks: &[RetrievedChunk],
             _locale: Locale,
             _cancel: &CancellationToken,
-        ) -> Result<LlmResponse> {
-            Ok(LlmResponse {
-                answer: self.sentinel_answer.clone(),
-                sources: vec![],
-                model: self.model.clone(),
-                usage: None,
-            })
+        ) -> Result<(LlmResponse, Option<LlmCall>)> {
+            Ok((
+                LlmResponse {
+                    answer: self.sentinel_answer.clone(),
+                    sources: vec![],
+                    model: self.model.clone(),
+                    usage: None,
+                },
+                None,
+            ))
         }
 
         async fn generate_stream(
@@ -197,6 +207,7 @@ mod tests {
                 chunk_type: StreamChunkType::Answer,
                 finished: true,
                 grounding: None,
+                usage: None,
             };
             Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
         }
@@ -206,8 +217,8 @@ mod tests {
             _query: &str,
             _answer: &str,
             _cancel: &CancellationToken,
-        ) -> Result<Vec<String>> {
-            Ok(vec![self.sentinel_suggestion.clone()])
+        ) -> Result<(Vec<String>, Option<LlmCall>)> {
+            Ok((vec![self.sentinel_suggestion.clone()], None))
         }
 
         fn has_web_grounding(&self) -> bool {
@@ -247,7 +258,7 @@ mod tests {
     async fn composite_delegates_classify_to_classifier() {
         let brain = make_composite(0.42, "norm", "ans", "sugg", false, "m");
         let cancel = CancellationToken::new();
-        let result = brain.classify_intent("q", &cancel).await.unwrap();
+        let (result, _call) = brain.classify_intent("q", &cancel).await.unwrap();
         // The 0.42 confidence proves we hit the MockClassifier, not any
         // other sub-trait mock (they don't produce confidence).
         assert_eq!(result.confidence, 0.42);
@@ -258,7 +269,7 @@ mod tests {
     async fn composite_delegates_translate_to_translator() {
         let brain = make_composite(0.0, "TRANSLATOR-SENTINEL", "ans", "sugg", false, "m");
         let cancel = CancellationToken::new();
-        let result = brain.translate("q", &cancel).await.unwrap();
+        let (result, _call) = brain.translate("q", &cancel).await.unwrap();
         assert_eq!(result.normalized, "TRANSLATOR-SENTINEL");
         match result.detected_locale {
             DetectedLocale::Supported(Locale::Ja) => {}
@@ -270,7 +281,7 @@ mod tests {
     async fn composite_delegates_generate_to_generator() {
         let brain = make_composite(0.0, "norm", "GENERATOR-ANSWER", "sugg", false, "m");
         let cancel = CancellationToken::new();
-        let response = brain.generate(&[], &[], Locale::En, &cancel).await.unwrap();
+        let (response, _call) = brain.generate(&[], &[], Locale::En, &cancel).await.unwrap();
         assert_eq!(response.answer, "GENERATOR-ANSWER");
     }
 
@@ -293,7 +304,7 @@ mod tests {
     async fn composite_delegates_suggest_to_generator() {
         let brain = make_composite(0.0, "norm", "ans", "SUGGESTION-SENTINEL", false, "m");
         let cancel = CancellationToken::new();
-        let suggestions = brain.suggest("q", "a", &cancel).await.unwrap();
+        let (suggestions, _call) = brain.suggest("q", "a", &cancel).await.unwrap();
         assert_eq!(suggestions, vec!["SUGGESTION-SENTINEL".to_string()]);
     }
 

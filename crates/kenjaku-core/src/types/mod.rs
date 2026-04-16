@@ -9,6 +9,7 @@ pub mod suggestion;
 pub mod tenant;
 pub mod tool;
 pub mod trending;
+pub mod usage;
 
 pub use locale::{DetectedLocale, Locale};
 pub use suggestion::{
@@ -16,3 +17,4 @@ pub use suggestion::{
     SuggestionSource,
 };
 pub use tenant::{MAX_ID_LEN, PlanTier, PrincipalId, TenantContext, TenantId};
+pub use usage::{LlmCall, SharedUsageTracker, UsageStats};

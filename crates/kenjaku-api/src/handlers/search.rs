@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::Json;
 use axum::extract::State;
@@ -185,8 +186,13 @@ async fn search_streaming(
         // Stream token deltas. We also harvest any google_search grounding
         // sources Gemini attaches to the final event(s) so the `done`
         // payload can show them alongside the internal chunk sources.
+        // Latest-wins usage accounting: Gemini attaches `usageMetadata` on
+        // the final SSE event, so we overwrite on every chunk and keep
+        // the last populated value for the generator's `LlmCall`.
+        let generator_started = Instant::now();
         let mut accumulated = String::new();
         let mut grounding_sources: Vec<kenjaku_core::types::search::LlmSource> = Vec::new();
+        let mut last_usage: Option<kenjaku_core::types::search::LlmUsage> = None;
         let mut stream_error: Option<kenjaku_core::error::Error> = None;
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
@@ -209,6 +215,9 @@ async fn search_streaming(
                     if let Some(g) = chunk.grounding {
                         grounding_sources.extend(g);
                     }
+                    if let Some(u) = chunk.usage {
+                        last_usage = Some(u);
+                    }
                     if chunk.finished {
                         break;
                     }
@@ -220,6 +229,7 @@ async fn search_streaming(
                 }
             }
         }
+        let generator_latency_ms = generator_started.elapsed().as_millis() as u64;
         drop(stream);
 
         if let Some(e) = stream_error {
@@ -232,11 +242,24 @@ async fn search_streaming(
             return;
         }
 
+        // Build the streaming generator's accounting entry from the
+        // last seen `usageMetadata` + the measured wall-clock latency.
+        // `None` when the provider never attached usage, in which case
+        // the generator call is simply omitted from `usage.calls`.
+        let generator_call = last_usage.map(|u| kenjaku_core::types::usage::LlmCall {
+            purpose: "generate_stream".to_string(),
+            model: context.llm_model.clone(),
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+            cost_usd: u.cost_usd.unwrap_or(0.0),
+            latency_ms: generator_latency_ms,
+        });
+
         // Compute final done metadata (suggestions + latency, plus
         // resolved+merged grounding sources) and persist conversation.
         let done_metadata = state
             .search_service
-            .complete_stream(context, &accumulated, grounding_sources)
+            .complete_stream(context, &accumulated, grounding_sources, generator_call)
             .await;
 
         let done_json = serde_json::to_string(&done_metadata).unwrap_or_else(|_| "{}".into());

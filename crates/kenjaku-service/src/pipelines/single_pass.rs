@@ -43,6 +43,7 @@ use kenjaku_core::types::search::{
 };
 use kenjaku_core::types::tenant::TenantContext;
 use kenjaku_core::types::tool::ToolRequest;
+use kenjaku_core::types::usage::{LlmCall, SharedUsageTracker};
 
 use crate::brain::ConversationAssembler;
 use crate::component::ComponentService;
@@ -134,16 +135,33 @@ impl SinglePassPipeline {
         ctx: StreamContext,
         accumulated_answer: &str,
         grounding_sources: Vec<LlmSource>,
+        generator_call: Option<LlmCall>,
     ) -> StreamDoneMetadata {
         let grounding_sources_was_empty = grounding_sources.is_empty();
         let cancel = CancellationToken::new();
+
+        // Record the generator's LlmCall (harvested from the final SSE
+        // chunk's `usageMetadata`) BEFORE the suggest call so the final
+        // `usage.calls` list reads in pipeline order.
+        if let Some(call) = generator_call {
+            ctx.usage.record(call);
+        }
+
         let suggestions = match self
             .brain
             .suggest(&ctx.query, accumulated_answer, &cancel)
             .await
         {
-            Ok(s) if s.len() >= self.suggestion_count => s[..self.suggestion_count].to_vec(),
-            Ok(s) => s,
+            Ok((s, call)) => {
+                if let Some(c) = call {
+                    ctx.usage.record(c);
+                }
+                if s.len() >= self.suggestion_count {
+                    s[..self.suggestion_count].to_vec()
+                } else {
+                    s
+                }
+            }
             Err(_) => Vec::new(),
         };
 
@@ -214,12 +232,15 @@ impl SinglePassPipeline {
             grounding.gemini_grounding_used = true;
         }
 
+        let usage = ctx.usage.into_stats();
+
         StreamDoneMetadata {
             latency_ms,
             sources: merged_sources,
             suggestions,
             llm_model: ctx.llm_model,
             grounding,
+            usage,
         }
     }
 
@@ -243,6 +264,7 @@ impl SearchPipeline for SinglePassPipeline {
     ) -> Result<SearchResponse> {
         let start = Instant::now();
         let cancel = CancellationToken::new();
+        let usage_tracker = SharedUsageTracker::new();
 
         // Step 1 + 2: Classify intent AND translate/normalize+detect-locale
         // in parallel. Both are independent LLM calls, so we save ~1s by
@@ -253,7 +275,10 @@ impl SearchPipeline for SinglePassPipeline {
         );
 
         let intent = match intent_result {
-            Ok(classification) => {
+            Ok((classification, call)) => {
+                if let Some(c) = call {
+                    usage_tracker.record(c);
+                }
                 info!(
                     intent = %classification.intent,
                     confidence = classification.confidence,
@@ -267,8 +292,21 @@ impl SearchPipeline for SinglePassPipeline {
             }
         };
 
+        // Unpack translate result: propagate the usage, then hand the
+        // bare translation result back to `resolve_translation`.
+        let translate_for_resolver: Result<kenjaku_core::types::search::TranslationResult> =
+            match translate_result {
+                Ok((tr, call)) => {
+                    if let Some(c) = call {
+                        usage_tracker.record(c);
+                    }
+                    Ok(tr)
+                }
+                Err(e) => Err(e),
+            };
+
         let (search_query, detected_locale, locale_source) =
-            resolve_translation(&req.query, translate_result);
+            resolve_translation(&req.query, translate_for_resolver);
         let translated = if search_query != req.query {
             Some(search_query.clone())
         } else {
@@ -343,10 +381,13 @@ impl SearchPipeline for SinglePassPipeline {
         );
 
         // Step 4: Generate LLM response in the detected locale via Brain.
-        let llm_response = self
+        let (llm_response, generate_call) = self
             .brain
             .generate(&messages, &chunks, detected_locale, &cancel)
             .await?;
+        if let Some(c) = generate_call {
+            usage_tracker.record(c);
+        }
 
         // Step 5: Get suggestions (LLM first, fallback to Qdrant titles)
         let suggestions = match self
@@ -354,18 +395,24 @@ impl SearchPipeline for SinglePassPipeline {
             .suggest(&search_query, &llm_response.answer, &cancel)
             .await
         {
-            Ok(s) if s.len() >= self.suggestion_count => s[..self.suggestion_count].to_vec(),
-            Ok(s) => {
-                warn!(
-                    count = s.len(),
-                    needed = self.suggestion_count,
-                    "LLM returned fewer suggestions than needed, falling back to chunk titles"
-                );
-                chunks
-                    .iter()
-                    .map(|c| c.title.clone())
-                    .take(self.suggestion_count)
-                    .collect()
+            Ok((s, call)) => {
+                if let Some(c) = call {
+                    usage_tracker.record(c);
+                }
+                if s.len() >= self.suggestion_count {
+                    s[..self.suggestion_count].to_vec()
+                } else {
+                    warn!(
+                        count = s.len(),
+                        needed = self.suggestion_count,
+                        "LLM returned fewer suggestions than needed, falling back to chunk titles"
+                    );
+                    chunks
+                        .iter()
+                        .map(|c| c.title.clone())
+                        .take(self.suggestion_count)
+                        .collect()
+                }
             }
             Err(e) => {
                 warn!(error = %e, "Suggestion generation failed, falling back to chunk titles");
@@ -397,6 +444,7 @@ impl SearchPipeline for SinglePassPipeline {
         }
 
         let latency_ms = start.elapsed().as_millis() as u64;
+        let usage = usage_tracker.into_stats();
 
         let response = SearchResponse {
             request_id: req.request_id.clone(),
@@ -411,6 +459,7 @@ impl SearchPipeline for SinglePassPipeline {
                 retrieval_count: chunks.len(),
                 latency_ms,
                 grounding: grounding.clone(),
+                usage,
             },
         };
 
@@ -489,6 +538,7 @@ impl SearchPipeline for SinglePassPipeline {
     ) -> Result<SearchStreamOutput> {
         let start = Instant::now();
         let cancel = CancellationToken::new();
+        let usage_tracker = SharedUsageTracker::new();
 
         // Step 1 + 2: Classify intent AND translate/normalize+detect-locale
         // in parallel.
@@ -496,9 +546,27 @@ impl SearchPipeline for SinglePassPipeline {
             self.brain.classify_intent(&req.query, &cancel),
             self.brain.translate(&req.query, &cancel),
         );
-        let intent = intent_result.map(|c| c.intent).unwrap_or(Intent::Unknown);
+        let intent = match intent_result {
+            Ok((c, call)) => {
+                if let Some(lc) = call {
+                    usage_tracker.record(lc);
+                }
+                c.intent
+            }
+            Err(_) => Intent::Unknown,
+        };
+        let translate_for_resolver: Result<kenjaku_core::types::search::TranslationResult> =
+            match translate_result {
+                Ok((tr, call)) => {
+                    if let Some(lc) = call {
+                        usage_tracker.record(lc);
+                    }
+                    Ok(tr)
+                }
+                Err(e) => Err(e),
+            };
         let (search_query, detected_locale, locale_source) =
-            resolve_translation(&req.query, translate_result);
+            resolve_translation(&req.query, translate_for_resolver);
         let translated_query = if search_query != req.query {
             Some(search_query.clone())
         } else {
@@ -628,6 +696,7 @@ impl SearchPipeline for SinglePassPipeline {
                 locale: detected_locale,
                 intent,
                 tenant: tctx.clone(),
+                usage: usage_tracker,
                 _cancel_guard: CancelGuard::new(cancel),
             },
         })
@@ -715,28 +784,52 @@ mod tests {
             &self,
             _query: &str,
             _cancel: &CancellationToken,
-        ) -> Result<IntentClassification> {
+        ) -> Result<(IntentClassification, Option<LlmCall>)> {
             if self.intent_fail {
                 return Err(Error::Llm("intent classification failed".into()));
             }
-            Ok(IntentClassification {
-                intent: self.intent,
-                confidence: 0.95,
-            })
+            // Return a sentinel LlmCall so tests can assert it flows
+            // through to `SearchMetadata.usage`.
+            let call = LlmCall {
+                purpose: "classify_intent".to_string(),
+                model: "mock-model".to_string(),
+                input_tokens: 10,
+                output_tokens: 5,
+                cost_usd: 0.0001,
+                latency_ms: 1,
+            };
+            Ok((
+                IntentClassification {
+                    intent: self.intent,
+                    confidence: 0.95,
+                },
+                Some(call),
+            ))
         }
 
         async fn translate(
             &self,
             query: &str,
             _cancel: &CancellationToken,
-        ) -> Result<TranslationResult> {
+        ) -> Result<(TranslationResult, Option<LlmCall>)> {
             if self.translate_fail {
                 return Err(Error::Llm("translation failed".into()));
             }
-            Ok(TranslationResult {
-                normalized: query.to_string(),
-                detected_locale: DetectedLocale::Supported(self.translate_locale),
-            })
+            let call = LlmCall {
+                purpose: "translate".to_string(),
+                model: "mock-model".to_string(),
+                input_tokens: 20,
+                output_tokens: 10,
+                cost_usd: 0.0002,
+                latency_ms: 1,
+            };
+            Ok((
+                TranslationResult {
+                    normalized: query.to_string(),
+                    detected_locale: DetectedLocale::Supported(self.translate_locale),
+                },
+                Some(call),
+            ))
         }
 
         async fn generate(
@@ -745,13 +838,24 @@ mod tests {
             _chunks: &[RetrievedChunk],
             _locale: Locale,
             _cancel: &CancellationToken,
-        ) -> Result<LlmResponse> {
-            Ok(LlmResponse {
-                answer: self.answer.clone(),
-                sources: vec![],
+        ) -> Result<(LlmResponse, Option<LlmCall>)> {
+            let call = LlmCall {
+                purpose: "generate".to_string(),
                 model: "mock-model".to_string(),
-                usage: None,
-            })
+                input_tokens: 100,
+                output_tokens: 50,
+                cost_usd: 0.001,
+                latency_ms: 1,
+            };
+            Ok((
+                LlmResponse {
+                    answer: self.answer.clone(),
+                    sources: vec![],
+                    model: "mock-model".to_string(),
+                    usage: None,
+                },
+                Some(call),
+            ))
         }
 
         async fn generate_stream(
@@ -766,6 +870,12 @@ mod tests {
                 chunk_type: StreamChunkType::Answer,
                 finished: true,
                 grounding: None,
+                usage: Some(kenjaku_core::types::search::LlmUsage {
+                    prompt_tokens: 100,
+                    completion_tokens: 50,
+                    total_tokens: 150,
+                    cost_usd: Some(0.001),
+                }),
             };
             Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
         }
@@ -775,8 +885,16 @@ mod tests {
             _query: &str,
             _answer: &str,
             _cancel: &CancellationToken,
-        ) -> Result<Vec<String>> {
-            Ok(self.suggestions.clone())
+        ) -> Result<(Vec<String>, Option<LlmCall>)> {
+            let call = LlmCall {
+                purpose: "suggest".to_string(),
+                model: "mock-model".to_string(),
+                input_tokens: 30,
+                output_tokens: 40,
+                cost_usd: 0.0005,
+                latency_ms: 1,
+            };
+            Ok((self.suggestions.clone(), Some(call)))
         }
     }
 
@@ -1171,6 +1289,7 @@ mod tests {
             locale: Locale::En,
             intent: Intent::Factual,
             tenant: public_test_context(),
+            usage: SharedUsageTracker::new(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
@@ -1181,7 +1300,7 @@ mod tests {
         }];
 
         let done = pipeline
-            .complete_stream(ctx, "accumulated answer", grounding_sources)
+            .complete_stream(ctx, "accumulated answer", grounding_sources, None)
             .await;
 
         // Grounding sources come first, then internal sources
@@ -1217,6 +1336,7 @@ mod tests {
             locale: Locale::En,
             intent: Intent::Factual,
             tenant: public_test_context(),
+            usage: SharedUsageTracker::new(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
@@ -1228,7 +1348,7 @@ mod tests {
         }];
 
         let done = pipeline
-            .complete_stream(ctx, "answer", grounding_sources)
+            .complete_stream(ctx, "answer", grounding_sources, None)
             .await;
 
         // Only one source after dedup -- grounding wins because it's first
@@ -1257,10 +1377,11 @@ mod tests {
             locale: Locale::En,
             intent: Intent::Factual,
             tenant: public_test_context(),
+            usage: SharedUsageTracker::new(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
-        let done = pipeline.complete_stream(ctx, "answer", vec![]).await;
+        let done = pipeline.complete_stream(ctx, "answer", vec![], None).await;
 
         assert_eq!(done.sources.len(), 1);
         assert!(!done.grounding.gemini_grounding_used);
@@ -1283,11 +1404,12 @@ mod tests {
             locale: Locale::Ja,
             intent: Intent::Navigational,
             tenant: public_test_context(),
+            usage: SharedUsageTracker::new(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
         let _done = pipeline
-            .complete_stream(ctx, "streamed answer", vec![])
+            .complete_stream(ctx, "streamed answer", vec![], None)
             .await;
 
         let record = rx.try_recv().unwrap();
@@ -1314,11 +1436,12 @@ mod tests {
             locale: Locale::En,
             intent: Intent::Factual,
             tenant: public_test_context(),
+            usage: SharedUsageTracker::new(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
         let _done = pipeline
-            .complete_stream(ctx, "history answer", vec![])
+            .complete_stream(ctx, "history answer", vec![], None)
             .await;
 
         let history = pipeline
@@ -1346,10 +1469,11 @@ mod tests {
             locale: Locale::En,
             intent: Intent::Factual,
             tenant: public_test_context(),
+            usage: SharedUsageTracker::new(),
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
-        let _done = pipeline.complete_stream(ctx, "", vec![]).await;
+        let _done = pipeline.complete_stream(ctx, "", vec![], None).await;
 
         let history = pipeline
             .history_store
@@ -1511,5 +1635,133 @@ mod tests {
             matches!(err, Error::Validation(_)),
             "resolver errors must surface as Validation, got: {err:?}"
         );
+    }
+
+    // ---- Usage accounting tests --------------------------------------------
+
+    /// The non-streaming path must surface per-call usage on
+    /// `SearchMetadata.usage` with one entry per LLM call made by the
+    /// pipeline (classify_intent, translate, generate, suggest).
+    #[tokio::test]
+    async fn pipeline_search_surfaces_usage_stats() {
+        let brain = MockBrain::new();
+        let tool = Arc::new(MockTool::new("doc_rag").with_output(ToolOutput::Chunks {
+            chunks: vec![make_chunk("1", "T", Some("https://example.com"))],
+            provider: "rag".into(),
+        })) as Arc<dyn Tool>;
+        let (pipeline, _rx) = make_pipeline(brain, vec![tool]);
+
+        let req = make_request();
+        let response = pipeline
+            .search(&req, &public_test_context(), None)
+            .await
+            .unwrap();
+
+        let usage = response.metadata.usage;
+        // MockBrain emits an LlmCall for each of: classify_intent,
+        // translate, generate, suggest.
+        assert_eq!(
+            usage.calls.len(),
+            4,
+            "expected 4 LLM calls (classify + translate + generate + suggest), got {:?}",
+            usage.calls.iter().map(|c| &c.purpose).collect::<Vec<_>>()
+        );
+        assert!(usage.total_tokens > 0);
+        assert_eq!(usage.total_tokens, usage.input_tokens + usage.output_tokens);
+        assert!(usage.estimated_cost_usd > 0.0);
+
+        // Verify purpose names are preserved so dashboards can group.
+        let purposes: Vec<&str> = usage.calls.iter().map(|c| c.purpose.as_str()).collect();
+        assert!(purposes.contains(&"classify_intent"));
+        assert!(purposes.contains(&"translate"));
+        assert!(purposes.contains(&"generate"));
+        assert!(purposes.contains(&"suggest"));
+    }
+
+    /// When the translator fails, its `LlmCall` is absent from usage —
+    /// but the other calls still accumulate. Proves usage doesn't
+    /// swallow errors silently and degrades gracefully.
+    #[tokio::test]
+    async fn pipeline_search_usage_survives_translator_failure() {
+        let brain = MockBrain::new().with_translate_fail();
+        let (pipeline, _rx) = make_pipeline(brain, vec![]);
+
+        let req = make_request();
+        let response = pipeline
+            .search(&req, &public_test_context(), None)
+            .await
+            .unwrap();
+
+        let usage = response.metadata.usage;
+        // classify_intent, generate, suggest — translate failed so no
+        // call is recorded for it.
+        assert_eq!(usage.calls.len(), 3);
+        assert!(usage.calls.iter().all(|c| c.purpose != "translate"));
+    }
+
+    /// Streaming path: `complete_stream` receives the generator's usage
+    /// from the SSE chunk and merges it with preamble calls plus the
+    /// suggest call into `StreamDoneMetadata.usage`.
+    #[tokio::test]
+    async fn pipeline_complete_stream_surfaces_usage() {
+        use kenjaku_core::types::usage::SharedUsageTracker;
+
+        let brain = MockBrain::new();
+        let (pipeline, _rx) = make_pipeline(brain, vec![]);
+
+        // Pre-seed the tracker with a preamble call (classify) to
+        // simulate what `search_stream` would have done.
+        let tracker = SharedUsageTracker::new();
+        tracker.record(LlmCall {
+            purpose: "classify_intent".to_string(),
+            model: "mock-model".to_string(),
+            input_tokens: 10,
+            output_tokens: 2,
+            cost_usd: 0.0001,
+            latency_ms: 1,
+        });
+
+        let ctx = StreamContext {
+            sources: vec![],
+            llm_model: "mock-model".into(),
+            start_instant: Instant::now(),
+            grounding: GroundingInfo::default(),
+            request_id: "req-usage".into(),
+            session_id: "sess-usage".into(),
+            history_key: "sess-usage".into(),
+            query: "q".into(),
+            locale: Locale::En,
+            intent: Intent::Factual,
+            tenant: public_test_context(),
+            usage: tracker,
+            _cancel_guard: CancelGuard::new(CancellationToken::new()),
+        };
+
+        let generator_call = LlmCall {
+            purpose: "generate_stream".to_string(),
+            model: "mock-model".to_string(),
+            input_tokens: 200,
+            output_tokens: 80,
+            cost_usd: 0.002,
+            latency_ms: 50,
+        };
+
+        let done = pipeline
+            .complete_stream(ctx, "answer", vec![], Some(generator_call))
+            .await;
+
+        // classify (preseed) + generate_stream + suggest (from MockBrain)
+        assert_eq!(done.usage.calls.len(), 3);
+        let purposes: Vec<&str> = done
+            .usage
+            .calls
+            .iter()
+            .map(|c| c.purpose.as_str())
+            .collect();
+        assert!(purposes.contains(&"classify_intent"));
+        assert!(purposes.contains(&"generate_stream"));
+        assert!(purposes.contains(&"suggest"));
+        assert!(done.usage.total_tokens > 0);
+        assert!(done.usage.estimated_cost_usd > 0.0);
     }
 }

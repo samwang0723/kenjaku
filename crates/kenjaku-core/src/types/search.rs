@@ -10,6 +10,7 @@ use super::component::Component;
 use super::intent::Intent;
 use super::locale::{DetectedLocale, Locale};
 use super::tenant::TenantContext;
+use super::usage::UsageStats;
 use crate::error::Result;
 
 /// Incoming search request from the API layer.
@@ -85,6 +86,11 @@ pub struct SearchMetadata {
     /// this request, and how many results it contributed.
     #[serde(default)]
     pub grounding: GroundingInfo,
+    /// Per-request LLM token usage + estimated cost, one entry per LLM
+    /// call (translator, classifier, generator, suggest). Populated by
+    /// the pipeline; empty when no LLM calls captured usage data.
+    #[serde(default)]
+    pub usage: UsageStats,
 }
 
 /// What grounding tier(s) supplied chunks/sources for this request.
@@ -170,6 +176,10 @@ pub struct LlmUsage {
 /// streaming pipeline observed on this event (typically populated only on
 /// the final event with `finished = true`). Old consumers that ignore this
 /// field continue to work; the API handler accumulates and forwards it.
+///
+/// `usage` carries Gemini `usageMetadata` harvested from the event's
+/// payload. Gemini attaches this only to the final event (with
+/// `finishReason`), so it's populated at most once per stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamChunk {
     pub delta: String,
@@ -177,6 +187,8 @@ pub struct StreamChunk {
     pub finished: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grounding: Option<Vec<LlmSource>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<LlmUsage>,
 }
 
 /// Metadata sent at the START of a streaming search — everything we know
@@ -216,6 +228,12 @@ pub struct StreamDoneMetadata {
     /// in the final event).
     #[serde(default)]
     pub grounding: GroundingInfo,
+    /// Per-request LLM token usage + estimated cost. Known only at
+    /// stream completion since the generator's `usageMetadata` arrives
+    /// on the final SSE event. Intentionally omitted from
+    /// `StreamStartMetadata` since tokens aren't tallied until then.
+    #[serde(default)]
+    pub usage: UsageStats,
 }
 
 /// Type of content in a stream chunk.
@@ -320,6 +338,15 @@ pub struct StreamContext {
     /// can route its downstream calls (trending, conversations) to the
     /// owning tenant. Phase 3e: populated from the auth extractor.
     pub tenant: TenantContext,
+    /// Shared usage accumulator carried across the stream lifecycle so
+    /// the streaming `done` metadata can surface the translator +
+    /// classifier + generator + suggest usage together.
+    ///
+    /// Populated by the pipeline in `search_stream` with the preamble
+    /// call usage; `complete_stream` appends the streaming generator's
+    /// usage (harvested from the final SSE event) and the suggest
+    /// call's usage before drilling into [`StreamDoneMetadata.usage`].
+    pub usage: super::usage::SharedUsageTracker,
     /// Cancellation guard that fires on drop, ensuring in-flight work
     /// is cancelled when the SSE connection disconnects.
     pub _cancel_guard: CancelGuard,

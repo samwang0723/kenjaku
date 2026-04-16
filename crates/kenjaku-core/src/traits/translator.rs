@@ -3,6 +3,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::Result;
 use crate::types::search::TranslationResult;
+use crate::types::usage::LlmCall;
 
 /// Translator sub-trait extracted from the `Brain` god-trait as part of
 /// the Phase 2 flexibility refactor.
@@ -18,6 +19,12 @@ use crate::types::search::TranslationResult;
 pub trait Translator: Send + Sync {
     /// Normalize a query into canonical English AND detect its source
     /// locale in a single LLM call.
-    async fn translate(&self, query: &str, cancel: &CancellationToken)
-    -> Result<TranslationResult>;
+    ///
+    /// Returns the translation result paired with an optional
+    /// [`LlmCall`] accounting entry.
+    async fn translate(
+        &self,
+        query: &str,
+        cancel: &CancellationToken,
+    ) -> Result<(TranslationResult, Option<LlmCall>)>;
 }

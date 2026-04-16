@@ -622,7 +622,7 @@ mod tests {
     use kenjaku_core::error::Error as CoreError;
     use kenjaku_core::traits::llm::LlmProvider;
     use kenjaku_core::types::locale::Locale;
-    use kenjaku_core::types::search::{LlmResponse, StreamChunk, TranslationResult};
+    use kenjaku_core::types::search::{LlmResponse, LlmUsage, StreamChunk, TranslationResult};
     use kenjaku_core::types::suggestion::ClusterQuestions;
 
     /// Mock that errors on the first `fail_first` calls then succeeds.
@@ -647,10 +647,17 @@ mod tests {
         > {
             unimplemented!()
         }
-        async fn translate(&self, _t: &str) -> kenjaku_core::error::Result<TranslationResult> {
+        async fn translate(
+            &self,
+            _t: &str,
+        ) -> kenjaku_core::error::Result<(TranslationResult, Option<LlmUsage>)> {
             unimplemented!()
         }
-        async fn suggest(&self, _q: &str, _a: &str) -> kenjaku_core::error::Result<Vec<String>> {
+        async fn suggest(
+            &self,
+            _q: &str,
+            _a: &str,
+        ) -> kenjaku_core::error::Result<(Vec<String>, Option<LlmUsage>)> {
             unimplemented!()
         }
         async fn generate_cluster_questions(
@@ -745,10 +752,17 @@ mod tests {
         > {
             unimplemented!()
         }
-        async fn translate(&self, _t: &str) -> kenjaku_core::error::Result<TranslationResult> {
+        async fn translate(
+            &self,
+            _t: &str,
+        ) -> kenjaku_core::error::Result<(TranslationResult, Option<LlmUsage>)> {
             unimplemented!()
         }
-        async fn suggest(&self, _q: &str, _a: &str) -> kenjaku_core::error::Result<Vec<String>> {
+        async fn suggest(
+            &self,
+            _q: &str,
+            _a: &str,
+        ) -> kenjaku_core::error::Result<(Vec<String>, Option<LlmUsage>)> {
             unimplemented!()
         }
         async fn generate_cluster_questions(
@@ -846,10 +860,17 @@ mod tests {
         > {
             unimplemented!()
         }
-        async fn translate(&self, _t: &str) -> kenjaku_core::error::Result<TranslationResult> {
+        async fn translate(
+            &self,
+            _t: &str,
+        ) -> kenjaku_core::error::Result<(TranslationResult, Option<LlmUsage>)> {
             unimplemented!()
         }
-        async fn suggest(&self, _q: &str, _a: &str) -> kenjaku_core::error::Result<Vec<String>> {
+        async fn suggest(
+            &self,
+            _q: &str,
+            _a: &str,
+        ) -> kenjaku_core::error::Result<(Vec<String>, Option<LlmUsage>)> {
             unimplemented!()
         }
         async fn generate_cluster_questions(
