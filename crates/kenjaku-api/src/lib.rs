@@ -20,12 +20,9 @@ use sqlx::PgPool;
 
 /// Shared application state passed to all handlers.
 ///
-/// Phase 3c.2 additions (`tenants_cache`, `jwt_validator`,
-/// `tenancy_config`, `rate_limit_config`) power the new auth
-/// middleware + per-tenant rate-limit extractor. Handlers do NOT
-/// read them directly — the `TenantContext` extractor is the typed
-/// handle. Keeping these in `AppState` lets the middleware close
-/// over them via `axum::middleware::from_fn_with_state`.
+/// Phase 3e: tenancy is always on. `jwt_validator` is always present
+/// (not optional). Handlers access the tenant via the `TenantContext`
+/// extractor, not directly from AppState.
 pub struct AppState {
     pub search_service: SearchService,
     pub trending_service: TrendingService,
@@ -37,13 +34,9 @@ pub struct AppState {
     pub pg_pool: PgPool,
     /// Read-only snapshot of `tenants` table loaded at startup.
     pub tenants_cache: Arc<TenantsCache>,
-    /// Present when `tenancy.enabled=true`; `None` when disabled.
-    /// The auth middleware NEVER reads this field in the
-    /// `enabled=false` branch — verified by
-    /// `disabled_mode_never_invokes_validator` test.
-    pub jwt_validator: Option<Arc<JwtValidator>>,
-    /// Clone of `AppConfig.tenancy` — the middleware reads `.enabled`
-    /// + `.jwt` on every request. Cheap (2 String fields + 2 bool/enum).
+    /// JWT validator — always constructed at startup (Phase 3e).
+    pub jwt_validator: Arc<JwtValidator>,
+    /// Clone of `AppConfig.tenancy` — used for collection name template.
     pub tenancy_config: TenancyConfig,
     /// Clone of `AppConfig.rate_limit` — read by the
     /// `TenantPrincipalIpExtractor` to decide key shape.

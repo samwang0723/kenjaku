@@ -10,8 +10,8 @@
 //! auth middleware inserted into request extensions. Fails **closed**
 //! with 500 if the extension is missing — that's a programmer error
 //! (middleware didn't run, or a handler slipped outside the global
-//! layer), and silently falling back to `TenantContext::public()`
-//! would leak cross-tenant data once tenancy is enabled.
+//! layer), and silently falling back to a default context would leak
+//! cross-tenant data.
 //!
 //! Handlers use it as a plain function argument:
 //!
@@ -71,6 +71,7 @@ mod tests {
     use super::*;
 
     use axum::http::Request;
+    use kenjaku_core::types::tenant::test_helpers::public_test_context;
 
     fn parts_without_tctx() -> Parts {
         Request::builder().body(()).unwrap().into_parts().0
@@ -85,7 +86,7 @@ mod tests {
 
     #[tokio::test]
     async fn extractor_returns_tctx_when_middleware_populated() {
-        let seed = TenantContext::public();
+        let seed = public_test_context();
         let mut parts = parts_with_tctx(seed.clone());
         let TenantCtx(out) = TenantCtx::from_request_parts(&mut parts, &())
             .await
@@ -112,7 +113,7 @@ mod tests {
         // `let tctx: TenantContext = wrapped.into()` must work, so
         // existing `&TenantContext`-taking service APIs don't need
         // to change.
-        let wrapped = TenantCtx(TenantContext::public());
+        let wrapped = TenantCtx(public_test_context());
         let tid_via_deref = wrapped.tenant_id.as_str().to_string();
         assert_eq!(tid_via_deref, "public");
         let inner: TenantContext = wrapped.into();

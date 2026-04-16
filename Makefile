@@ -1,4 +1,4 @@
-.PHONY: build test run fmt lint clean \
+.PHONY: build test run fmt lint clean dev-setup \
        docker-build docker-up docker-down docker-logs docker-test \
        migrate migrate-revert ingest-url ingest-folder openapi check
 
@@ -18,7 +18,12 @@ test:
 test-verbose:
 	cargo test --workspace -- --nocapture
 
-run:
+dev-setup:
+	@scripts/generate-dev-keypair.sh
+	@scripts/mint-dev-jwt.sh --tenant public --principal dev-user --ttl 24h
+	@if [ -f config/dev/dev-token.txt ]; then cp config/dev/dev-token.txt geto-web/.dev-token; fi
+
+run: dev-setup
 	APP_ENV=local cargo run --bin kenjaku-server
 
 run-release:

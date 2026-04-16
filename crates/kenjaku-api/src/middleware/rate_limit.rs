@@ -1,21 +1,14 @@
-//! Tenant-aware rate-limit key extractor (Phase 3c.2).
+//! Tenant-aware rate-limit key extractor (Phase 3c.2, updated 3e).
 //!
 //! Plugs into `tower_governor::governor::GovernorConfigBuilder::key_extractor`.
 //! The strategy (`Ip` / `TenantIp` / `TenantPrincipalIp`) is chosen at
 //! startup from `config.rate_limit.key_strategy`.
 //!
 //! **`Ip` strategy delegates to the existing `SmartIpKeyExtractor`** —
-//! the default case is byte-identical to pre-3c.2 behavior. Only an
-//! explicit operator flip to `TenantIp` or `TenantPrincipalIp` changes
-//! the key shape.
+//! pure IP-based rate limiting.
 //!
 //! **Tenant-aware strategies read `TenantContext` from request
-//! extensions**, where the auth middleware placed it. When the auth
-//! middleware ran in `tenancy.enabled=false` mode, the extension
-//! carries `TenantContext::public()` — so even a "tenant_ip" key
-//! strategy under disabled tenancy still buckets everyone under
-//! `(public, ip)`, which is indistinguishable from pure IP for a
-//! single-tenant deployment.
+//! extensions**, placed by the auth middleware (always on in Phase 3e).
 
 use std::net::IpAddr;
 

@@ -44,6 +44,7 @@ impl RefreshBatchesRepository {
 
     /// Get the most recent `Active` batch (or `None` if there is none).
     pub async fn latest_active(&self) -> Result<Option<RefreshBatch>> {
+        // nosemgrep: tenant-scope-required — workspace-level batch state; tenant scoping deferred to 3e.2
         let row = sqlx::query(
             r#"
             SELECT id, corpus_fingerprint, started_at, completed_at, status,
@@ -78,6 +79,7 @@ impl RefreshBatchesRepository {
             .await
             .map_err(|e| Error::Database(format!("Failed to start swap tx: {e}")))?;
 
+        // nosemgrep: tenant-scope-required — workspace-level batch swap; tenant scoping deferred to 3e.2
         sqlx::query(
             r#"
             UPDATE refresh_batches
@@ -90,6 +92,7 @@ impl RefreshBatchesRepository {
         .await
         .map_err(|e| Error::Database(format!("Failed to supersede prior active batches: {e}")))?;
 
+        // nosemgrep: tenant-scope-required — batch promotion by id; tenant scoping deferred to 3e.2
         sqlx::query(
             r#"
             UPDATE refresh_batches
@@ -118,6 +121,7 @@ impl RefreshBatchesRepository {
     /// Mark a batch failed and stamp completed_at. Leaves any prior
     /// `active` batch untouched, so reads keep serving the old data.
     pub async fn mark_failed(&self, batch_id: i64) -> Result<()> {
+        // nosemgrep: tenant-scope-required — batch failure by id; tenant scoping deferred to 3e.2
         sqlx::query(
             r#"
             UPDATE refresh_batches
@@ -136,6 +140,7 @@ impl RefreshBatchesRepository {
     /// cascade-deleting the rest. `n` is small (default 3 per spec).
     /// Cascade is enforced by the FK on `default_suggestions.batch_id`.
     pub async fn retain_last_n(&self, n: usize) -> Result<u64> {
+        // nosemgrep: tenant-scope-required — workspace-level retention; tenant scoping deferred to 3e.2
         let result = sqlx::query(
             r#"
             DELETE FROM refresh_batches

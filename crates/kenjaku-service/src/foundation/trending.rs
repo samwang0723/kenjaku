@@ -38,7 +38,7 @@ impl TrendingService {
     ///
     /// Phase 3b: Redis keys are tenant-scoped — `trending:{tenant}:daily:…`
     /// and `trending:{tenant}:weekly:…`. In 3b every caller routes through
-    /// `TenantContext::public()` so the effective key prefix is
+    /// `the auth middleware's TenantContext` so the effective key prefix is
     /// `trending:public:…`; slice 3c lets per-tenant JWT-scoped requests
     /// populate real tenant IDs.
     #[instrument(skip(self, raw, normalized, tctx), fields(

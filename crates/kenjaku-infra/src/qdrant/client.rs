@@ -322,6 +322,23 @@ impl QdrantClient {
         Ok(out)
     }
 
+    /// Ensure the `{base_name}_public` alias points at the `{base_name}`
+    /// collection. Idempotent — Qdrant returns success if the alias
+    /// already exists. This bridges pre-3e data (bare `documents`) to the
+    /// tenancy-first naming (`documents_public`) without any data movement.
+    pub async fn ensure_public_alias(&self, base_name: &str) -> Result<()> {
+        use qdrant_client::qdrant::CreateAliasBuilder;
+
+        let alias_name = format!("{base_name}_public");
+        let req = CreateAliasBuilder::new(base_name, &alias_name);
+        self.client
+            .create_alias(req)
+            .await
+            .map_err(|e| Error::VectorStore(format!("Failed to create alias {alias_name}: {e}")))?;
+        info!(alias = %alias_name, collection = %base_name, "Qdrant public alias ensured");
+        Ok(())
+    }
+
     /// Check if Qdrant is healthy.
     pub async fn health_check(&self) -> Result<()> {
         self.client

@@ -46,7 +46,7 @@ use tower::ServiceExt;
 
 use kenjaku_api::extractors::TenantCtx;
 use kenjaku_api::middleware::auth::tenant_auth_middleware;
-use kenjaku_core::config::{JwtAlgorithm, JwtConfig, TenancyConfig};
+use kenjaku_core::config::{JwtAlgorithm, JwtConfig};
 use kenjaku_core::types::tenant::{PlanTier, TenantId};
 use kenjaku_infra::auth::JwtValidator;
 use kenjaku_infra::postgres::{TenantRow, TenantsCache};
@@ -139,9 +139,8 @@ fn tenants_cache(rows: &[(&str, PlanTier)]) -> Arc<TenantsCache> {
 
 #[derive(Clone)]
 struct ItState {
-    tenancy: TenancyConfig,
     cache: Arc<TenantsCache>,
-    validator: Option<Arc<JwtValidator>>,
+    validator: Arc<JwtValidator>,
 }
 
 async fn auth_mw_for_it(
@@ -169,13 +168,7 @@ async fn auth_mw_for_it(
         resp
     }
 
-    if !state.tenancy.enabled {
-        req.extensions_mut().insert(TenantContext::public());
-        return next.run(req).await;
-    }
-    let Some(validator) = state.validator.as_ref() else {
-        return err_for(AuthErrorCode::Unauthorized);
-    };
+    let validator = &state.validator;
     let bearer = req
         .headers()
         .get("authorization")
@@ -225,30 +218,13 @@ async fn body_string(resp: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
-fn enabled_tenancy() -> TenancyConfig {
-    TenancyConfig {
-        enabled: true,
-        header_name: "X-Tenant-Id".into(),
-        default_tenant: "public".into(),
-        collection_name_template: "{base}_{tenant}".into(),
-        jwt: Some(JwtConfig {
-            issuer: TEST_ISSUER.into(),
-            audience: TEST_AUDIENCE.into(),
-            public_key_path: "<test>".into(),
-            algorithm: JwtAlgorithm::RS256,
-            clock_skew_secs: 5,
-        }),
-    }
-}
-
 // ---------- Tests ----------------------------------------------------------
 
 #[tokio::test]
 async fn it_valid_jwt_known_tenant_returns_200_with_db_plan_tier() {
     let state = ItState {
-        tenancy: enabled_tenancy(),
         cache: tenants_cache(&[("acme", PlanTier::Pro)]),
-        validator: Some(validator()),
+        validator: validator(),
     };
     let app = build_router(state);
     let now = now_secs();
@@ -278,9 +254,8 @@ async fn it_valid_jwt_known_tenant_returns_200_with_db_plan_tier() {
 #[tokio::test]
 async fn it_missing_authorization_yields_401_knjk_4010() {
     let state = ItState {
-        tenancy: enabled_tenancy(),
         cache: tenants_cache(&[("acme", PlanTier::Pro)]),
-        validator: Some(validator()),
+        validator: validator(),
     };
     let app = build_router(state);
     let req = Request::builder()
@@ -301,9 +276,8 @@ async fn it_missing_authorization_yields_401_knjk_4010() {
 #[tokio::test]
 async fn it_expired_jwt_yields_401_knjk_4010() {
     let state = ItState {
-        tenancy: enabled_tenancy(),
         cache: tenants_cache(&[("acme", PlanTier::Pro)]),
-        validator: Some(validator()),
+        validator: validator(),
     };
     let app = build_router(state);
     let now = now_secs();
@@ -335,9 +309,8 @@ async fn it_expired_jwt_yields_401_knjk_4010() {
 #[tokio::test]
 async fn it_unknown_tenant_yields_403_knjk_4031() {
     let state = ItState {
-        tenancy: enabled_tenancy(),
         cache: tenants_cache(&[("other", PlanTier::Pro)]), // no acme
-        validator: Some(validator()),
+        validator: validator(),
     };
     let app = build_router(state);
     let now = now_secs();
@@ -372,9 +345,8 @@ async fn it_x_tenant_id_header_alone_yields_401_security_invariant() {
     // is the regression guard for the security invariant Copilot
     // tried to invert in PR #16 #6.
     let state = ItState {
-        tenancy: enabled_tenancy(),
         cache: tenants_cache(&[("victim", PlanTier::Enterprise)]),
-        validator: Some(validator()),
+        validator: validator(),
     };
     let app = build_router(state);
     let req = Request::builder()
@@ -390,43 +362,6 @@ async fn it_x_tenant_id_header_alone_yields_401_security_invariant() {
         401,
         "SECURITY: X-Tenant-Id must NEVER grant access; JWT is the sole trust source"
     );
-}
-
-#[tokio::test]
-async fn it_disabled_tenancy_resolves_public_regardless_of_headers() {
-    // Default deployment: enabled=false. Even with Authorization,
-    // X-Tenant-Id, and a real JWT all set, the result is always
-    // `public`. Zero-behavior-change guarantee for 3c.2.
-    let state = ItState {
-        tenancy: TenancyConfig {
-            enabled: false,
-            ..enabled_tenancy()
-        },
-        cache: tenants_cache(&[("acme", PlanTier::Pro)]),
-        validator: Some(validator()),
-    };
-    let app = build_router(state);
-    let now = now_secs();
-    let token = mint_rs256(serde_json::json!({
-        "tenant_id": "acme",
-        "principal_id": "user-7",
-        "plan_tier": "pro",
-        "exp": now + 300,
-        "iat": now,
-        "iss": TEST_ISSUER,
-        "aud": TEST_AUDIENCE,
-    }));
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri("/secured")
-        .header("authorization", format!("Bearer {token}"))
-        .header("x-tenant-id", "evil")
-        .body(Body::empty())
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), 200);
-    let body = body_string(resp).await;
-    assert_eq!(body, "public|-|Enterprise");
 }
 
 // ---------- Production-middleware signature anchor ----------------------

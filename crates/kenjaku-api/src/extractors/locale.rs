@@ -120,7 +120,7 @@ impl ResolvedLocale {
     /// building an entire `http::Request`.
     ///
     /// Phase 3d.1: `tctx` is required so the session-memory lookup is
-    /// tenant-scoped. Callers in tests can pass `&TenantContext::public()`;
+    /// tenant-scoped. Callers in tests can pass a test helper context;
     /// in production the value comes from `Extension<TenantContext>` inserted
     /// by the auth middleware.
     pub async fn resolve(
@@ -233,6 +233,7 @@ mod tests {
     use std::sync::Mutex;
 
     use axum::http::Request;
+    use kenjaku_core::types::tenant::test_helpers::public_test_context;
     use kenjaku_core::types::tenant::{TenantContext, TenantId};
 
     /// Stub that records the `(tenant_id, session_id)` it was called with,
@@ -263,7 +264,7 @@ mod tests {
     }
 
     fn public_tctx() -> TenantContext {
-        TenantContext::public()
+        public_test_context()
     }
 
     fn acme_tctx() -> TenantContext {
