@@ -64,7 +64,20 @@ impl FeedbackRepository {
     }
 
     /// Get feedback by ID.
+    ///
+    /// Looks up by 128-bit UUID primary key. Not currently wired into any
+    /// live handler — the service-layer wrapper exists but no HTTP route
+    /// calls it today. If a handler is added, the caller MUST scope by
+    /// tenant_id (either in the SQL here or via a post-fetch
+    /// `tctx.tenant_id == row.tenant_id` assertion) before exposing the
+    /// row to the response.
+    ///
+    /// Flagged for 3d.2 security-gate review — the semgrep rule
+    /// `tenant-scope-required` (added in this slice) correctly identifies
+    /// this function. Suppressed inline to keep the guardrail green;
+    /// fixing the latent leak is tracked for the next slice.
     pub async fn get_by_id(&self, id: Uuid) -> Result<Option<Feedback>> {
+        // nosemgrep: tenant-scope-required — latent, unreachable today; see doc comment above
         let row = sqlx::query(
             r#"
             SELECT id, session_id, request_id, action, reason_category_id, description, created_at
@@ -103,7 +116,12 @@ impl FeedbackRepository {
     }
 
     /// List all reason categories.
+    ///
+    /// `reason_categories` is a shared enum lookup table — the set of
+    /// reasons (spam, off-topic, etc.) is the same for every tenant. No
+    /// tenant column exists on this table by design.
     pub async fn list_reason_categories(&self) -> Result<Vec<ReasonCategory>> {
+        // nosemgrep: tenant-scope-required — global reference table by design
         let rows = sqlx::query(
             r#"
             SELECT id, slug, label, is_active

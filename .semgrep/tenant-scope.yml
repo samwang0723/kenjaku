@@ -1,0 +1,82 @@
+# Tenant-scope semgrep rule (3d.2 guardrail — closes the post-H2 regret).
+#
+# Any sqlx query against tenant-scoped tables (conversations, feedback,
+# popular_queries, trending, etc.) MUST bind or filter by `tenant_id`.
+# H2 was a latent leak where `get_by_session` filtered by `session_id`
+# only — two tenants on the same instance sharing a session_id would
+# cross-read each other's conversation history. This rule prevents a
+# resurface.
+#
+# Coverage: both sqlx macro form (`sqlx::query!`, `query_as!`,
+# `query_scalar!`) and functional form (`sqlx::query(...)`,
+# `query_as(...)`, `query_scalar(...)`, `query_as::<_, T>(...)`). The
+# repo currently uses only the functional form (confirmed at slice-
+# authoring time); macro coverage is future-proofing.
+#
+# Detection strategy: pattern-not-regex checks that the matched region
+# (SQL string + the entire builder chain of `.bind(...)` calls up to
+# `.fetch_*` / `.execute`) contains the substring `tenant_id` anywhere.
+# That catches:
+#   - Literal SQL: `WHERE tenant_id = $1`, `INSERT INTO ... (tenant_id, ...)`
+#   - Bind params: `.bind(tenant_id)`, `.bind(&req.tenant_id)`,
+#     `.bind(tctx.tenant_id.as_str())`
+#   - Table-qualified forms: `WHERE c.tenant_id = $1`
+#
+# Known limitation: if a dev binds a variable literally named
+# `tenant_id` that actually holds a different value, the rule passes
+# silently. That's a code-review issue, not a semgrep failure — the
+# rule is a structural net, not an oracle.
+#
+# File-level allowlist (`paths.exclude`):
+#   - tenants.rs — the tenancy directory itself; a tenant can't be
+#     scoped to a tenant (self-referential CRUD).
+#   - pool.rs — pool lifecycle + `SELECT 1` health check.
+#   - default_suggestions.rs — global LLM-generated suggestion pool,
+#     keyed by (batch_id, locale, topic_cluster_id, question_lower).
+#     Intentionally cross-tenant by construction.
+#   - refresh_batches.rs — workspace-level cron batch state; one job
+#     operates across all tenants by design.
+#
+# Inline escape hatch: any OTHER legitimately cross-tenant query can
+# use `// nosemgrep: tenant-scope-required` with a one-line
+# justification on the preceding line. Inline comments are preferred
+# over file exclusions because each exception becomes a durable audit
+# record grep-able at review time.
+
+rules:
+  - id: tenant-scope-required
+    message: |
+      sqlx query against a tenant-scoped table does not reference `tenant_id`.
+      All queries against conversations, feedback, popular_queries,
+      trending, and related tables must filter or insert tenant_id.
+      Add a `WHERE tenant_id = $N` predicate, an
+      `INSERT INTO ... (tenant_id, ...)` column, and a matching
+      `.bind(...)` for the tenant_id value.
+
+      If the query is legitimately cross-tenant (audit / admin / global
+      reference table), add `// nosemgrep: tenant-scope-required` on the
+      preceding line with a one-line justification comment.
+    severity: ERROR
+    languages: [rust]
+    # NOTE: path scoping (what directory to scan) is the CALLER's job via
+    # CLI target args. The rule's `paths.exclude` only lists files that
+    # are legitimately cross-tenant BY CONSTRUCTION (registry self-
+    # reference / pool lifecycle / global batch tables). Narrow rule
+    # path scoping would prevent the fixture test in `.semgrep/test/`
+    # from firing.
+    paths:
+      exclude:
+        - "**/crates/kenjaku-infra/src/postgres/tenants.rs"
+        - "**/crates/kenjaku-infra/src/postgres/pool.rs"
+        - "**/crates/kenjaku-infra/src/postgres/default_suggestions.rs"
+        - "**/crates/kenjaku-infra/src/postgres/refresh_batches.rs"
+    patterns:
+      - pattern-either:
+          - pattern: sqlx::query($SQL, ...)
+          - pattern: sqlx::query_as::<$T1, $T2>($SQL, ...)
+          - pattern: sqlx::query_as($SQL, ...)
+          - pattern: sqlx::query_scalar($SQL, ...)
+          - pattern: sqlx::query!($SQL, ...)
+          - pattern: sqlx::query_as!($SQL, ...)
+          - pattern: sqlx::query_scalar!($SQL, ...)
+      - pattern-not-regex: 'tenant_id'

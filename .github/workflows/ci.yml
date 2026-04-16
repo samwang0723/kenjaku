@@ -44,6 +44,23 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # 3d.2 guardrail: static analysis catches tenant-scope regressions
+      # (H2-class leaks) before review. Runs before build/test so a rule
+      # violation fails fast on the cheapest step.
+      - name: Install semgrep
+        run: |
+          python3 -m pip install --user 'semgrep==1.156.0'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Semgrep (tenant-scope rule)
+        run: |
+          semgrep \
+            --config .semgrep/tenant-scope.yml \
+            --error \
+            --strict \
+            --metrics=off \
+            crates/kenjaku-infra/src/postgres/
+
       - name: Build
         run: cargo build --workspace --locked
 
