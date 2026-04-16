@@ -169,12 +169,9 @@ async fn main() -> anyhow::Result<()> {
 
     let brain: Arc<dyn Brain> = Arc::new(CompositeBrain::new(classifier, translator, generator));
 
-    // Phase 3b: the CollectionResolver is now wired into DocRagTool.
-    // For every invocation the resolver maps the request's tenant to a
-    // Qdrant collection name — `public` -> `{base}`, everything else ->
-    // `{base}_{tenant}`. Until slice 3c, the handler injects
-    // `TenantContext::public()` so the effective behavior is identical
-    // to pre-3b (the resolver returns the bare base name).
+    // Phase 3e: the CollectionResolver maps every tenant uniformly to
+    // `{base}_{tenant}` (e.g. `documents_public`, `documents_acme`).
+    // No special case for the `public` tenant.
     let collection_resolver: Arc<dyn CollectionResolver> = Arc::new(PrefixCollectionResolver::new(
         config.qdrant.collection_name.clone(),
     ));
@@ -283,28 +280,20 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(LocaleMemoryAdapter(locale_memory.clone()));
 
     // ------------------------------------------------------------------
-    // Phase 3c.2 wiring — TenantsCache + JwtValidator + tenancy config.
+    // Phase 3e wiring — TenantsCache + JwtValidator.
     //
     // TenantsCache: snapshot of the `tenants` table loaded once at
-    // startup. The `public` row seeded by migration
-    // `20260415000001_add_tenant_id.up.sql` is always present, so the
-    // cache is non-empty even on a fresh deploy.
+    // startup. The `public` row seeded by migration is always present.
     //
-    // JwtValidator: built only when `tenancy.enabled = true`. The auth
-    // middleware short-circuits to `TenantContext::public()` when
-    // disabled and NEVER reads `state.jwt_validator` on that branch
-    // (see `disabled_mode_never_invokes_validator` test).
+    // JwtValidator: always constructed (tenancy is always on).
     // ------------------------------------------------------------------
     let tenants_cache = Arc::new(TenantsCache::load_at_startup(&pg_pool).await?);
     info!(tenant_count = tenants_cache.len(), "TenantsCache loaded");
 
     let jwt_validator = load_jwt_validator(&config.tenancy).await?;
     info!(
-        tenancy_enabled = config.tenancy.enabled,
-        validator_constructed = jwt_validator.is_some(),
         key_strategy = ?config.rate_limit.key_strategy,
-        jwt_configured = config.tenancy.jwt.is_some(),
-        "Tenancy auth state"
+        "Tenancy auth state (always on)"
     );
 
     // Build app state
@@ -347,12 +336,6 @@ async fn main() -> anyhow::Result<()> {
 /// Newtype wrapping the service-layer `LocaleMemory` so it can be exposed
 /// to the api crate's `SessionLocaleLookup` trait without leaking the
 /// concrete type across the layer boundary.
-///
-/// Phase 3d.1 collapsed this to a 1-line pass-through: the widened
-/// `SessionLocaleLookup::lookup(&TenantContext, &str)` contract removes
-/// the previous hardcoded `TenantContext::public()` fallback, which was
-/// the last remaining cross-tenant locale leak vector at
-/// `tenancy.enabled=true`.
 struct LocaleMemoryAdapter(Arc<LocaleMemory>);
 
 #[async_trait::async_trait]
@@ -368,38 +351,18 @@ impl kenjaku_api::extractors::SessionLocaleLookup for LocaleMemoryAdapter {
 
 /// Build the JWT validator from configuration.
 ///
-/// - `tenancy.enabled = false` → returns `Ok(None)`. The auth
-///   middleware never reads the validator on the disabled branch.
-/// - `tenancy.enabled = true` → reads the public-key PEM from
-///   `tenancy.jwt.public_key_path` with hardening:
-///     1. `is_file()` check rejects `/dev/zero`, FIFOs, etc.
-///     2. 16 KiB size cap (an RSA-4096 PEM is ~1.7 KB; 16 KiB is
-///        ~10x the largest realistic key).
-///     3. Single `tokio::fs::read` call — bounded I/O, non-blocking
-///        on the Tokio runtime. (`tokio::fs` dispatches to
-///        `spawn_blocking` internally; equivalent for startup but
-///        keeps the main tokio worker free on slow/remote volumes.)
-///
-///   then constructs the validator with the parsed PEM bytes.
+/// Phase 3e: always builds a validator — tenancy is always on.
+/// Reads the public-key PEM from `tenancy.jwt.public_key_path` with
+/// hardening:
+///   1. `is_file()` check rejects `/dev/zero`, FIFOs, etc.
+///   2. 16 KiB size cap (an RSA-4096 PEM is ~1.7 KB; 16 KiB is
+///      ~10x the largest realistic key).
+///   3. Single `tokio::fs::read` call — bounded I/O, non-blocking.
 ///
 /// Audit-trail INFO log on success: emits the public-key path and
 /// the SHA-256 fingerprint (first 8 hex chars) — never the bytes.
-///
-/// This is the **only filesystem touch** in the entire JWT path.
-/// Matches the 3c.1 architecture decision to keep
-/// `kenjaku_infra::auth::jwt` filesystem-free; the bootstrap is the
-/// one audit point for key-material loading.
-async fn load_jwt_validator(cfg: &TenancyConfig) -> KenjakuResult<Option<Arc<JwtValidator>>> {
-    if !cfg.enabled {
-        return Ok(None);
-    }
-    // `validate_secrets` already ran (line 50) and asserts that
-    // `tenancy.enabled=true` implies a populated `jwt` block; the
-    // expect here is a startup invariant, not a user-facing path.
-    let jwt = cfg
-        .jwt
-        .as_ref()
-        .expect("validate_secrets must guarantee jwt block when enabled=true");
+async fn load_jwt_validator(cfg: &TenancyConfig) -> KenjakuResult<Arc<JwtValidator>> {
+    let jwt = &cfg.jwt;
 
     const MAX_PEM_BYTES: u64 = 16 * 1024;
 
@@ -438,7 +401,7 @@ async fn load_jwt_validator(cfg: &TenancyConfig) -> KenjakuResult<Option<Arc<Jwt
         fingerprint = %fingerprint,
         "JWT validator constructed"
     );
-    Ok(Some(Arc::new(validator)))
+    Ok(Arc::new(validator))
 }
 
 /// SHA-256 of `bytes`, first 4 bytes hex-encoded (8 chars). Used only
@@ -485,29 +448,16 @@ mod tests {
 
     use kenjaku_core::config::{JwtAlgorithm, JwtConfig};
 
-    fn tenancy_disabled() -> TenancyConfig {
-        TenancyConfig {
-            enabled: false,
-            header_name: "X-Tenant-Id".into(),
-            default_tenant: "public".into(),
-            collection_name_template: "{base}_{tenant}".into(),
-            jwt: None,
-        }
-    }
-
     fn tenancy_with_jwt(public_key_path: &str) -> TenancyConfig {
         TenancyConfig {
-            enabled: true,
-            header_name: "X-Tenant-Id".into(),
-            default_tenant: "public".into(),
             collection_name_template: "{base}_{tenant}".into(),
-            jwt: Some(JwtConfig {
+            jwt: JwtConfig {
                 issuer: "kenjaku-test".into(),
                 audience: "kenjaku-api".into(),
                 public_key_path: public_key_path.into(),
                 algorithm: JwtAlgorithm::RS256,
                 clock_skew_secs: 30,
-            }),
+            },
         }
     }
 
@@ -524,12 +474,6 @@ whmGK/jpygg8ob2z/TcW4FuJvzcBUgt4+ZDUe1/ezgdz6lOcejlF2phhnXeNBI5i
 qwIDAQAB
 -----END PUBLIC KEY-----
 ";
-
-    #[tokio::test]
-    async fn load_jwt_validator_disabled_returns_none() {
-        let v = load_jwt_validator(&tenancy_disabled()).await.unwrap();
-        assert!(v.is_none(), "tenancy disabled => no validator built");
-    }
 
     #[tokio::test]
     async fn load_jwt_validator_missing_file_fails() {
@@ -564,8 +508,8 @@ qwIDAQAB
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(TEST_RSA_PUBLIC_PEM.as_bytes()).unwrap();
         let cfg = tenancy_with_jwt(f.path().to_string_lossy().as_ref());
-        let v = load_jwt_validator(&cfg).await.unwrap();
-        assert!(v.is_some(), "valid PEM must yield a validator");
+        let _v = load_jwt_validator(&cfg).await.unwrap();
+        // No Option — always returns Arc<JwtValidator>
     }
 
     #[test]

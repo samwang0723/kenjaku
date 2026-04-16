@@ -86,7 +86,7 @@ use tower::ServiceExt;
 
 use kenjaku_api::extractors::{ResolvedLocale, SessionLocaleLookup, TenantCtx};
 use kenjaku_api::middleware::auth::tenant_auth_middleware;
-use kenjaku_core::config::{JwtAlgorithm, JwtConfig, TenancyConfig};
+use kenjaku_core::config::{JwtAlgorithm, JwtConfig};
 use kenjaku_core::types::locale::Locale;
 use kenjaku_core::types::tenant::{PlanTier, TenantContext, TenantId};
 use kenjaku_infra::auth::JwtValidator;
@@ -192,19 +192,13 @@ fn tenants_cache(rows: &[(&str, PlanTier)]) -> Arc<TenantsCache> {
     Arc::new(TenantsCache::from_map(m))
 }
 
-fn enabled_tenancy() -> TenancyConfig {
-    TenancyConfig {
-        enabled: true,
-        header_name: "X-Tenant-Id".into(),
-        default_tenant: "public".into(),
-        collection_name_template: "{base}_{tenant}".into(),
-        jwt: Some(JwtConfig {
-            issuer: TEST_ISSUER.into(),
-            audience: TEST_AUDIENCE.into(),
-            public_key_path: "<test>".into(),
-            algorithm: JwtAlgorithm::RS256,
-            clock_skew_secs: 5,
-        }),
+fn test_jwt_config() -> JwtConfig {
+    JwtConfig {
+        issuer: TEST_ISSUER.into(),
+        audience: TEST_AUDIENCE.into(),
+        public_key_path: "<test>".into(),
+        algorithm: JwtAlgorithm::RS256,
+        clock_skew_secs: 5,
     }
 }
 
@@ -339,9 +333,8 @@ impl FakeStores {
 /// `tests/auth_flow.rs::ItState` plus `FakeStores` + `SessionLocaleLookup`.
 #[derive(Clone)]
 struct IsolationState {
-    tenancy: TenancyConfig,
     cache: Arc<TenantsCache>,
-    validator: Option<Arc<JwtValidator>>,
+    validator: Arc<JwtValidator>,
     stores: Arc<FakeStores>,
     /// Fake locale-memory adapter. After Phase 3d.1 `SessionLocaleLookup`
     /// takes `&TenantContext`; this impl returns `None` regardless so
@@ -382,13 +375,7 @@ async fn auth_mw_for_isolation(
         resp
     }
 
-    if !state.tenancy.enabled {
-        req.extensions_mut().insert(TenantContext::public());
-        return next.run(req).await;
-    }
-    let Some(validator) = state.validator.as_ref() else {
-        return err_for(AuthErrorCode::Unauthorized);
-    };
+    let validator = &state.validator;
     let bearer = req
         .headers()
         .get("authorization")
@@ -643,9 +630,8 @@ fn base_state() -> IsolationState {
     let stores = Arc::new(FakeStores::default());
     stores.seed();
     IsolationState {
-        tenancy: enabled_tenancy(),
         cache: tenants_cache(&[(TENANT_A, PlanTier::Pro), (TENANT_B, PlanTier::Pro)]),
-        validator: Some(validator()),
+        validator: validator(),
         stores,
         locale_lookup: Arc::new(MissLookup),
     }

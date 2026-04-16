@@ -103,17 +103,13 @@ telemetry:
   service_name: "kenjaku"
   log_level: "info"
 
-# Multi-tenancy (Phase 3d.1 — enabled by default).
+# Multi-tenancy (Phase 3e — always on, no disabled mode).
 #
-# `enabled=true` turns on the JWT auth middleware + tenant-scoped
-# routing. `AppConfig::validate_secrets()` fails fast at startup if
-# `tenancy.jwt.public_key_path` is not configured (see the `secrets.*`
-# overlay for production; local/docker overlays pin `enabled=false` so
-# `make run` works without minted JWTs).
+# Every request goes through JWT auth. `validate_secrets()` fails fast
+# at startup if `tenancy.jwt.*` fields are missing. Dev environments
+# provision a keypair via `make dev-setup`; production reads the key
+# from `secrets.{APP_ENV}.yaml`.
 tenancy:
-  enabled: true
-  header_name: "X-Tenant-Id"
-  default_tenant: "public"
   collection_name_template: "{base}_{tenant}"
 
 # Rate-limit key strategy (Phase 3c.2). `ip` is the backward-compatible

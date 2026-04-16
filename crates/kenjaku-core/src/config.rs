@@ -53,29 +53,17 @@ impl AppConfig {
             missing.push("contextualizer.api_key");
         }
 
-        // Tenancy + JWT: only enforced when tenancy is turned on.
-        // When `enabled=false` (3c.1 default, all production today) the
-        // `jwt` block is allowed to be absent or partially populated —
-        // nothing reads it. When `enabled=true`, every field must be set
-        // so the validator can be constructed at startup.
-        if self.tenancy.enabled {
-            match &self.tenancy.jwt {
-                None => missing.push("tenancy.jwt (block required when tenancy.enabled=true)"),
-                Some(jwt) => {
-                    if jwt.issuer.is_empty() {
-                        missing.push("tenancy.jwt.issuer");
-                    }
-                    if jwt.audience.is_empty() {
-                        missing.push("tenancy.jwt.audience");
-                    }
-                    if jwt.public_key_path.is_empty() {
-                        missing.push("tenancy.jwt.public_key_path");
-                    }
-                    // `algorithm` is typed and cannot be invalid or
-                    // `none` / `HS*` / `PS*` by construction. No check
-                    // needed here; `JwtAlgorithm`'s enum shape IS the
-                    // allowlist enforcement.
-                }
+        // Tenancy is always on (Phase 3e). JWT fields are unconditionally required.
+        {
+            let jwt = &self.tenancy.jwt;
+            if jwt.issuer.is_empty() {
+                missing.push("tenancy.jwt.issuer");
+            }
+            if jwt.audience.is_empty() {
+                missing.push("tenancy.jwt.audience");
+            }
+            if jwt.public_key_path.is_empty() {
+                missing.push("tenancy.jwt.public_key_path");
             }
         }
 
@@ -626,41 +614,27 @@ fn default_web_search_fallback_min_chunks() -> usize {
 
 /// Multi-tenancy configuration.
 ///
-/// All top-level fields are required — no serde defaults. Follows Sam's
-/// "super clean config" convention (config hardening pass, commit
-/// `810e620`). Missing keys cause `load_config` to fail fast, which is what
-/// we want for a security-hot-path subsystem.
+/// Phase 3e: tenancy is **always on**. The `enabled` flag, `header_name`,
+/// and `default_tenant` fields were deleted — there is no disabled mode.
+/// Every request goes through JWT validation. `jwt` is required (not
+/// optional). `validate_secrets()` always checks JWT fields.
 ///
-/// In Phase 3a+3b the fields were inert. Phase 3c.1 adds the `jwt`
-/// sub-block; slice 3c.2 wires it into an auth middleware. Until the
-/// middleware lands, the validator is code-only — no runtime surface.
-///
-/// - `enabled: false` — no tenancy enforcement yet (still the 3c.1 default).
-/// - `header_name` — the HTTP header slice 3c.2 reads for dev-mode tenant
-///   override (ignored when `enabled = true`).
-/// - `default_tenant` — the implicit tenant for un-authenticated requests.
-/// - `collection_name_template` — documents the naming rule the default
-///   [`PrefixCollectionResolver`] implements.
-/// - `jwt` — optional. When `enabled = true` every field must be
-///   populated; [`AppConfig::validate_secrets`] enforces this at startup.
+/// `collection_name_template` documents the naming rule the default
+/// [`PrefixCollectionResolver`] implements.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TenancyConfig {
-    pub enabled: bool,
-    pub header_name: String,
-    pub default_tenant: String,
     pub collection_name_template: String,
-    /// JWT validator config. `None` when tenancy is disabled; required
-    /// (all sub-fields non-empty) when `enabled = true`.
-    #[serde(default)]
-    pub jwt: Option<JwtConfig>,
+    /// JWT validator config. Always required — every field must be
+    /// non-empty. [`AppConfig::validate_secrets`] enforces this at startup.
+    pub jwt: JwtConfig,
 }
 
 /// JWT validator configuration.
 ///
-/// Every field is required when [`TenancyConfig::enabled`] is `true`.
-/// `serde` default of empty strings is deliberate: we want `enabled=true` +
-/// missing fields to surface a precise "missing X" startup error rather
-/// than a serde parse error.
+/// Every field is required. `serde` default of empty strings is
+/// deliberate: we want missing fields to surface a precise "missing X"
+/// startup error via `validate_secrets()` rather than a serde parse
+/// error.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JwtConfig {
     /// Expected `iss` claim (e.g. `"kenjaku-auth"`). Tokens with a
@@ -748,10 +722,8 @@ impl JwtAlgorithm {
 ///
 /// **Security note**: `TenantIp` / `TenantPrincipalIp` read
 /// `TenantContext` from the request extensions placed by the auth
-/// middleware. If the auth middleware did not run, the extractor falls
-/// back to the public tenant — matching the auth middleware's own
-/// "enabled=false → public" short-circuit. No branch silently disables
-/// rate limiting.
+/// middleware. Every request goes through JWT auth (Phase 3e), so
+/// `TenantContext` is always present in extensions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitKeyStrategy {
@@ -906,10 +878,11 @@ telemetry:
   service_name: "kenjaku"
   log_level: "info"
 tenancy:
-  enabled: false
-  header_name: "X-Tenant-Id"
-  default_tenant: "public"
   collection_name_template: "{base}_{tenant}"
+  jwt:
+    issuer: "kenjaku-dev"
+    audience: "kenjaku-api"
+    public_key_path: "config/dev/public.pem"
 "#;
         let mut f = std::fs::File::create(config_dir.join("base.yaml")).unwrap();
         f.write_all(base_yaml.as_bytes()).unwrap();
@@ -1028,11 +1001,14 @@ contextualizer:
             locale_memory: LocaleMemoryConfig::default(),
             web_search: WebSearchConfig::default(),
             tenancy: TenancyConfig {
-                enabled: false,
-                header_name: "X-Tenant-Id".into(),
-                default_tenant: "public".into(),
                 collection_name_template: "{base}_{tenant}".into(),
-                jwt: None,
+                jwt: JwtConfig {
+                    issuer: "kenjaku-dev".into(),
+                    audience: "kenjaku-api".into(),
+                    public_key_path: "config/dev/public.pem".into(),
+                    algorithm: JwtAlgorithm::RS256,
+                    clock_skew_secs: 30,
+                },
             },
             rate_limit: RateLimitConfig::default(),
         };
@@ -1121,11 +1097,14 @@ contextualizer:
             locale_memory: LocaleMemoryConfig::default(),
             web_search: WebSearchConfig::default(),
             tenancy: TenancyConfig {
-                enabled: false,
-                header_name: "X-Tenant-Id".into(),
-                default_tenant: "public".into(),
                 collection_name_template: "{base}_{tenant}".into(),
-                jwt: None,
+                jwt: JwtConfig {
+                    issuer: "kenjaku-dev".into(),
+                    audience: "kenjaku-api".into(),
+                    public_key_path: "config/dev/public.pem".into(),
+                    algorithm: JwtAlgorithm::RS256,
+                    clock_skew_secs: 30,
+                },
             },
             rate_limit: RateLimitConfig::default(),
         };
@@ -1284,8 +1263,7 @@ key_prefix: "loc:"
     #[test]
     fn test_jwt_config_defaults_from_empty_yaml() {
         // Every field is `#[serde(default)]` / has a default fn.
-        // Intentional so `tenancy.enabled=false` deployments can simply
-        // omit the block without serde parse errors.
+        // Empty strings are caught by `validate_secrets()` at startup.
         let yaml = "";
         let cfg: JwtConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.issuer, "");
@@ -1312,10 +1290,12 @@ clock_skew_secs: 60
         assert_eq!(cfg.clock_skew_secs, 60);
     }
 
-    // ---- validate_secrets: tenancy.enabled gating ------------------------
+    // ---- validate_secrets: JWT always required (Phase 3e) -----------------
 
-    fn base_cfg_with_tenancy(tenancy: TenancyConfig) -> AppConfig {
-        AppConfig {
+    #[test]
+    fn test_validate_secrets_flags_empty_jwt_fields() {
+        // JWT with all-empty fields must fail — tenancy is always on.
+        let cfg = AppConfig {
             server: ServerConfig {
                 host: "0.0.0.0".into(),
                 port: 8080,
@@ -1386,77 +1366,22 @@ clock_skew_secs: 60
             default_suggestions: DefaultSuggestionsConfig::default(),
             locale_memory: LocaleMemoryConfig::default(),
             web_search: WebSearchConfig::default(),
-            tenancy,
+            tenancy: TenancyConfig {
+                collection_name_template: "{base}_{tenant}".into(),
+                jwt: JwtConfig {
+                    issuer: String::new(),
+                    audience: String::new(),
+                    public_key_path: String::new(),
+                    algorithm: JwtAlgorithm::RS256,
+                    clock_skew_secs: 30,
+                },
+            },
             rate_limit: RateLimitConfig::default(),
-        }
-    }
-
-    #[test]
-    fn test_validate_secrets_tenancy_disabled_ignores_missing_jwt() {
-        // Default deployment — enabled=false, jwt=None — passes.
-        let cfg = base_cfg_with_tenancy(TenancyConfig {
-            enabled: false,
-            header_name: "X-Tenant-Id".into(),
-            default_tenant: "public".into(),
-            collection_name_template: "{base}_{tenant}".into(),
-            jwt: None,
-        });
-        assert!(cfg.validate_secrets().is_ok());
-    }
-
-    #[test]
-    fn test_validate_secrets_tenancy_enabled_requires_jwt_block() {
-        let cfg = base_cfg_with_tenancy(TenancyConfig {
-            enabled: true,
-            header_name: "X-Tenant-Id".into(),
-            default_tenant: "public".into(),
-            collection_name_template: "{base}_{tenant}".into(),
-            jwt: None,
-        });
-        let err = cfg.validate_secrets().unwrap_err().to_string();
-        assert!(
-            err.contains("tenancy.jwt"),
-            "expected missing-jwt-block error, got: {err}"
-        );
-    }
-
-    #[test]
-    fn test_validate_secrets_tenancy_enabled_flags_empty_jwt_fields() {
-        let cfg = base_cfg_with_tenancy(TenancyConfig {
-            enabled: true,
-            header_name: "X-Tenant-Id".into(),
-            default_tenant: "public".into(),
-            collection_name_template: "{base}_{tenant}".into(),
-            jwt: Some(JwtConfig {
-                issuer: String::new(),
-                audience: String::new(),
-                public_key_path: String::new(),
-                algorithm: JwtAlgorithm::RS256,
-                clock_skew_secs: 30,
-            }),
-        });
+        };
         let err = cfg.validate_secrets().unwrap_err().to_string();
         assert!(err.contains("tenancy.jwt.issuer"), "got: {err}");
         assert!(err.contains("tenancy.jwt.audience"), "got: {err}");
         assert!(err.contains("tenancy.jwt.public_key_path"), "got: {err}");
-    }
-
-    #[test]
-    fn test_validate_secrets_tenancy_enabled_passes_with_full_jwt() {
-        let cfg = base_cfg_with_tenancy(TenancyConfig {
-            enabled: true,
-            header_name: "X-Tenant-Id".into(),
-            default_tenant: "public".into(),
-            collection_name_template: "{base}_{tenant}".into(),
-            jwt: Some(JwtConfig {
-                issuer: "kenjaku-auth".into(),
-                audience: "kenjaku-api".into(),
-                public_key_path: "/run/secrets/jwt_pub.pem".into(),
-                algorithm: JwtAlgorithm::RS256,
-                clock_skew_secs: 30,
-            }),
-        });
-        assert!(cfg.validate_secrets().is_ok());
     }
 
     // ---- Phase 3c.2: rate-limit key strategy -----------------------------

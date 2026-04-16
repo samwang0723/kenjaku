@@ -1,38 +1,28 @@
-//! Tenant auth middleware (Phase 3c.2).
+//! Tenant auth middleware (Phase 3e — always on).
 //!
-//! Glues 3c.1's [`JwtValidator`] + 3c.2's [`TenantsCache`] into the live
-//! request path.
+//! Glues [`JwtValidator`] + [`TenantsCache`] into the live request path.
+//! Every request goes through JWT validation — there is no disabled mode.
 //!
-//! # Resolution priority
+//! # Resolution
 //!
-//! 1. `tenancy.enabled = false` → insert [`TenantContext::public`] into
-//!    request extensions, continue. **The JWT validator is never
-//!    invoked.** This is the default path shipped today and the
-//!    zero-behavior-change guarantee for 3c.2.
-//! 2. `enabled = true` + `Authorization: Bearer <token>`:
-//!    - validate JWT (generic `Unauthorized` on any failure → 401
+//! 1. `Authorization: Bearer <token>`:
+//!    - validate JWT (generic `Unauthorized` on any failure -> 401
 //!      `KNJK-4010`)
-//!    - look up `claims.tenant_id` in [`TenantsCache`] → 403
+//!    - look up `claims.tenant_id` in [`TenantsCache`] -> 403
 //!      `KNJK-4031` on miss
 //!    - build [`TenantContext`] with `plan_tier` sourced from the DB
 //!      row (NOT the claim — claim is advisory only)
 //!    - insert into extensions, continue
-//! 3. `enabled = true` + no Authorization header → 401 `KNJK-4010`.
-//! 4. `X-Tenant-Id` header is **IGNORED when `enabled = true`**. Even
-//!    if a caller sets it, the middleware never reads it. This is the
-//!    documented defense against header-spoofing (see
-//!    `kenjaku_core::config::TenancyConfig::header_name` rustdoc + the
-//!    PR #16 Copilot-comment-#6 rejection rationale).
+//! 2. No Authorization header -> 401 `KNJK-4010`.
+//! 3. `X-Tenant-Id` header is **IGNORED**. The middleware never reads
+//!    it — defense against header-spoofing.
 //!
 //! # Span hygiene
 //!
 //! - `principal_id` is **hashed** before logging via
 //!   [`hash_principal_for_log`] — 4 bytes of SHA-256, 8 hex chars.
-//!   Enough for log correlation across a principal's requests;
-//!   structurally unsuitable for a rainbow-table attack.
 //! - Raw `Authorization` header is **never** logged.
-//! - `claims` are never logged (the validator's debug-level internal
-//!   log lives in kenjaku-infra and carries only the error kind).
+//! - `claims` are never logged.
 
 use std::sync::Arc;
 
@@ -51,41 +41,14 @@ use crate::dto::response::ApiResponse;
 
 /// Axum middleware fn. Wire via
 /// `axum::middleware::from_fn_with_state(state.clone(), tenant_auth_middleware)`.
+///
+/// Phase 3e: every request goes through JWT validation. No disabled mode.
 pub async fn tenant_auth_middleware(
     State(state): State<Arc<AppState>>,
     mut req: Request,
     next: Next,
 ) -> Response {
-    // ------------------------------------------------------------------
-    // Branch 1: tenancy disabled — short-circuit to public.
-    //
-    // IMPORTANT: this branch returns BEFORE any access to
-    // `state.jwt_validator`. A stubbed validator that panics-on-call
-    // proves the invariant in `disabled_mode_never_invokes_validator`.
-    // ------------------------------------------------------------------
-    if !state.tenancy_config.enabled {
-        req.extensions_mut().insert(TenantContext::public());
-        return next.run(req).await;
-    }
-
-    // ------------------------------------------------------------------
-    // Branch 2-4: tenancy enabled.
-    //
-    // Startup validation (`AppConfig::validate_secrets`) guarantees
-    // the validator is present when enabled=true. The assert here is
-    // defense-in-depth — fail closed with 401 rather than panic if
-    // some future refactor violates the invariant.
-    // ------------------------------------------------------------------
-    let Some(validator) = state.jwt_validator.as_ref() else {
-        warn!(
-            error_code = AuthErrorCode::Unauthorized.code(),
-            "tenancy.enabled=true but JwtValidator not constructed (startup invariant violation)"
-        );
-        return auth_error(AuthErrorCode::Unauthorized);
-    };
-
-    // X-Tenant-Id header intentionally NOT read in this branch. See
-    // module docs (resolution priority #4).
+    let validator = &state.jwt_validator;
 
     let Some(bearer) = extract_bearer(req.headers()) else {
         // Don't log the (absent) header. Don't log the URL (could
@@ -255,7 +218,7 @@ mod tests {
     use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
     use tower::ServiceExt;
 
-    use kenjaku_core::config::{JwtAlgorithm, JwtConfig, TenancyConfig};
+    use kenjaku_core::config::{JwtAlgorithm, JwtConfig};
     use kenjaku_core::types::tenant::{PlanTier, TenantContext, TenantId};
     use kenjaku_infra::auth::JwtValidator;
     use kenjaku_infra::postgres::{TenantRow, TenantsCache};
@@ -357,19 +320,13 @@ mod tests {
         Arc::new(TenantsCache::from_map(m))
     }
 
-    fn tenancy(enabled: bool) -> TenancyConfig {
-        TenancyConfig {
-            enabled,
-            header_name: "X-Tenant-Id".into(),
-            default_tenant: "public".into(),
-            collection_name_template: "{base}_{tenant}".into(),
-            jwt: Some(JwtConfig {
-                issuer: TEST_ISSUER.into(),
-                audience: TEST_AUDIENCE.into(),
-                public_key_path: "<test>".into(),
-                algorithm: JwtAlgorithm::RS256,
-                clock_skew_secs: 5,
-            }),
+    fn test_jwt_config() -> JwtConfig {
+        JwtConfig {
+            issuer: TEST_ISSUER.into(),
+            audience: TEST_AUDIENCE.into(),
+            public_key_path: "<test>".into(),
+            algorithm: JwtAlgorithm::RS256,
+            clock_skew_secs: 5,
         }
     }
 
@@ -386,23 +343,14 @@ mod tests {
 
     /// Subset of the middleware state used by tests. Identical
     /// decision logic as `tenant_auth_middleware`; calls the same
-    /// helpers. Keeping this inline avoids pulling all of `AppState`
-    /// (with its SearchService / Qdrant / Redis deps) into the unit
-    /// test harness.
+    /// helpers. Phase 3e: no disabled branch — every request goes
+    /// through JWT validation.
     async fn test_auth_middleware(
         Extension(fx): Extension<TestFixture>,
         mut req: Request,
         next: Next,
     ) -> Response {
-        if !fx.tenancy.enabled {
-            req.extensions_mut().insert(TenantContext::public());
-            return next.run(req).await;
-        }
-        let Some(validator) = fx.validator.as_ref() else {
-            return auth_error(AuthErrorCode::Unauthorized);
-        };
-        // Optional panic-on-call validator guard used by test 2.
-        (fx.validator_invoked)();
+        let validator = &fx.validator;
         let Some(bearer) = extract_bearer(req.headers()) else {
             return auth_error(AuthErrorCode::Unauthorized);
         };
@@ -424,13 +372,8 @@ mod tests {
 
     #[derive(Clone)]
     struct TestFixture {
-        tenancy: TenancyConfig,
         cache: Arc<TenantsCache>,
-        validator: Option<Arc<JwtValidator>>,
-        /// Called if the middleware ever reaches the validate() path.
-        /// Tests that must prove the validator is NOT called pass
-        /// `Arc::new(|| panic!(...))` here.
-        validator_invoked: Arc<dyn Fn() + Send + Sync>,
+        validator: Arc<JwtValidator>,
     }
 
     async fn reflector(TenantCtx(tctx): TenantCtx) -> String {
@@ -463,82 +406,16 @@ mod tests {
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
-    // ---------- TDD middleware tests --------------------------------------
+    // ---------- TDD middleware tests (Phase 3e: always on) -----------------
 
-    /// Test 1 — `enabled=false` resolves to public regardless of headers.
-    /// The 4 combinations below cover every way a caller could try to
-    /// influence the resolution: none, JWT only, X-Tenant-Id only, both.
-    #[tokio::test]
-    async fn test_disabled_mode_always_public() {
-        let fx = TestFixture {
-            tenancy: tenancy(false),
-            cache: cache_with(&[]),
-            validator: Some(make_validator()),
-            validator_invoked: Arc::new(|| ()),
-        };
-        let app = app(fx);
-        let token = mint_token(valid_claims("acme", "pro"));
-        for (name, auth_h, tenant_h) in [
-            ("no-headers", None, None),
-            ("bearer-only", Some(format!("Bearer {token}")), None),
-            ("x-tenant-only", None, Some("evil-tenant")),
-            ("both", Some(format!("Bearer {token}")), Some("evil-tenant")),
-        ] {
-            let mut req = HttpRequest::builder().method(Method::GET).uri("/reflect");
-            if let Some(v) = auth_h {
-                req = req.header("authorization", v);
-            }
-            if let Some(v) = tenant_h {
-                req = req.header("x-tenant-id", v);
-            }
-            let req = req.body(Body::empty()).unwrap();
-            let resp = app.clone().oneshot(req).await.unwrap();
-            assert_eq!(resp.status(), 200, "combo {name} must pass");
-            let body = response_body_string(resp).await;
-            assert_eq!(
-                body, "public:-:enterprise",
-                "combo {name} must resolve to public, got: {body}"
-            );
-        }
-    }
-
-    /// Test 2 — `enabled=false` NEVER invokes the JwtValidator.
-    /// Use a tracer that panics-on-call to prove the short-circuit is
-    /// structural, not incidental.
-    #[tokio::test]
-    async fn test_disabled_mode_never_invokes_validator() {
-        let fx = TestFixture {
-            tenancy: tenancy(false),
-            cache: cache_with(&[]),
-            validator: Some(make_validator()),
-            validator_invoked: Arc::new(|| {
-                panic!(
-                    "SECURITY INVARIANT VIOLATED: JwtValidator invoked when tenancy.enabled=false"
-                )
-            }),
-        };
-        let app = app(fx);
-        let token = mint_token(valid_claims("acme", "pro"));
-        let req = HttpRequest::builder()
-            .method(Method::GET)
-            .uri("/reflect")
-            .header("authorization", format!("Bearer {token}"))
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), 200, "request must succeed without panic");
-    }
-
-    /// Test 3 — `enabled=true` + valid JWT + known tenant → 200 with
+    /// Test 1 — valid JWT + known tenant -> 200 with
     /// the tenant_id/principal_id from the claim and plan_tier from
     /// the DB row.
     #[tokio::test]
     async fn test_enabled_valid_jwt_resolves_tenant_context() {
         let fx = TestFixture {
-            tenancy: tenancy(true),
             cache: cache_with(&[("acme", PlanTier::Pro)]),
-            validator: Some(make_validator()),
-            validator_invoked: Arc::new(|| ()),
+            validator: make_validator(),
         };
         let token = mint_token(valid_claims("acme", "pro"));
         let req = HttpRequest::builder()
@@ -559,10 +436,8 @@ mod tests {
     #[tokio::test]
     async fn test_enabled_plan_tier_from_db_overrides_claim() {
         let fx = TestFixture {
-            tenancy: tenancy(true),
             cache: cache_with(&[("acme", PlanTier::Free)]), // DB = Free
-            validator: Some(make_validator()),
-            validator_invoked: Arc::new(|| ()),
+            validator: make_validator(),
         };
         // Claim says Enterprise. Must be ignored.
         let token = mint_token(valid_claims("acme", "enterprise"));
@@ -585,10 +460,8 @@ mod tests {
     #[tokio::test]
     async fn test_enabled_missing_authorization_yields_4010() {
         let fx = TestFixture {
-            tenancy: tenancy(true),
             cache: cache_with(&[("acme", PlanTier::Pro)]),
-            validator: Some(make_validator()),
-            validator_invoked: Arc::new(|| ()),
+            validator: make_validator(),
         };
         let req = HttpRequest::builder()
             .method(Method::GET)
@@ -609,10 +482,8 @@ mod tests {
     #[tokio::test]
     async fn test_enabled_unknown_tenant_yields_4031() {
         let fx = TestFixture {
-            tenancy: tenancy(true),
             cache: cache_with(&[("other", PlanTier::Pro)]), // no "acme"
-            validator: Some(make_validator()),
-            validator_invoked: Arc::new(|| ()),
+            validator: make_validator(),
         };
         let token = mint_token(valid_claims("acme", "pro"));
         let req = HttpRequest::builder()
@@ -638,10 +509,8 @@ mod tests {
     #[tokio::test]
     async fn test_enabled_ignores_x_tenant_id_header() {
         let fx = TestFixture {
-            tenancy: tenancy(true),
             cache: cache_with(&[("victim", PlanTier::Enterprise)]),
-            validator: Some(make_validator()),
-            validator_invoked: Arc::new(|| ()),
+            validator: make_validator(),
         };
         // Attacker sets X-Tenant-Id but supplies no JWT. Must 401.
         let req = HttpRequest::builder()
