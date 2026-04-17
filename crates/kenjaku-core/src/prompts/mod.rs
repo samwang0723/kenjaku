@@ -74,14 +74,21 @@ pub const SOURCE_RULES_WITHOUT_WEB_TOOL: &str = include_str!("source_rules_witho
 
 /// Substitute `{{key}}` placeholders in a template with their values.
 ///
-/// Applied in order — earlier substitutions can produce text that
-/// later substitutions replace (useful when one placeholder's value
-/// itself contains further placeholders, as with `{{source_rules}}`
-/// being expanded first then `{{locale_display}}` being expanded
-/// inside the just-substituted block).
+/// **Single-pass, prompt-injection-safe.** Walks the template once
+/// looking for `{{key}}` spans; substituted values are NEVER
+/// re-scanned, so an untrusted value that itself contains `{{other}}`
+/// cannot hijack a later substitution step. This is the defense
+/// against prompt injection via user queries / LLM answers: a user
+/// typing `{{answer}}` in their query is treated as literal text.
 ///
 /// Keys are wrapped in `{{...}}` automatically — pass `"query"`, not
-/// `"{{query}}"`.
+/// `"{{query}}"`. Whitespace inside the braces is tolerated (`{{ key }}`
+/// resolves to the same as `{{key}}`).
+///
+/// Unknown placeholders in the template are preserved as-is (useful
+/// for multi-stage rendering, e.g. the pipeline renders
+/// `{{source_rules}}` first then `{{locale_display}}` in a second
+/// call).
 ///
 /// # Example
 ///
@@ -94,11 +101,34 @@ pub const SOURCE_RULES_WITHOUT_WEB_TOOL: &str = include_str!("source_rules_witho
 /// );
 /// ```
 pub fn render(template: &str, pairs: &[(&str, &str)]) -> String {
-    let mut out = template.to_string();
-    for (key, value) in pairs {
-        let placeholder = format!("{{{{{key}}}}}");
-        out = out.replace(&placeholder, value);
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let after_open = &rest[start + 2..];
+        match after_open.find("}}") {
+            Some(end) => {
+                let key = after_open[..end].trim();
+                match pairs.iter().find(|(k, _)| *k == key) {
+                    Some((_, value)) => out.push_str(value),
+                    None => {
+                        // Unknown placeholder — preserve literally so
+                        // multi-stage renders can resolve it later.
+                        out.push_str(&rest[start..start + end + 4]);
+                    }
+                }
+                rest = &after_open[end + 2..];
+            }
+            None => {
+                // Unclosed `{{` — append from the `{{` onward as
+                // literal text and bail. (Prefix before `{{` was
+                // already pushed above.)
+                out.push_str(&rest[start..]);
+                rest = "";
+            }
+        }
     }
+    out.push_str(rest);
     out
 }
 
@@ -122,24 +152,58 @@ mod tests {
     }
 
     #[test]
-    fn render_applies_in_order_so_nested_placeholders_work() {
-        // `{{outer}}` expands to `{{inner}}`, then `{{inner}}` expands.
-        // Proves the system-instruction use case: {{source_rules}}
-        // gets substituted with a block containing no locale tags,
-        // then {{locale_display}} is filled — but if the source-rules
-        // text itself contained `{{locale_display}}`, a second-pass
-        // replace would hit it.
+    fn render_is_prompt_injection_safe() {
+        // A user typing `{{answer}}` in their query MUST NOT cause the
+        // `answer` substitution to hijack the injected text. This is
+        // the core security property: substituted values are never
+        // re-scanned. See the Copilot review on PR #28 for context.
         let out = render(
-            "X={{outer}} Y={{inner}}",
-            &[("outer", "{{inner}}"), ("inner", "filled")],
+            "Question: {{query}}\nAnswer: {{answer}}",
+            &[("query", "what is {{answer}}"), ("answer", "HIJACKED")],
         );
-        assert_eq!(out, "X=filled Y=filled");
+        // The user's literal `{{answer}}` survives verbatim; only the
+        // template's own `{{answer}}` placeholder is filled.
+        assert_eq!(out, "Question: what is {{answer}}\nAnswer: HIJACKED",);
+    }
+
+    #[test]
+    fn render_injection_safe_across_many_pairs() {
+        // Adversarial: user tries to swap every placeholder out via
+        // injection. All substitutions must be scoped to the original
+        // template, never to substituted content.
+        let out = render(
+            "A={{a}} B={{b}} C={{c}}",
+            &[("a", "attack-{{b}}-{{c}}"), ("b", "B_VAL"), ("c", "C_VAL")],
+        );
+        // a's value is inserted literally — the {{b}} and {{c}} inside
+        // it are NOT re-substituted even though (b, B_VAL) and
+        // (c, C_VAL) exist in the pair list.
+        assert_eq!(out, "A=attack-{{b}}-{{c}} B=B_VAL C=C_VAL");
     }
 
     #[test]
     fn render_leaves_unknown_placeholders_untouched() {
+        // Useful for multi-stage rendering: pipeline can substitute
+        // `{{source_rules}}` first, then feed the result back through
+        // `render` with `{{locale_display}}` in the second pass.
         let out = render("hello {{name}} {{age}}", &[("name", "sam")]);
         assert_eq!(out, "hello sam {{age}}");
+    }
+
+    #[test]
+    fn render_tolerates_whitespace_inside_braces() {
+        // Tolerate `{{ key }}` for robustness — markdown linters
+        // sometimes auto-format spaces inside braces.
+        let out = render("{{ key }}", &[("key", "value")]);
+        assert_eq!(out, "value");
+    }
+
+    #[test]
+    fn render_handles_unclosed_brace_gracefully() {
+        // A template with `{{` never closed should be preserved, not
+        // panic. Defensive; shouldn't happen with reviewed .md files.
+        let out = render("hello {{name no close", &[("name", "sam")]);
+        assert_eq!(out, "hello {{name no close");
     }
 
     #[test]
