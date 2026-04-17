@@ -653,13 +653,6 @@ mod tests {
         ) -> kenjaku_core::error::Result<(TranslationResult, Option<LlmUsage>)> {
             unimplemented!()
         }
-        async fn suggest(
-            &self,
-            _q: &str,
-            _a: &str,
-        ) -> kenjaku_core::error::Result<(Vec<String>, Option<LlmUsage>)> {
-            unimplemented!()
-        }
         async fn generate_cluster_questions(
             &self,
             _excerpt: &str,
@@ -756,13 +749,6 @@ mod tests {
             &self,
             _t: &str,
         ) -> kenjaku_core::error::Result<(TranslationResult, Option<LlmUsage>)> {
-            unimplemented!()
-        }
-        async fn suggest(
-            &self,
-            _q: &str,
-            _a: &str,
-        ) -> kenjaku_core::error::Result<(Vec<String>, Option<LlmUsage>)> {
             unimplemented!()
         }
         async fn generate_cluster_questions(
@@ -864,13 +850,6 @@ mod tests {
             &self,
             _t: &str,
         ) -> kenjaku_core::error::Result<(TranslationResult, Option<LlmUsage>)> {
-            unimplemented!()
-        }
-        async fn suggest(
-            &self,
-            _q: &str,
-            _a: &str,
-        ) -> kenjaku_core::error::Result<(Vec<String>, Option<LlmUsage>)> {
             unimplemented!()
         }
         async fn generate_cluster_questions(

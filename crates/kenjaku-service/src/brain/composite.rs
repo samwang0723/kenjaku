@@ -203,15 +203,6 @@ impl Brain for CompositeBrain {
             .await
     }
 
-    async fn suggest(
-        &self,
-        query: &str,
-        answer: &str,
-        cancel: &CancellationToken,
-    ) -> Result<(Vec<String>, Option<LlmCall>)> {
-        self.generator.suggest(query, answer, cancel).await
-    }
-
     fn has_web_grounding(&self) -> bool {
         self.generator.has_web_grounding()
     }
@@ -357,6 +348,8 @@ mod tests {
                     sources: vec![],
                     model: self.model.clone(),
                     usage: None,
+                    assets: Vec::new(),
+                    suggestions: vec![self.sentinel_suggestion.clone()],
                 },
                 None,
             ))
@@ -375,17 +368,10 @@ mod tests {
                 finished: true,
                 grounding: None,
                 usage: None,
+                assets: None,
+                suggestions: None,
             };
             Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
-        }
-
-        async fn suggest(
-            &self,
-            _query: &str,
-            _answer: &str,
-            _cancel: &CancellationToken,
-        ) -> Result<(Vec<String>, Option<LlmCall>)> {
-            Ok((vec![self.sentinel_suggestion.clone()], None))
         }
 
         fn has_web_grounding(&self) -> bool {
@@ -465,14 +451,6 @@ mod tests {
         let chunks: Vec<_> = stream.collect::<Vec<_>>().await;
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].as_ref().unwrap().delta, "STREAM-ANSWER");
-    }
-
-    #[tokio::test]
-    async fn composite_delegates_suggest_to_generator() {
-        let brain = make_composite(0.0, "norm", "ans", "SUGGESTION-SENTINEL", false, "m");
-        let cancel = CancellationToken::new();
-        let (suggestions, _call) = brain.suggest("q", "a", &cancel).await.unwrap();
-        assert_eq!(suggestions, vec!["SUGGESTION-SENTINEL".to_string()]);
     }
 
     #[test]

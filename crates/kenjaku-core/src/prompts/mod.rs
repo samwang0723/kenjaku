@@ -46,19 +46,22 @@ pub const TRANSLATE: &str = include_str!("translate.md");
 /// Placeholders: `{{query}}`.
 pub const PREPROCESS: &str = include_str!("preprocess.md");
 
-/// Follow-up suggestions with cognitive diversity (vertical / horizontal /
-/// temporal-or-actionable). Used by [`LlmProvider::suggest`].
+/// **Merged generate prompt**: single LLM call producing
+/// `{message, assets, suggestions}` as structured JSON. Used by
+/// [`LlmProvider::generate`] — replaces the previous separate
+/// `generate` + `suggest` two-call flow.
 ///
-/// Placeholders: `{{query}}`, `{{answer}}`.
-pub const SUGGEST: &str = include_str!("suggest.md");
+/// Placeholders: `{{source_rules}}`, `{{locale_display}}`,
+/// `{{locale_tag}}`. Same substitution contract as
+/// [`SYSTEM_INSTRUCTION`] but with additional instructions for
+/// populating `assets` and `suggestions` inline.
+pub const GENERATE_MERGED: &str = include_str!("generate_merged.md");
 
-/// System instruction for the answer-generation call. Requires three
-/// placeholders populated at build time by `brain::prompt::build_search_system_instruction`:
+/// System instruction for the legacy answer-only generation call.
+/// Retained for tests and potential fallback; the production path now
+/// uses [`GENERATE_MERGED`] which produces the merged JSON shape.
 ///
-/// - `{{source_rules}}` — one of [`SOURCE_RULES_WITH_WEB_TOOL`] or
-///   [`SOURCE_RULES_WITHOUT_WEB_TOOL`]
-/// - `{{locale_display}}` — localized display name (e.g. "English", "繁體中文")
-/// - `{{locale_tag}}` — BCP-47 tag (e.g. "en", "zh-TW")
+/// Placeholders: `{{source_rules}}`, `{{locale_display}}`, `{{locale_tag}}`.
 pub const SYSTEM_INSTRUCTION: &str = include_str!("system_instruction.md");
 
 /// Source-handling rules for when the provider has the `google_search`
@@ -214,16 +217,27 @@ mod tests {
         assert!(!CLASSIFY_INTENT.is_empty());
         assert!(!TRANSLATE.is_empty());
         assert!(!PREPROCESS.is_empty());
-        assert!(!SUGGEST.is_empty());
+        assert!(!GENERATE_MERGED.is_empty());
         assert!(!SYSTEM_INSTRUCTION.is_empty());
         assert!(!SOURCE_RULES_WITH_WEB_TOOL.is_empty());
         assert!(!SOURCE_RULES_WITHOUT_WEB_TOOL.is_empty());
     }
 
     #[test]
-    fn suggest_has_expected_placeholders() {
-        assert!(SUGGEST.contains("{{query}}"));
-        assert!(SUGGEST.contains("{{answer}}"));
+    fn generate_merged_has_expected_placeholders() {
+        assert!(GENERATE_MERGED.contains("{{source_rules}}"));
+        assert!(GENERATE_MERGED.contains("{{locale_display}}"));
+        assert!(GENERATE_MERGED.contains("{{locale_tag}}"));
+    }
+
+    #[test]
+    fn generate_merged_references_all_three_json_fields() {
+        // The prompt must name all three output fields so the model
+        // knows to populate them. Drift guard against accidental
+        // rename (e.g. `message` → `answer`).
+        assert!(GENERATE_MERGED.contains("\"message\""));
+        assert!(GENERATE_MERGED.contains("\"assets\""));
+        assert!(GENERATE_MERGED.contains("\"suggestions\""));
     }
 
     #[test]

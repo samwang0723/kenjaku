@@ -194,6 +194,8 @@ async fn search_streaming(
         let mut grounding_sources: Vec<kenjaku_core::types::search::LlmSource> = Vec::new();
         let mut last_usage: Option<kenjaku_core::types::search::LlmUsage> = None;
         let mut stream_error: Option<kenjaku_core::error::Error> = None;
+        let mut accumulated_suggestions: Vec<String> = Vec::new();
+        let mut accumulated_assets: Vec<kenjaku_core::types::assets::Asset> = Vec::new();
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
                 Ok(chunk) => {
@@ -217,6 +219,16 @@ async fn search_streaming(
                     }
                     if let Some(u) = chunk.usage {
                         last_usage = Some(u);
+                    }
+                    // Merged-JSON terminal chunk carries suggestions +
+                    // assets parsed by the provider's streaming JSON
+                    // parser. Accumulate here so `complete_stream`
+                    // sees them without needing a second LLM call.
+                    if let Some(s) = chunk.suggestions {
+                        accumulated_suggestions = s;
+                    }
+                    if let Some(a) = chunk.assets {
+                        accumulated_assets = a;
                     }
                     if chunk.finished {
                         break;
@@ -259,7 +271,14 @@ async fn search_streaming(
         // resolved+merged grounding sources) and persist conversation.
         let done_metadata = state
             .search_service
-            .complete_stream(context, &accumulated, grounding_sources, generator_call)
+            .complete_stream(
+                context,
+                &accumulated,
+                grounding_sources,
+                generator_call,
+                accumulated_suggestions,
+                accumulated_assets,
+            )
             .await;
 
         let done_json = serde_json::to_string(&done_metadata).unwrap_or_else(|_| "{}".into());

@@ -57,6 +57,20 @@ pub enum ComponentDto {
         suggestions: Vec<String>,
         source: String,
     },
+    Assets {
+        assets: Vec<AssetDto>,
+    },
+}
+
+/// Financial asset reference (stock or crypto ticker) extracted from
+/// the answer's merged-JSON output. Wire mirror of
+/// [`kenjaku_core::types::assets::Asset`].
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AssetDto {
+    pub symbol: String,
+    /// One of `"stock"` or `"crypto"`.
+    #[serde(rename = "type")]
+    pub asset_type: String,
 }
 
 /// A source reference.
@@ -293,6 +307,16 @@ impl From<Component> for ComponentDto {
             Component::Suggestions(s) => Self::Suggestions {
                 suggestions: s.suggestions,
                 source: format!("{:?}", s.source).to_lowercase(),
+            },
+            Component::Assets(a) => Self::Assets {
+                assets: a
+                    .assets
+                    .into_iter()
+                    .map(|asset| AssetDto {
+                        symbol: asset.symbol,
+                        asset_type: asset.asset_type.as_str().to_string(),
+                    })
+                    .collect(),
             },
         }
     }

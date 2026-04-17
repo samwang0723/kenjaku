@@ -1,6 +1,7 @@
+use kenjaku_core::types::assets::Asset;
 use kenjaku_core::types::component::{
-    Component, ComponentLayout, ComponentType, LlmAnswerComponent, SourcesComponent,
-    SuggestionSource, SuggestionsComponent,
+    AssetsComponent, Component, ComponentLayout, ComponentType, LlmAnswerComponent,
+    SourcesComponent, SuggestionSource, SuggestionsComponent,
 };
 use kenjaku_core::types::search::LlmResponse;
 
@@ -16,27 +17,40 @@ impl ComponentService {
     }
 
     /// Assemble components in the configured order.
+    ///
+    /// Empty `assets` is omitted from the output — no point in
+    /// rendering an empty block for queries with no asset mentions.
     pub fn assemble(
         &self,
         llm_response: &LlmResponse,
         suggestions: Vec<String>,
         suggestion_source: SuggestionSource,
+        assets: Vec<Asset>,
     ) -> Vec<Component> {
         self.layout
             .order
             .iter()
-            .map(|component_type| match component_type {
-                ComponentType::LlmAnswer => Component::LlmAnswer(LlmAnswerComponent {
+            .filter_map(|component_type| match component_type {
+                ComponentType::LlmAnswer => Some(Component::LlmAnswer(LlmAnswerComponent {
                     answer: llm_response.answer.clone(),
                     model: llm_response.model.clone(),
-                }),
-                ComponentType::Sources => Component::Sources(SourcesComponent {
+                })),
+                ComponentType::Sources => Some(Component::Sources(SourcesComponent {
                     sources: llm_response.sources.clone(),
-                }),
-                ComponentType::Suggestions => Component::Suggestions(SuggestionsComponent {
+                })),
+                ComponentType::Suggestions => Some(Component::Suggestions(SuggestionsComponent {
                     suggestions: suggestions.clone(),
                     source: suggestion_source.clone(),
-                }),
+                })),
+                ComponentType::Assets => {
+                    if assets.is_empty() {
+                        None
+                    } else {
+                        Some(Component::Assets(AssetsComponent {
+                            assets: assets.clone(),
+                        }))
+                    }
+                }
             })
             .collect()
     }
@@ -60,6 +74,8 @@ mod tests {
             }],
             model: "gemini-2.0-flash-lite".to_string(),
             usage: None,
+            assets: Vec::new(),
+            suggestions: Vec::new(),
         };
 
         let suggestions = vec![
@@ -68,7 +84,12 @@ mod tests {
             "Follow-up 3".to_string(),
         ];
 
-        let components = service.assemble(&llm_response, suggestions, SuggestionSource::Llm);
+        let components = service.assemble(
+            &llm_response,
+            suggestions,
+            SuggestionSource::Llm,
+            Vec::new(),
+        );
 
         assert_eq!(components.len(), 3);
         assert!(matches!(components[0], Component::LlmAnswer(_)));
@@ -88,12 +109,15 @@ mod tests {
             sources: vec![],
             model: "test".to_string(),
             usage: None,
+            assets: Vec::new(),
+            suggestions: Vec::new(),
         };
 
         let components = service.assemble(
             &llm_response,
             vec!["Sug 1".to_string()],
             SuggestionSource::VectorStore,
+            Vec::new(),
         );
 
         assert_eq!(components.len(), 2);

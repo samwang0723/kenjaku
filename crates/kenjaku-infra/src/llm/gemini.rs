@@ -4,11 +4,12 @@ use async_trait::async_trait;
 use futures::Stream;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 use kenjaku_core::config::LlmConfig;
 use kenjaku_core::error::{Error, Result};
 use kenjaku_core::traits::llm::LlmProvider;
+use kenjaku_core::types::assets::{Asset, AssetType};
 use kenjaku_core::types::intent::{Intent, IntentClassification};
 use kenjaku_core::types::locale::{DetectedLocale, Locale};
 use kenjaku_core::types::message::{ContentPart, Message, Role};
@@ -20,34 +21,34 @@ use kenjaku_core::types::suggestion::ClusterQuestions;
 use std::collections::HashMap;
 
 /// Gemini LLM provider implementation.
+///
+/// **Merged-JSON mode (current)**: `generate` / `generate_stream` ask
+/// Gemini for a `{message, assets, suggestions}` structured-output
+/// response via `responseSchema`. Gemini rejects attaching built-in
+/// tools (including `google_search`) alongside `responseSchema`, so
+/// no tool is attached on these calls. The platform's `WebSearchProvider`
+/// (Brave) handles real-time freshness by pre-injecting synthetic
+/// `[Source N]` chunks into the user turn before this provider runs.
 pub struct GeminiProvider {
     client: Client,
     config: LlmConfig,
     base_url: String,
-    /// When true, the search-path calls (`generate` / `generate_stream`)
-    /// attach Gemini's built-in `google_search` grounding tool as a
-    /// fallback web tier. When false, no tool is attached — live web
-    /// results are expected to be supplied by a separate
-    /// `WebSearchProvider` (e.g. Brave) as synthetic `[Source N]`
-    /// chunks injected into the retrieved context before this provider
-    /// runs. Wire from `!config.web_search.enabled` at bootstrap.
-    use_google_search_tool: bool,
 }
 
 impl GeminiProvider {
     /// Construct a Gemini provider.
     ///
-    /// `use_google_search_tool` should be `true` iff no other
-    /// `WebSearchProvider` is wired in — then Gemini's own
-    /// `google_search` tool becomes the fallback source for real-time
-    /// facts. When a Brave/Serper/etc. tier is active, pass `false`.
-    pub fn new(config: LlmConfig, use_google_search_tool: bool) -> Self {
+    /// Post-merged-JSON: no `use_google_search_tool` flag — the search
+    /// path never attaches Gemini's built-in tools because
+    /// `responseSchema` (which we rely on for the merged answer shape)
+    /// is incompatible with them. Web freshness is supplied upstream
+    /// by `WebSearchProvider` (Brave).
+    pub fn new(config: LlmConfig) -> Self {
         let base_url = config.base_url.clone();
         Self {
             client: Client::new(),
             base_url,
             config,
-            use_google_search_tool,
         }
     }
 
@@ -73,6 +74,45 @@ impl GeminiProvider {
                 + (completion_tokens as f64 / 1_000_000.0) * output_per_m);
 
         Some((cost * 1_000_000.0).round() / 1_000_000.0) // round to 6 decimal places
+    }
+
+    /// The JSON schema the merged-generate call asks Gemini to emit.
+    ///
+    /// Extracted so the sync and streaming code paths share the exact
+    /// same schema. Shape:
+    /// ```json
+    /// {
+    ///   "message":     "<string>",
+    ///   "assets":      [{"symbol": "...", "type": "stock" | "crypto"}, ...],
+    ///   "suggestions": ["...", "...", "..."]
+    /// }
+    /// ```
+    fn merged_response_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "OBJECT",
+            "properties": {
+                "message": {"type": "STRING"},
+                "assets": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "symbol": {"type": "STRING"},
+                            "type": {"type": "STRING", "enum": ["stock", "crypto"]}
+                        },
+                        "required": ["symbol", "type"]
+                    }
+                },
+                "suggestions": {"type": "ARRAY", "items": {"type": "STRING"}}
+            },
+            // All three fields required so Gemini always emits the
+            // full shape. Empty `assets: []` is valid per the prompt;
+            // the server-side parser accepts it. Making `assets`
+            // required keeps the contract consistent with the prompt
+            // text in `prompts/generate_merged.md`.
+            "required": ["message", "assets", "suggestions"],
+            "propertyOrdering": ["message", "assets", "suggestions"]
+        })
     }
 
     /// Convert LLM-agnostic `Message` values to Gemini wire format.
@@ -132,23 +172,18 @@ impl LlmProvider for GeminiProvider {
     async fn generate(&self, messages: &[Message]) -> Result<LlmResponse> {
         let (system_instruction, contents) = Self::messages_to_wire(messages);
 
-        let tools = if self.use_google_search_tool {
-            Some(vec![GeminiTool {
-                google_search: Some(serde_json::json!({})),
-            }])
-        } else {
-            None
-        };
-
+        // Merged-JSON mode: structured output via responseSchema.
+        // `tools` must be `None` — Gemini rejects tools + responseSchema
+        // together. Brave provides web freshness via pre-injected chunks.
         let request = GeminiRequest {
             contents,
             system_instruction,
-            tools,
+            tools: None,
             generation_config: Some(GeminiGenerationConfig {
                 max_output_tokens: Some(self.config.max_tokens),
                 temperature: Some(self.config.temperature),
-                response_mime_type: None,
-                response_schema: None,
+                response_mime_type: Some("application/json".to_string()),
+                response_schema: Some(Self::merged_response_schema()),
             }),
             service_tier: self.service_tier_value(),
         };
@@ -177,7 +212,7 @@ impl LlmProvider for GeminiProvider {
             .await
             .map_err(|e| Error::Llm(format!("Failed to parse Gemini response: {e}")))?;
 
-        let answer = result
+        let raw_text = result
             .candidates
             .first()
             .map(|c| {
@@ -190,7 +225,13 @@ impl LlmProvider for GeminiProvider {
             })
             .unwrap_or_default();
 
-        // Extract sources from grounding metadata if available
+        // Parse the structured payload. On any failure, fall back to
+        // `{answer: raw_text, assets: [], suggestions: []}` so the
+        // pipeline still produces something (graceful degradation).
+        let (answer, assets, suggestions) = parse_merged_response(&raw_text);
+
+        // Extract grounding sources if the provider ever attaches them
+        // to non-tool responses (currently always empty in merged mode).
         let sources = result
             .candidates
             .first()
@@ -227,6 +268,8 @@ impl LlmProvider for GeminiProvider {
             sources,
             model: self.config.model.clone(),
             usage,
+            assets,
+            suggestions,
         })
     }
 
@@ -311,6 +354,8 @@ impl LlmProvider for GeminiProvider {
             sources: Vec::new(),
             model: self.config.model.clone(),
             usage,
+            assets: Vec::new(),
+            suggestions: Vec::new(),
         })
     }
 
@@ -321,23 +366,21 @@ impl LlmProvider for GeminiProvider {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>> {
         let (system_instruction, contents) = Self::messages_to_wire(messages);
 
-        let tools = if self.use_google_search_tool {
-            Some(vec![GeminiTool {
-                google_search: Some(serde_json::json!({})),
-            }])
-        } else {
-            None
-        };
-
+        // Merged-JSON streaming: same responseSchema contract as
+        // `generate`, but each SSE event carries a partial slice of
+        // the JSON output. A stateful parser unpacks the `message`
+        // field into delta chars as they arrive, and buffers the tail
+        // so we can parse `assets` + `suggestions` once the stream
+        // finishes.
         let request = GeminiRequest {
             contents,
             system_instruction,
-            tools,
+            tools: None,
             generation_config: Some(GeminiGenerationConfig {
                 max_output_tokens: Some(self.config.max_tokens),
                 temperature: Some(self.config.temperature),
-                response_mime_type: None,
-                response_schema: None,
+                response_mime_type: Some("application/json".to_string()),
+                response_schema: Some(Self::merged_response_schema()),
             }),
             service_tier: self.service_tier_value(),
         };
@@ -381,10 +424,28 @@ impl LlmProvider for GeminiProvider {
         let tier_mult = self.config.service_tier.cost_multiplier();
         let pricing = cost_rates_for_model(&model);
 
+        // Shared merged-JSON streaming parser: threads through each
+        // event so `message` chars can be emitted as deltas and the
+        // raw accumulated JSON can be final-parsed for assets +
+        // suggestions on the terminal event.
+        //
+        // Wrap in `Arc<tokio::sync::Mutex<...>>` because `filter_map`'s
+        // closure is `FnMut` but the inner `async move` block we
+        // return needs to capture the parser across await points — a
+        // bare `&mut` won't satisfy both requirements. The mutex is
+        // uncontended (the stream is single-consumer by construction),
+        // but we use the async-aware Tokio mutex rather than
+        // `std::sync::Mutex` so the lock yields cooperatively if the
+        // runtime ever has to reschedule under it — a blocking lock
+        // inside `filter_map`'s async body could stall the executor
+        // thread even with zero contention.
+        let parser = std::sync::Arc::new(tokio::sync::Mutex::new(MergedJsonStreamParser::new()));
+
         let event_stream = response.bytes_stream().eventsource();
         let stream = event_stream.filter_map(move |event_result| {
             let model = model.clone();
             let pricing = pricing;
+            let parser = parser.clone();
             async move {
                 match event_result {
                     Ok(event) => {
@@ -394,12 +455,19 @@ impl LlmProvider for GeminiProvider {
                             "Gemini SSE event (full)"
                         );
                         if event.data.trim() == "[DONE]" {
+                            // Final [DONE] marker (rare — Gemini usually
+                            // signals via `finishReason` on the last
+                            // content event). Finalize the parser and
+                            // emit any assets/suggestions we buffered.
+                            let (assets, suggestions) = parser.lock().await.finalize();
                             return Some(Ok(StreamChunk {
                                 delta: String::new(),
                                 chunk_type: StreamChunkType::Answer,
                                 finished: true,
                                 grounding: None,
                                 usage: None,
+                                assets: Some(assets),
+                                suggestions: Some(suggestions),
                             }));
                         }
 
@@ -441,10 +509,12 @@ impl LlmProvider for GeminiProvider {
                             );
                         }
 
-                        // Extract google_search grounding sources from this event.
-                        // Gemini typically attaches groundingMetadata only on the
-                        // final event (where finishReason is set), but we accept
-                        // it from any event.
+                        // Feed the raw JSON slice through the parser.
+                        // Produces (delta_to_emit, _parser_state).
+                        let (delta, _state) = parser.lock().await.push(&text);
+
+                        // Extract grounding sources — still honored
+                        // even in merged-JSON mode for future-proofing.
                         let grounding: Option<Vec<LlmSource>> = response
                             .candidates
                             .first()
@@ -502,16 +572,28 @@ impl LlmProvider for GeminiProvider {
                             );
                         }
 
-                        if text.is_empty() && !finished && grounding.is_none() && usage.is_none() {
+                        // On the terminal event, finalize the parser
+                        // to recover assets + suggestions from the
+                        // fully buffered JSON.
+                        let (assets, suggestions) = if finished {
+                            let (a, s) = parser.lock().await.finalize();
+                            (Some(a), Some(s))
+                        } else {
+                            (None, None)
+                        };
+
+                        if delta.is_empty() && !finished && grounding.is_none() && usage.is_none() {
                             return None;
                         }
 
                         Some(Ok(StreamChunk {
-                            delta: text,
+                            delta,
                             chunk_type: StreamChunkType::Answer,
                             finished,
                             grounding,
                             usage,
+                            assets,
+                            suggestions,
                         }))
                     }
                     Err(e) => Some(Err(Error::Llm(format!("SSE parse error: {e}")))),
@@ -808,101 +890,6 @@ impl LlmProvider for GeminiProvider {
         }
     }
 
-    #[instrument(skip(self))]
-    async fn suggest(&self, query: &str, answer: &str) -> Result<(Vec<String>, Option<LlmUsage>)> {
-        // Cognitive-diversity structure: three suggestions that each
-        // open a different branch of follow-up (vertical / horizontal /
-        // temporal-or-actionable). Template lives in
-        // `crates/kenjaku-core/src/prompts/suggest.md`.
-        let prompt = kenjaku_core::prompts::render(
-            kenjaku_core::prompts::SUGGEST,
-            &[("query", query), ("answer", answer)],
-        );
-
-        let request = GeminiRequest {
-            contents: vec![GeminiContent {
-                parts: vec![GeminiPart::text(prompt)],
-                role: Some("user".to_string()),
-            }],
-            system_instruction: None,
-            tools: None,
-            generation_config: Some(GeminiGenerationConfig {
-                max_output_tokens: Some(512),
-                temperature: Some(0.8),
-                response_mime_type: None,
-                response_schema: None,
-            }),
-            service_tier: self.service_tier_value(),
-        };
-
-        let url = format!(
-            "{}/models/{}:generateContent?key={}",
-            self.base_url, self.config.model, self.config.api_key
-        );
-
-        let response = self
-            .client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| Error::Llm(format!("Gemini suggest failed: {e}")))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(Error::Llm(format!("Gemini returned {status}: {body}")));
-        }
-
-        let result: GeminiResponse = response
-            .json()
-            .await
-            .map_err(|e| Error::Llm(format!("Failed to parse suggestions: {e}")))?;
-
-        let text = result
-            .candidates
-            .first()
-            .map(|c| {
-                c.content
-                    .parts
-                    .iter()
-                    .map(|p| p.text_str())
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
-            .unwrap_or_default();
-
-        let usage = result.usage_metadata.as_ref().map(|u| {
-            let prompt = u.prompt_token_count.unwrap_or(0);
-            let completion = u.candidates_token_count.unwrap_or(0);
-            LlmUsage {
-                prompt_tokens: prompt,
-                completion_tokens: completion,
-                total_tokens: u
-                    .total_token_count
-                    .unwrap_or(prompt.saturating_add(completion)),
-                cost_usd: self.estimate_cost(prompt, completion),
-            }
-        });
-
-        // Parse JSON array from response
-        let suggestions = serde_json::from_str::<Vec<String>>(&text).or_else(|_| {
-            // Try to extract JSON array from markdown code block
-            let trimmed = text
-                .trim()
-                .strip_prefix("```json")
-                .or_else(|| text.trim().strip_prefix("```"))
-                .unwrap_or(&text)
-                .strip_suffix("```")
-                .unwrap_or(&text)
-                .trim();
-            serde_json::from_str::<Vec<String>>(trimmed)
-                .map_err(|e| Error::Llm(format!("Failed to parse suggestions JSON: {e}")))
-        })?;
-
-        Ok((suggestions, usage))
-    }
-
     #[instrument(skip(self, excerpt))]
     async fn generate_cluster_questions(&self, excerpt: &str) -> Result<ClusterQuestions> {
         let prompt = format!(
@@ -1028,9 +1015,419 @@ impl LlmProvider for GeminiProvider {
                     raw = %raw_text,
                     "Cluster-questions inner JSON malformed; treating as empty payload"
                 );
-                Ok(ClusterQuestions::default())
+                Ok(ClusterQuestionsJson::default().into_domain())
             }
         }
+    }
+}
+
+/// Wire-shape mirror for the merged `generate` JSON output (non-stream).
+///
+/// Gemini with `responseSchema` emits exactly this JSON. `assets` is
+/// optional so the parser tolerates the model omitting the array on
+/// queries with no asset mentions.
+#[derive(Deserialize, Default)]
+struct MergedResponseJson {
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    assets: Vec<AssetJson>,
+    #[serde(default)]
+    suggestions: Vec<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct AssetJson {
+    #[serde(default)]
+    symbol: String,
+    #[serde(rename = "type", default)]
+    asset_type: String,
+}
+
+impl AssetJson {
+    /// Convert wire representation into a typed `Asset`. Returns
+    /// `None` when the type string is off-list (`stock` / `crypto`)
+    /// or the symbol is blank — caller drops the entry in both cases.
+    fn into_domain(self) -> Option<Asset> {
+        if self.symbol.trim().is_empty() {
+            return None;
+        }
+        AssetType::from_raw(&self.asset_type).map(|t| Asset {
+            symbol: self.symbol.trim().to_string(),
+            asset_type: t,
+        })
+    }
+}
+
+/// Parse the merged `generate` response text into `(answer, assets,
+/// suggestions)`. Graceful on failure — returns the raw text as the
+/// answer with empty `assets`/`suggestions` so the pipeline never
+/// blocks on a malformed model output.
+fn parse_merged_response(raw_text: &str) -> (String, Vec<Asset>, Vec<String>) {
+    match serde_json::from_str::<MergedResponseJson>(raw_text) {
+        Ok(parsed) => {
+            let assets = parsed
+                .assets
+                .into_iter()
+                .filter_map(AssetJson::into_domain)
+                .collect();
+            (parsed.message, assets, parsed.suggestions)
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                raw = %raw_text.chars().take(400).collect::<String>(),
+                "Merged generate response returned malformed JSON; using raw text as answer"
+            );
+            (raw_text.to_string(), Vec::new(), Vec::new())
+        }
+    }
+}
+
+/// Stateful parser for streaming merged-JSON responses.
+///
+/// Gemini's streaming path delivers partial slices of the
+/// `{"message": "...", "assets": [...], "suggestions": [...]}` JSON.
+/// This parser:
+/// 1. Extracts the `message` string character-by-character so we can
+///    emit SSE `delta` events to clients in real time.
+/// 2. Buffers the full JSON text so we can `serde_json::from_str` it
+///    once the stream finishes, recovering the typed `assets` +
+///    `suggestions` arrays for the terminal SSE event.
+///
+/// State machine:
+/// - [`ParseState::Seeking`] — looking for the `"message":"` opener.
+///   Anything before it (including `{` and whitespace) is buffered
+///   but produces no delta.
+/// - [`ParseState::Inside`] — inside the message string. Unescaped
+///   characters are appended to the delta buffer; escape sequences
+///   (`\n`, `\"`, `\\`, `\/`, `\r`, `\t`) are decoded. Closing `"`
+///   transitions to `AfterMessage`.
+/// - [`ParseState::AfterClose`] — message closed; we simply buffer bytes
+///   until the stream ends, then parse the full accumulated JSON.
+///
+/// Boundary handling:
+/// - A trailing `\` (lone backslash at the end of a chunk) is carried
+///   over; the next chunk's first char decides the escape meaning.
+/// - Partial UTF-8 sequences at chunk boundaries are buffered in the
+///   outer byte stream upstream of this parser (SSE framing already
+///   delivers well-formed text), so we operate on `&str` here.
+///
+/// NOTE: `\uXXXX` unicode escapes are forwarded verbatim into the
+/// delta buffer for now. They're rare in English / CJK / European
+/// LLM output (Gemini emits native UTF-8 instead). The final
+/// `finalize()` call re-parses the whole buffer through
+/// `serde_json`, so suggestions + assets still decode these escapes
+/// correctly; only the streamed deltas are literal.
+struct MergedJsonStreamParser {
+    /// Everything we've received so far — fed straight into
+    /// `serde_json::from_str` at `finalize()`.
+    buffer: String,
+    /// Where we are in the state machine.
+    state: ParseState,
+    /// Set when the previous chunk ended on a lone backslash inside
+    /// the message string — the NEXT character decides the escape.
+    pending_escape: bool,
+    /// Number of bytes of `buffer` we've already scanned. Ensures we
+    /// never double-process a byte across `push` calls.
+    scan_pos: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseState {
+    /// Looking for the `"message":"` opener; bytes buffered but no
+    /// delta emitted yet.
+    Seeking,
+    /// Inside the message string — decoding chars into deltas.
+    Inside,
+    /// Message string closed; buffering the rest for final parse.
+    AfterClose,
+}
+
+impl MergedJsonStreamParser {
+    fn new() -> Self {
+        Self {
+            buffer: String::with_capacity(1024),
+            state: ParseState::Seeking,
+            pending_escape: false,
+            scan_pos: 0,
+        }
+    }
+
+    /// Feed a new chunk of JSON text through the parser. Returns the
+    /// decoded delta chars for the `message` field (may be empty).
+    /// The second tuple element is currently always `false` but kept
+    /// as a future extension slot for terminal signalling.
+    fn push(&mut self, text: &str) -> (String, bool) {
+        if text.is_empty() {
+            return (String::new(), false);
+        }
+        self.buffer.push_str(text);
+        let mut delta = String::new();
+
+        // Scan forward from where we left off. We walk byte-by-byte
+        // but only decode when inside the message string; `{`, `"`,
+        // `:` and whitespace are all ASCII so byte scanning is safe.
+        let bytes = self.buffer.as_bytes();
+        while self.scan_pos < bytes.len() {
+            match self.state {
+                ParseState::Seeking => {
+                    // Look for the sentinel `"message":"` (ignoring
+                    // inter-token whitespace). Gemini's structured
+                    // output always emits the schema's declared
+                    // properties in propertyOrdering order; `message`
+                    // is first so we only need to find the first
+                    // `"message"` key, then consume whitespace and
+                    // the colon to reach the opening `"` of its value.
+                    if let Some(pos) = find_message_value_start(&self.buffer, self.scan_pos) {
+                        self.scan_pos = pos;
+                        self.state = ParseState::Inside;
+                    } else {
+                        // Not enough data yet — leave scan_pos so the
+                        // NEXT push re-scans from here. (We could
+                        // advance to len-10ish to avoid rework, but
+                        // `message` appears once per response so the
+                        // overhead is trivial.)
+                        break;
+                    }
+                }
+                ParseState::Inside => {
+                    // Consume one scalar unit (char or escape) from
+                    // `self.scan_pos`. Use a temporary slice so the
+                    // borrow checker lets us mutate `self.scan_pos`.
+                    let rest = &self.buffer[self.scan_pos..];
+                    match consume_message_char(rest, self.pending_escape) {
+                        CharStep::Emit(c, advance, pending) => {
+                            delta.push(c);
+                            self.scan_pos += advance;
+                            self.pending_escape = pending;
+                        }
+                        CharStep::Skip(advance, pending) => {
+                            self.scan_pos += advance;
+                            self.pending_escape = pending;
+                        }
+                        CharStep::Closed(advance) => {
+                            // Unescaped `"` — end of message string.
+                            self.scan_pos += advance;
+                            self.state = ParseState::AfterClose;
+                            self.pending_escape = false;
+                        }
+                        CharStep::NeedMore => {
+                            // Chunk ends mid-escape / mid-char.
+                            // Remember the pending state if relevant.
+                            break;
+                        }
+                    }
+                }
+                ParseState::AfterClose => {
+                    // Fast-forward: we don't need to scan any more
+                    // byte-by-byte. Just buffer the rest and finalize
+                    // at end of stream.
+                    self.scan_pos = bytes.len();
+                }
+            }
+        }
+
+        (delta, false)
+    }
+
+    /// End-of-stream: parse the full buffered JSON and return
+    /// `(assets, suggestions)`. Never errors — malformed input
+    /// degrades to `(vec![], vec![])` with a warning log.
+    fn finalize(&mut self) -> (Vec<Asset>, Vec<String>) {
+        // Quick path: empty buffer → nothing to parse.
+        if self.buffer.trim().is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+
+        match serde_json::from_str::<MergedResponseJson>(&self.buffer) {
+            Ok(parsed) => {
+                let assets = parsed
+                    .assets
+                    .into_iter()
+                    .filter_map(AssetJson::into_domain)
+                    .collect();
+                (assets, parsed.suggestions)
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    sample = %self.buffer.chars().take(400).collect::<String>(),
+                    "Stream finalize: merged JSON malformed; emitting empty assets + suggestions"
+                );
+                (Vec::new(), Vec::new())
+            }
+        }
+    }
+}
+
+/// Locate the byte offset AFTER the opening `"` of `message`'s value,
+/// starting scan from `from`. Returns `None` when the opening pattern
+/// isn't fully present yet.
+///
+/// Looks for the first `"message"` key followed by optional whitespace,
+/// a `:`, optional whitespace, and an opening `"`. Tolerant to byte
+/// positions pointing mid-string: we scan forward until we hit the
+/// `"message"` literal or exhaust the buffer.
+fn find_message_value_start(buffer: &str, from: usize) -> Option<usize> {
+    // Anchor on the literal `"message"`. Gemini schema with
+    // `propertyOrdering: ["message", "assets", "suggestions"]` always
+    // emits `message` first — but we don't depend on that ordering
+    // either way; we just find the key by name.
+    const KEY: &[u8] = b"\"message\"";
+    let buf = buffer.as_bytes();
+    if from >= buf.len() {
+        return None;
+    }
+
+    let mut i = from;
+    while i + KEY.len() <= buf.len() {
+        if &buf[i..i + KEY.len()] == KEY {
+            // Found `"message"` — now consume whitespace, expect `:`,
+            // more whitespace, then the opening `"`.
+            let mut j = i + KEY.len();
+            while j < buf.len() && (buf[j] == b' ' || buf[j] == b'\t' || buf[j] == b'\n') {
+                j += 1;
+            }
+            if j >= buf.len() {
+                return None;
+            }
+            if buf[j] != b':' {
+                // Not actually the field key — could be `"message"`
+                // appearing inside another string literal. Skip past
+                // and keep searching.
+                i += 1;
+                continue;
+            }
+            j += 1;
+            while j < buf.len() && (buf[j] == b' ' || buf[j] == b'\t' || buf[j] == b'\n') {
+                j += 1;
+            }
+            if j >= buf.len() {
+                return None;
+            }
+            if buf[j] != b'"' {
+                // Schema violation (e.g. `"message": null`). Treat as
+                // no message to emit; downstream finalize will still
+                // try to decode assets/suggestions.
+                return None;
+            }
+            return Some(j + 1);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Outcome of decoding one scalar unit inside the message string.
+enum CharStep {
+    /// Emitted character; advance `n` bytes; `pending_escape` is the
+    /// new pending-escape state (carried across chunks when `true`).
+    Emit(char, usize, bool),
+    /// Consumed bytes without emitting. Used when a chunk ends on a
+    /// lone `\` — we advance past it and set `pending_escape=true`
+    /// so the next chunk's first char completes the escape.
+    Skip(usize, bool),
+    /// Unescaped `"` — end of the message string. Advance `n` bytes.
+    Closed(usize),
+    /// Insufficient data (lone trailing `\` or partial char); bail
+    /// until the next chunk arrives.
+    NeedMore,
+}
+
+/// Decode one scalar unit from `rest`, which is the message-string
+/// slice starting at the current scan position. `pending_escape` is
+/// `true` iff the previous chunk ended on a lone `\`.
+fn consume_message_char(rest: &str, pending_escape: bool) -> CharStep {
+    if rest.is_empty() {
+        return CharStep::NeedMore;
+    }
+
+    if pending_escape {
+        // Previous chunk ended on `\`; this char completes the escape.
+        let mut it = rest.chars();
+        let c = match it.next() {
+            Some(c) => c,
+            None => return CharStep::NeedMore,
+        };
+        let out = match c {
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            '"' => '"',
+            '\\' => '\\',
+            '/' => '/',
+            'b' => '\u{0008}',
+            'f' => '\u{000C}',
+            'u' => {
+                // `\uXXXX` — forward the literal escape across the
+                // chunk boundary. Emit just the `\`; advance 0 bytes so
+                // the next iteration (with `pending_escape=false`) sees
+                // the `u` as a plain char and emits it, followed by
+                // the 4 hex digits. Net output: literal `\u1234`.
+                //
+                // TRADE-OFF: the streamed delta contains the literal
+                // escape instead of the decoded codepoint. Acceptable
+                // for two reasons: (1) Gemini output is almost
+                // exclusively native UTF-8, not escaped — `\u` appears
+                // mostly for surrogate pairs / control chars; (2) the
+                // non-streaming path's terminal `serde_json::from_str`
+                // decodes these correctly, and the assets/suggestions
+                // parse also passes through a full JSON decode. Only
+                // the streaming answer delta is affected.
+                //
+                // Future: decode `\uXXXX` in place when the 4 hex
+                // digits are available. Currently deferred.
+                return CharStep::Emit('\\', 0, false);
+            }
+            other => other, // invalid escape — pass through
+        };
+        return CharStep::Emit(out, c.len_utf8(), false);
+    }
+
+    let b = rest.as_bytes()[0];
+    if b == b'\\' {
+        // Start of an escape — need the NEXT char to decode.
+        if rest.len() == 1 {
+            // Lone trailing backslash at end of chunk. Advance past
+            // the `\` and signal `pending_escape` so the next push's
+            // first char is interpreted as the escape continuation.
+            return CharStep::Skip(1, true);
+        }
+        // Peek at char after `\`.
+        let after = &rest[1..];
+        let mut it = after.chars();
+        let c = match it.next() {
+            Some(c) => c,
+            None => return CharStep::NeedMore,
+        };
+        let out = match c {
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            '"' => '"',
+            '\\' => '\\',
+            '/' => '/',
+            'b' => '\u{0008}',
+            'f' => '\u{000C}',
+            'u' => {
+                // Forward the literal backslash — see above.
+                return CharStep::Emit('\\', 1, false);
+            }
+            other => other,
+        };
+        return CharStep::Emit(out, 1 + c.len_utf8(), false);
+    }
+
+    if b == b'"' {
+        return CharStep::Closed(1);
+    }
+
+    // Regular UTF-8 char — take exactly one `char`.
+    let mut it = rest.chars();
+    match it.next() {
+        Some(c) => CharStep::Emit(c, c.len_utf8(), false),
+        None => CharStep::NeedMore,
     }
 }
 
@@ -1043,7 +1440,7 @@ impl LlmProvider for GeminiProvider {
 /// schema, not from Gemini's API envelope. The camelCase trap applies
 /// only to Gemini's wrapper types (`GeminiResponse`, `GeminiCandidate`,
 /// etc.) which are unchanged.
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct ClusterQuestionsJson {
     #[serde(default)]
     label: String,
@@ -1447,18 +1844,15 @@ mod tests {
         use kenjaku_core::config::{LlmConfig, ServiceTier};
 
         fn provider_with(model: &str, tier: ServiceTier) -> GeminiProvider {
-            GeminiProvider::new(
-                LlmConfig {
-                    provider: "gemini".into(),
-                    model: model.into(),
-                    api_key: "test".into(),
-                    max_tokens: 1024,
-                    temperature: 0.0,
-                    service_tier: tier,
-                    base_url: "http://localhost".into(),
-                },
-                false,
-            )
+            GeminiProvider::new(LlmConfig {
+                provider: "gemini".into(),
+                model: model.into(),
+                api_key: "test".into(),
+                max_tokens: 1024,
+                temperature: 0.0,
+                service_tier: tier,
+                base_url: "http://localhost".into(),
+            })
         }
 
         let flash_standard = provider_with("gemini-2.5-flash", ServiceTier::Standard);
@@ -1483,5 +1877,248 @@ mod tests {
             (pro_cost - 0.001575).abs() < 1e-9,
             "pro+priority cost math changed: got {pro_cost}"
         );
+    }
+
+    // ---- Merged JSON parsing (non-stream path) ----------------------------
+
+    /// Happy-path parse: typical response with message + assets + suggestions
+    /// all populated. Ensures the serde mapping on `MergedResponseJson`
+    /// matches the prompt's `{message, assets, suggestions}` contract.
+    #[test]
+    fn parse_merged_response_happy_path() {
+        let raw = r#"{
+            "message": "Apple rose 2% today.",
+            "assets": [
+                {"symbol": "AAPL", "type": "stock"},
+                {"symbol": "BTC",  "type": "crypto"}
+            ],
+            "suggestions": [
+                "What is Apple's revenue?",
+                "How does AAPL compare to MSFT?",
+                "Why did Apple rise today?"
+            ]
+        }"#;
+        let (answer, assets, suggestions) = parse_merged_response(raw);
+        assert_eq!(answer, "Apple rose 2% today.");
+        assert_eq!(assets.len(), 2);
+        assert_eq!(assets[0].symbol, "AAPL");
+        assert_eq!(assets[0].asset_type, AssetType::Stock);
+        assert_eq!(assets[1].symbol, "BTC");
+        assert_eq!(assets[1].asset_type, AssetType::Crypto);
+        assert_eq!(suggestions.len(), 3);
+    }
+
+    /// Missing `assets` field is legal under the schema (only `message`
+    /// and `suggestions` are `required`). Parser must tolerate it and
+    /// yield an empty assets vec.
+    #[test]
+    fn parse_merged_response_missing_assets_field() {
+        let raw = r#"{
+            "message": "Hello world.",
+            "suggestions": ["Q1", "Q2", "Q3"]
+        }"#;
+        let (answer, assets, suggestions) = parse_merged_response(raw);
+        assert_eq!(answer, "Hello world.");
+        assert!(assets.is_empty());
+        assert_eq!(suggestions.len(), 3);
+    }
+
+    /// Invalid asset types (e.g. `"bond"`) must be filtered out;
+    /// valid entries in the same array must survive.
+    #[test]
+    fn parse_merged_response_filters_invalid_asset_types() {
+        let raw = r#"{
+            "message": "Mixed assets.",
+            "assets": [
+                {"symbol": "AAPL", "type": "stock"},
+                {"symbol": "US10Y", "type": "bond"},
+                {"symbol": "ETH",  "type": "crypto"}
+            ],
+            "suggestions": []
+        }"#;
+        let (_, assets, _) = parse_merged_response(raw);
+        assert_eq!(assets.len(), 2, "bond must be filtered out");
+        assert_eq!(assets[0].symbol, "AAPL");
+        assert_eq!(assets[1].symbol, "ETH");
+    }
+
+    /// Malformed JSON input falls back to `(raw_text, [], [])` so the
+    /// pipeline still produces SOMETHING — graceful degradation per
+    /// the design contract.
+    #[test]
+    fn parse_merged_response_falls_back_on_malformed_json() {
+        let raw = "not json at all, just a plain string";
+        let (answer, assets, suggestions) = parse_merged_response(raw);
+        assert_eq!(answer, raw);
+        assert!(assets.is_empty());
+        assert!(suggestions.is_empty());
+    }
+
+    /// Empty symbol → drop. Protects against Gemini emitting
+    /// `{"symbol": "", "type": "stock"}` from a degenerate answer.
+    #[test]
+    fn parse_merged_response_drops_empty_symbol() {
+        let raw = r#"{
+            "message": "ok",
+            "assets": [{"symbol": "", "type": "stock"}],
+            "suggestions": []
+        }"#;
+        let (_, assets, _) = parse_merged_response(raw);
+        assert!(assets.is_empty());
+    }
+
+    // ---- MergedJsonStreamParser tests -------------------------------------
+
+    /// Sanity: a full single-chunk JSON produces the expected delta,
+    /// assets, and suggestions on finalize.
+    #[test]
+    fn stream_parser_happy_path_one_chunk() {
+        let raw = r#"{"message":"Hello world","assets":[{"symbol":"AAPL","type":"stock"}],"suggestions":["A","B","C"]}"#;
+        let mut parser = MergedJsonStreamParser::new();
+        let (delta, _) = parser.push(raw);
+        assert_eq!(delta, "Hello world");
+        let (assets, suggestions) = parser.finalize();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].symbol, "AAPL");
+        assert_eq!(suggestions, vec!["A", "B", "C"]);
+    }
+
+    /// Chunk boundary lands in the middle of the `message` value.
+    /// Both halves concatenated must equal the decoded string.
+    #[test]
+    fn stream_parser_split_mid_message() {
+        let mut parser = MergedJsonStreamParser::new();
+        let (d1, _) = parser.push(r#"{"message":"Hello "#);
+        let (d2, _) = parser.push(r#"world","assets":[],"suggestions":["s1","s2","s3"]}"#);
+        assert_eq!(format!("{d1}{d2}"), "Hello world");
+        let (_, suggestions) = parser.finalize();
+        assert_eq!(suggestions.len(), 3);
+    }
+
+    /// Chunk ends on a lone `\` that begins an escape; next chunk
+    /// completes it as `\n`.
+    #[test]
+    fn stream_parser_split_mid_escape() {
+        let mut parser = MergedJsonStreamParser::new();
+        let (d1, _) = parser.push(r#"{"message":"line1\"#);
+        let (d2, _) = parser.push(r#"nline2","assets":[],"suggestions":[]}"#);
+        assert_eq!(format!("{d1}{d2}"), "line1\nline2");
+    }
+
+    /// Regression: chunk boundary split between `\` and `u` of a
+    /// `\uXXXX` escape. Earlier implementation consumed the `u` but
+    /// emitted only `\`, dropping the `u` (flagged by Copilot on PR #30).
+    /// The fix is to emit `\` and keep `u` in the buffer so the next
+    /// iteration emits it as a plain char. Net delta contains the
+    /// literal `\u1234` sequence.
+    #[test]
+    fn stream_parser_split_before_unicode_escape() {
+        let mut parser = MergedJsonStreamParser::new();
+        // Chunk 1 ends on the lone backslash. Chunk 2 begins with `u1234`.
+        let (d1, _) = parser.push(r#"{"message":"pre\"#);
+        let (d2, _) = parser.push(r#"u1234post","assets":[],"suggestions":[]}"#);
+        // The full delta must preserve the literal escape sequence —
+        // the `u` is NOT silently dropped.
+        assert_eq!(format!("{d1}{d2}"), "pre\\u1234post");
+    }
+
+    /// Same regression, single-chunk form — proves the non-pending
+    /// branch also keeps `u` in the buffer (it already did via
+    /// advance=1, but the test locks the behavior).
+    #[test]
+    fn stream_parser_unicode_escape_single_chunk() {
+        let mut parser = MergedJsonStreamParser::new();
+        let (delta, _) = parser.push(r#"{"message":"a\u00e9b","assets":[],"suggestions":[]}"#);
+        assert_eq!(delta, "a\\u00e9b");
+    }
+
+    /// Split inside a multi-byte UTF-8 character. The outer SSE framing
+    /// guarantees well-formed `&str` at this level, so we simulate the
+    /// realistic case where the CJK char arrives inside a single push.
+    /// This test also guards against future regressions if someone
+    /// converts the parser to operate on raw bytes.
+    #[test]
+    fn stream_parser_handles_cjk_in_message() {
+        let mut parser = MergedJsonStreamParser::new();
+        let (delta, _) = parser.push(r#"{"message":"測試","assets":[],"suggestions":[]}"#);
+        assert_eq!(delta, "測試");
+    }
+
+    /// Escape coverage: `\n`, `\t`, `\"`, `\\`, `\/` must all decode
+    /// to their canonical single chars in the delta output.
+    #[test]
+    fn stream_parser_decodes_escapes() {
+        let raw = r#"{"message":"a\nb\tc\"d\\e\/f","assets":[],"suggestions":[]}"#;
+        let mut parser = MergedJsonStreamParser::new();
+        let (delta, _) = parser.push(raw);
+        assert_eq!(delta, "a\nb\tc\"d\\e/f");
+    }
+
+    /// Empty arrays: `assets` absent is tolerated; empty
+    /// `suggestions` array parses to empty Vec.
+    #[test]
+    fn stream_parser_empty_arrays() {
+        let raw = r#"{"message":"ok","assets":[],"suggestions":[]}"#;
+        let mut parser = MergedJsonStreamParser::new();
+        parser.push(raw);
+        let (assets, suggestions) = parser.finalize();
+        assert!(assets.is_empty());
+        assert!(suggestions.is_empty());
+    }
+
+    /// Malformed / truncated stream: if the stream ends before the
+    /// closing brace, finalize degrades to `(vec![], vec![])` rather
+    /// than panic. The message delta emitted so far is still returned
+    /// by the preceding `push` calls.
+    #[test]
+    fn stream_parser_truncated_stream_degrades() {
+        let mut parser = MergedJsonStreamParser::new();
+        // Partial — no closing `"` on message, no closing `}`.
+        let (delta, _) = parser.push(r#"{"message":"hello"#);
+        assert_eq!(delta, "hello");
+        let (assets, suggestions) = parser.finalize();
+        assert!(assets.is_empty());
+        assert!(suggestions.is_empty());
+    }
+
+    /// Assets with invalid `type` (e.g. `"bond"`) must drop from the
+    /// finalized output but valid ones survive.
+    #[test]
+    fn stream_parser_filters_invalid_asset_types() {
+        let raw = r#"{"message":"x","assets":[{"symbol":"AAPL","type":"stock"},{"symbol":"US10Y","type":"bond"}],"suggestions":[]}"#;
+        let mut parser = MergedJsonStreamParser::new();
+        parser.push(raw);
+        let (assets, _) = parser.finalize();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].symbol, "AAPL");
+    }
+
+    /// The pre-`message` preamble (`{"message":`) is not emitted as
+    /// delta — only the value's chars are. Guards against a regression
+    /// where the parser forgets to skip the JSON structural tokens.
+    #[test]
+    fn stream_parser_does_not_emit_preamble() {
+        let mut parser = MergedJsonStreamParser::new();
+        let (delta, _) = parser.push(r#"{"message":""#);
+        assert_eq!(delta, "", "preamble bytes must produce no delta");
+        let (delta2, _) = parser.push(r#"hi","assets":[],"suggestions":[]}"#);
+        assert_eq!(delta2, "hi");
+    }
+
+    /// Stream that splits one byte at a time. Stress-tests boundary
+    /// handling — no partial escape should leak into the delta, and
+    /// the concatenated delta must equal the full decoded message.
+    #[test]
+    fn stream_parser_byte_by_byte_fuzz() {
+        let raw = r#"{"message":"hello \"world\"","assets":[],"suggestions":["q"]}"#;
+        let mut parser = MergedJsonStreamParser::new();
+        let mut all_delta = String::new();
+        for b in raw.chars() {
+            let (d, _) = parser.push(&b.to_string());
+            all_delta.push_str(&d);
+        }
+        assert_eq!(all_delta, "hello \"world\"");
+        let (_, suggestions) = parser.finalize();
+        assert_eq!(suggestions, vec!["q"]);
     }
 }
