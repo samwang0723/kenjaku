@@ -157,25 +157,6 @@ impl Brain for GeminiBrain {
         self.llm.generate_stream(messages).await
     }
 
-    #[instrument(skip(self, _cancel))]
-    async fn suggest(
-        &self,
-        query: &str,
-        answer: &str,
-        _cancel: &CancellationToken,
-    ) -> Result<(Vec<String>, Option<LlmCall>)> {
-        let started = Instant::now();
-        let (suggestions, usage) = self.llm.suggest(query, answer).await?;
-        let latency_ms = started.elapsed().as_millis() as u64;
-        let call = build_call(
-            "suggest",
-            self.model_name.clone(),
-            usage.as_ref(),
-            latency_ms,
-        );
-        Ok((suggestions, call))
-    }
-
     fn has_web_grounding(&self) -> bool {
         self.has_web_grounding
     }
@@ -247,24 +228,6 @@ impl Generator for GeminiBrain {
         _cancel: &CancellationToken,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>> {
         self.llm.generate_stream(messages).await
-    }
-
-    async fn suggest(
-        &self,
-        query: &str,
-        answer: &str,
-        _cancel: &CancellationToken,
-    ) -> Result<(Vec<String>, Option<LlmCall>)> {
-        let started = Instant::now();
-        let (suggestions, usage) = self.llm.suggest(query, answer).await?;
-        let latency_ms = started.elapsed().as_millis() as u64;
-        let call = build_call(
-            "suggest",
-            self.model_name.clone(),
-            usage.as_ref(),
-            latency_ms,
-        );
-        Ok((suggestions, call))
     }
 
     fn has_web_grounding(&self) -> bool {

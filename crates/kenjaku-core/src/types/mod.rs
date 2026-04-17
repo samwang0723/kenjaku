@@ -1,3 +1,4 @@
+pub mod assets;
 pub mod component;
 pub mod conversation;
 pub mod feedback;

@@ -203,15 +203,6 @@ impl Brain for CompositeBrain {
             .await
     }
 
-    async fn suggest(
-        &self,
-        query: &str,
-        answer: &str,
-        cancel: &CancellationToken,
-    ) -> Result<(Vec<String>, Option<LlmCall>)> {
-        self.generator.suggest(query, answer, cancel).await
-    }
-
     fn has_web_grounding(&self) -> bool {
         self.generator.has_web_grounding()
     }

@@ -170,17 +170,6 @@ pub trait Brain: Send + Sync {
         cancel: &CancellationToken,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>>;
 
-    /// Generate follow-up query suggestions based on a query and answer.
-    ///
-    /// Returns the suggestions paired with an optional [`LlmCall`]
-    /// accounting entry.
-    async fn suggest(
-        &self,
-        query: &str,
-        answer: &str,
-        cancel: &CancellationToken,
-    ) -> Result<(Vec<String>, Option<LlmCall>)>;
-
     /// Whether the underlying Generator attaches its own built-in
     /// web-grounding tool (e.g. Gemini's `google_search`).
     ///

@@ -142,12 +142,32 @@ pub enum RetrievalMethod {
 }
 
 /// Response from the LLM.
+///
+/// Under merged-generate mode (current production) the provider
+/// returns a single structured-JSON response containing the answer
+/// text plus extracted assets and follow-up suggestions. All three
+/// fields are populated from one provider call — no separate
+/// `suggest` call is issued any more.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmResponse {
+    /// The answer body (markdown), populated from the JSON
+    /// `"message"` field. Streamed token-by-token on the streaming
+    /// path via `StreamChunk.delta`.
     pub answer: String,
     pub sources: Vec<LlmSource>,
     pub model: String,
     pub usage: Option<LlmUsage>,
+    /// Extracted stocks + crypto tickers the answer referenced as
+    /// primary subjects. Empty when the answer has no asset
+    /// mentions or the model declined to extract.
+    #[serde(default)]
+    pub assets: Vec<crate::types::assets::Asset>,
+    /// Exactly 3 follow-up questions the model suggested, ordered
+    /// vertical / horizontal / temporal-or-actionable. Empty only
+    /// when the model failed to comply (rare; pipeline falls back
+    /// to chunk-title suggestions in that case).
+    #[serde(default)]
+    pub suggestions: Vec<String>,
 }
 
 /// A source cited by the LLM (e.g., from google_search tool).
@@ -189,6 +209,18 @@ pub struct StreamChunk {
     pub grounding: Option<Vec<LlmSource>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<LlmUsage>,
+    /// **Merged-generate streaming path**: extracted financial
+    /// assets, populated on the terminal chunk (`finished = true`)
+    /// after the full JSON response has been parsed server-side.
+    /// `None` on delta chunks; `Some(vec![])` if no assets were
+    /// extracted; `Some(vec![...])` when extraction succeeded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assets: Option<Vec<crate::types::assets::Asset>>,
+    /// **Merged-generate streaming path**: follow-up suggestions,
+    /// populated on the terminal chunk after full JSON parse. Same
+    /// presence semantics as `assets`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestions: Option<Vec<String>>,
 }
 
 /// Metadata sent at the START of a streaming search — everything we know
@@ -234,6 +266,12 @@ pub struct StreamDoneMetadata {
     /// `StreamStartMetadata` since tokens aren't tallied until then.
     #[serde(default)]
     pub usage: UsageStats,
+    /// Financial assets extracted from the merged-JSON answer.
+    /// Empty array when no assets were referenced or extraction
+    /// failed — the client can choose to render an empty chip row
+    /// or skip the component block entirely.
+    #[serde(default)]
+    pub assets: Vec<crate::types::assets::Asset>,
 }
 
 /// Type of content in a stream chunk.

@@ -227,6 +227,8 @@ impl LlmProvider for GeminiProvider {
             sources,
             model: self.config.model.clone(),
             usage,
+            assets: Vec::new(),
+            suggestions: Vec::new(),
         })
     }
 
@@ -311,6 +313,8 @@ impl LlmProvider for GeminiProvider {
             sources: Vec::new(),
             model: self.config.model.clone(),
             usage,
+            assets: Vec::new(),
+            suggestions: Vec::new(),
         })
     }
 
@@ -400,6 +404,8 @@ impl LlmProvider for GeminiProvider {
                                 finished: true,
                                 grounding: None,
                                 usage: None,
+                                assets: None,
+                                suggestions: None,
                             }));
                         }
 
@@ -512,6 +518,13 @@ impl LlmProvider for GeminiProvider {
                             finished,
                             grounding,
                             usage,
+                            // Legacy streaming path (answer-only, no
+                            // merged JSON). assets/suggestions are
+                            // populated by the merged-generate path
+                            // wrapper — see `generate_stream_merged`
+                            // (follow-up commit).
+                            assets: None,
+                            suggestions: None,
                         }))
                     }
                     Err(e) => Some(Err(Error::Llm(format!("SSE parse error: {e}")))),
@@ -806,101 +819,6 @@ impl LlmProvider for GeminiProvider {
                 ))
             }
         }
-    }
-
-    #[instrument(skip(self))]
-    async fn suggest(&self, query: &str, answer: &str) -> Result<(Vec<String>, Option<LlmUsage>)> {
-        // Cognitive-diversity structure: three suggestions that each
-        // open a different branch of follow-up (vertical / horizontal /
-        // temporal-or-actionable). Template lives in
-        // `crates/kenjaku-core/src/prompts/suggest.md`.
-        let prompt = kenjaku_core::prompts::render(
-            kenjaku_core::prompts::SUGGEST,
-            &[("query", query), ("answer", answer)],
-        );
-
-        let request = GeminiRequest {
-            contents: vec![GeminiContent {
-                parts: vec![GeminiPart::text(prompt)],
-                role: Some("user".to_string()),
-            }],
-            system_instruction: None,
-            tools: None,
-            generation_config: Some(GeminiGenerationConfig {
-                max_output_tokens: Some(512),
-                temperature: Some(0.8),
-                response_mime_type: None,
-                response_schema: None,
-            }),
-            service_tier: self.service_tier_value(),
-        };
-
-        let url = format!(
-            "{}/models/{}:generateContent?key={}",
-            self.base_url, self.config.model, self.config.api_key
-        );
-
-        let response = self
-            .client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| Error::Llm(format!("Gemini suggest failed: {e}")))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(Error::Llm(format!("Gemini returned {status}: {body}")));
-        }
-
-        let result: GeminiResponse = response
-            .json()
-            .await
-            .map_err(|e| Error::Llm(format!("Failed to parse suggestions: {e}")))?;
-
-        let text = result
-            .candidates
-            .first()
-            .map(|c| {
-                c.content
-                    .parts
-                    .iter()
-                    .map(|p| p.text_str())
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
-            .unwrap_or_default();
-
-        let usage = result.usage_metadata.as_ref().map(|u| {
-            let prompt = u.prompt_token_count.unwrap_or(0);
-            let completion = u.candidates_token_count.unwrap_or(0);
-            LlmUsage {
-                prompt_tokens: prompt,
-                completion_tokens: completion,
-                total_tokens: u
-                    .total_token_count
-                    .unwrap_or(prompt.saturating_add(completion)),
-                cost_usd: self.estimate_cost(prompt, completion),
-            }
-        });
-
-        // Parse JSON array from response
-        let suggestions = serde_json::from_str::<Vec<String>>(&text).or_else(|_| {
-            // Try to extract JSON array from markdown code block
-            let trimmed = text
-                .trim()
-                .strip_prefix("```json")
-                .or_else(|| text.trim().strip_prefix("```"))
-                .unwrap_or(&text)
-                .strip_suffix("```")
-                .unwrap_or(&text)
-                .trim();
-            serde_json::from_str::<Vec<String>>(trimmed)
-                .map_err(|e| Error::Llm(format!("Failed to parse suggestions JSON: {e}")))
-        })?;
-
-        Ok((suggestions, usage))
     }
 
     #[instrument(skip(self, excerpt))]

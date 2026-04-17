@@ -136,33 +136,28 @@ impl SinglePassPipeline {
         accumulated_answer: &str,
         grounding_sources: Vec<LlmSource>,
         generator_call: Option<LlmCall>,
+        accumulated_suggestions: Vec<String>,
+        accumulated_assets: Vec<kenjaku_core::types::assets::Asset>,
     ) -> StreamDoneMetadata {
+        let _ = accumulated_answer;
         let grounding_sources_was_empty = grounding_sources.is_empty();
-        let cancel = CancellationToken::new();
 
         // Record the generator's LlmCall (harvested from the final SSE
-        // chunk's `usageMetadata`) BEFORE the suggest call so the final
-        // `usage.calls` list reads in pipeline order.
+        // chunk's `usageMetadata`). No separate suggest call any more —
+        // suggestions + assets flow through the terminal StreamChunk
+        // directly from the merged-JSON generate output.
         if let Some(call) = generator_call {
             ctx.usage.record(call);
         }
 
-        let suggestions = match self
-            .brain
-            .suggest(&ctx.query, accumulated_answer, &cancel)
-            .await
-        {
-            Ok((s, call)) => {
-                if let Some(c) = call {
-                    ctx.usage.record(c);
-                }
-                if s.len() >= self.suggestion_count {
-                    s[..self.suggestion_count].to_vec()
-                } else {
-                    s
-                }
-            }
-            Err(_) => Vec::new(),
+        // Cap suggestions to the configured count (the merged-JSON
+        // prompt asks for exactly 3, but be defensive about off-by-one
+        // model compliance). Empty vec is acceptable — the client just
+        // sees no suggestions component.
+        let suggestions = if accumulated_suggestions.len() >= self.suggestion_count {
+            accumulated_suggestions[..self.suggestion_count].to_vec()
+        } else {
+            accumulated_suggestions
         };
 
         // Resolve grounding URLs in parallel (cache-backed) into real titles.
@@ -241,6 +236,7 @@ impl SinglePassPipeline {
             llm_model: ctx.llm_model,
             grounding,
             usage,
+            assets: accumulated_assets,
         }
     }
 
@@ -388,51 +384,41 @@ impl SearchPipeline for SinglePassPipeline {
             usage_tracker.record(c);
         }
 
-        // Step 5: Get suggestions (LLM first, fallback to Qdrant titles)
-        let suggestions = match self
-            .brain
-            .suggest(&search_query, &llm_response.answer, &cancel)
-            .await
-        {
-            Ok((s, call)) => {
-                if let Some(c) = call {
-                    usage_tracker.record(c);
-                }
-                if s.len() >= self.suggestion_count {
-                    s[..self.suggestion_count].to_vec()
-                } else {
-                    warn!(
-                        count = s.len(),
-                        needed = self.suggestion_count,
-                        "LLM returned fewer suggestions than needed, falling back to chunk titles"
-                    );
+        // Step 5: Pull suggestions from the merged generate response.
+        // The LLM now emits {message, assets, suggestions} in one call;
+        // LlmResponse.suggestions is populated directly, no separate
+        // suggest() round-trip. Fall back to chunk titles when the
+        // model under-delivered (rare — see merged_preamble tests).
+        let (suggestions, suggestion_source) =
+            if llm_response.suggestions.len() >= self.suggestion_count {
+                (
+                    llm_response.suggestions[..self.suggestion_count].to_vec(),
+                    SuggestionSource::Llm,
+                )
+            } else {
+                warn!(
+                    count = llm_response.suggestions.len(),
+                    needed = self.suggestion_count,
+                    "Merged-JSON response returned fewer suggestions than needed, falling back to chunk titles"
+                );
+                (
                     chunks
                         .iter()
                         .map(|c| c.title.clone())
                         .take(self.suggestion_count)
-                        .collect()
-                }
-            }
-            Err(e) => {
-                warn!(error = %e, "Suggestion generation failed, falling back to chunk titles");
-                chunks
-                    .iter()
-                    .map(|c| c.title.clone())
-                    .take(self.suggestion_count)
-                    .collect()
-            }
-        };
+                        .collect(),
+                    SuggestionSource::VectorStore,
+                )
+            };
 
-        let suggestion_source = if suggestions.len() == self.suggestion_count {
-            SuggestionSource::Llm
-        } else {
-            SuggestionSource::VectorStore
-        };
-
-        // Step 6: Assemble components
-        let components =
-            self.component_service
-                .assemble(&llm_response, suggestions, suggestion_source);
+        // Step 6: Assemble components — includes Assets component when
+        // the merged-JSON response extracted any.
+        let components = self.component_service.assemble(
+            &llm_response,
+            suggestions,
+            suggestion_source,
+            llm_response.assets.clone(),
+        );
 
         // Step 7: Record trending (fire-and-forget) under the DETECTED
         // locale, not a client hint.
@@ -1302,7 +1288,7 @@ mod tests {
         }];
 
         let done = pipeline
-            .complete_stream(ctx, "accumulated answer", grounding_sources, None)
+            .complete_stream(ctx, "accumulated answer", grounding_sources, None, Vec::new(), Vec::new())
             .await;
 
         // Grounding sources come first, then internal sources
@@ -1350,7 +1336,7 @@ mod tests {
         }];
 
         let done = pipeline
-            .complete_stream(ctx, "answer", grounding_sources, None)
+            .complete_stream(ctx, "answer", grounding_sources, None, Vec::new(), Vec::new())
             .await;
 
         // Only one source after dedup -- grounding wins because it's first

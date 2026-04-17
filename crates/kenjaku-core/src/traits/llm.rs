@@ -87,14 +87,6 @@ pub trait LlmProvider: Send + Sync {
         ))
     }
 
-    /// Generate follow-up query suggestions based on the query and answer.
-    ///
-    /// Returns the suggestions paired with optional usage accounting
-    /// so the pipeline can roll up per-call cost into
-    /// `SearchMetadata.usage`. `None` when the provider cannot report
-    /// usage for this call.
-    async fn suggest(&self, query: &str, answer: &str) -> Result<(Vec<String>, Option<LlmUsage>)>;
-
     /// Generate a topic label + 3-5 native-phrased questions for every
     /// supported locale, given a representative excerpt of clustered
     /// document content. Used by `SuggestionRefreshWorker` — one call

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use super::assets::Asset;
 use super::search::LlmSource;
 
 /// A component in the search response layout.
@@ -10,6 +11,10 @@ pub enum Component {
     LlmAnswer(LlmAnswerComponent),
     Sources(SourcesComponent),
     Suggestions(SuggestionsComponent),
+    /// Extracted financial assets (stock + crypto tickers) the answer
+    /// referenced as primary subjects. Populated from the merged
+    /// generate call's JSON output; empty block is omitted.
+    Assets(AssetsComponent),
 }
 
 /// The LLM-generated answer component.
@@ -32,6 +37,12 @@ pub struct SuggestionsComponent {
     pub source: SuggestionSource,
 }
 
+/// Extracted financial asset references (stocks + crypto).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetsComponent {
+    pub assets: Vec<Asset>,
+}
+
 /// Where suggestions came from.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SuggestionSource {
@@ -52,6 +63,7 @@ pub enum ComponentType {
     LlmAnswer,
     Sources,
     Suggestions,
+    Assets,
 }
 
 impl Default for ComponentLayout {
@@ -59,6 +71,7 @@ impl Default for ComponentLayout {
         Self {
             order: vec![
                 ComponentType::LlmAnswer,
+                ComponentType::Assets,
                 ComponentType::Sources,
                 ComponentType::Suggestions,
             ],

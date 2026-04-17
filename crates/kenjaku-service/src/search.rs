@@ -96,9 +96,18 @@ impl SearchService {
         accumulated_answer: &str,
         grounding_sources: Vec<LlmSource>,
         generator_call: Option<LlmCall>,
+        accumulated_suggestions: Vec<String>,
+        accumulated_assets: Vec<kenjaku_core::types::assets::Asset>,
     ) -> StreamDoneMetadata {
         self.orchestrator
-            .complete_stream(ctx, accumulated_answer, grounding_sources, generator_call)
+            .complete_stream(
+                ctx,
+                accumulated_answer,
+                grounding_sources,
+                generator_call,
+                accumulated_suggestions,
+                accumulated_assets,
+            )
             .await
     }
 }
