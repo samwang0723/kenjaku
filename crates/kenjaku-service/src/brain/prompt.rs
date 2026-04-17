@@ -1,15 +1,16 @@
 //! Prompt text builders for the search pipeline.
 //!
-//! These functions produce the exact system instruction and user-turn strings
-//! that the LLM sees. They are intentionally decoupled from any provider's
-//! wire format — they return plain `String`s that the `ConversationAssembler`
-//! wraps into `Message` values and the `LlmProvider` converts to its native
-//! shape.
+//! The actual prompt TEXT lives in `kenjaku-core/src/prompts/*.md` and
+//! is pulled in at compile time via `include_str!`. This module only
+//! assembles those raw templates: it picks the right source-rules
+//! variant, substitutes locale tokens, and returns plain `String`s
+//! the `ConversationAssembler` wraps into `Message` values.
 //!
-//! **IMPORTANT**: Do NOT change the text of these templates without a staging
-//! canary. Prompt wording is load-bearing — a one-word change can affect
-//! refusal rates (see commit `cab2292`).
+//! **IMPORTANT**: Do NOT change the text of those `.md` templates
+//! without a staging canary. Prompt wording is load-bearing — a
+//! one-word change can affect refusal rates (see commit `cab2292`).
 
+use kenjaku_core::prompts;
 use kenjaku_core::types::locale::Locale;
 use kenjaku_core::types::search::RetrievedChunk;
 
@@ -85,35 +86,22 @@ pub fn build_search_system_instruction(
     let display = answer_locale.display_name();
     let tag = answer_locale.as_str();
     let source_rules = if has_builtin_web_tool {
-        "Your inputs, in priority order:\n\
-         1. The numbered `[Source N]` entries in the current user turn. These come from the product's own document corpus. Prefer them when they answer the question, and cite with `[Source N]` markers.\n\
-         2. The built-in web search capability attached to this request. For real-time questions — markets, prices, news, weather, sports scores, live events, anything mentioning \"today\", \"now\", \"current\", \"latest\", \"this week\" — you MUST use the web search to retrieve fresh facts, then synthesize a direct answer. Web sources surface separately in the response; do not invent `[Source N]` markers for them.\n\
-         3. Your own training knowledge, used only as a last-resort fallback for timeless factual questions when both above are insufficient. Only this case may disclose a training cut-off.\n\
-         \n\
-         How to answer:\n\
-         - NEVER respond with \"I cannot access real-time information\", \"as an AI I don't have live data\", \"check Reuters / Yahoo / CNN / Bloomberg / etc.\", or any variant that tells the user to go look it up themselves. You have a web search tool — use it. Refusals are forbidden for real-time questions.\n\
-         - Include concrete numbers, dates, names, and timestamps when the retrieved sources carry them.\n\
-         - Do not refuse because internal retrieval is sparse. Reach for web search instead."
+        prompts::SOURCE_RULES_WITH_WEB_TOOL
     } else {
-        "Your only inputs are:\n\
-         1. The numbered `[Source N]` entries in the current user turn. These are authoritative. They may include product documentation, knowledge-base articles, and/or fresh web results that the platform has pre-fetched for you — you do NOT need to distinguish between them. Treat every `[Source N]` as trustworthy context supplied by the platform for this specific question.\n\
-         2. Your own training knowledge, used only as a fallback when the `[Source N]` entries do not cover the question.\n\
-         \n\
-         How to answer:\n\
-         - If `[Source N]` entries are present, synthesize a direct answer from them and cite with `[Source N]` markers. Include concrete numbers, dates, names, and timestamps when the sources carry them.\n\
-         - If no `[Source N]` entries are present, answer from your training knowledge. Only in this case may you briefly note a training cut-off.\n\
-         - NEVER respond with \"I cannot access real-time information\", \"as an AI I don't have live data\", \"check Reuters / Yahoo / CNN / Bloomberg / etc.\", or any variant that tells the user to go look it up themselves. If the `[Source N]` entries carry fresh facts, those facts ARE your real-time data — use them. The platform has already done the web search for you.\n\
-         - Do not refuse because retrieval is sparse. Synthesize from whatever sources you have. Refusals are forbidden."
+        prompts::SOURCE_RULES_WITHOUT_WEB_TOOL
     };
-    format!(
-        "You are a helpful document search assistant.\n\
-         \n\
-         {source_rules}\n\
-         \n\
-         Output rules:\n\
-         - Write the final answer in {display} (BCP-47 `{tag}`), regardless of the language of the retrieved context, the question, or earlier turns in this conversation. If previous turns were in a different language, ignore their language and respond only in {display}. This overrides any continuity from prior turns.\n\
-         - Preserve proper nouns, product names, ticker symbols, and code snippets in their original form.\n\
-         - Keep the response concise and well-structured. Use short paragraphs and lists where it helps readability."
+    // Order matters: `{{source_rules}}` is substituted first so the
+    // block is present in the buffer; `{{locale_display}}` /
+    // `{{locale_tag}}` then fill both their appearances (in the
+    // template itself plus anything the source-rules block ever
+    // introduces in the future).
+    prompts::render(
+        prompts::SYSTEM_INSTRUCTION,
+        &[
+            ("source_rules", source_rules),
+            ("locale_display", display),
+            ("locale_tag", tag),
+        ],
     )
 }
 
@@ -262,8 +250,10 @@ mod tests {
              3. Your own training knowledge, used only as a last-resort fallback for timeless factual questions when both above are insufficient. Only this case may disclose a training cut-off.\n\
              \n\
              How to answer:\n\
+             - Start with the substance. Do not rephrase the user's question, and do not open with warm-up phrases like \"To answer your question…\", \"Based on the sources…\", \"The current … is as follows:\". The user sees their question above; go straight to the answer.\n\
              - NEVER respond with \"I cannot access real-time information\", \"as an AI I don't have live data\", \"check Reuters / Yahoo / CNN / Bloomberg / etc.\", or any variant that tells the user to go look it up themselves. You have a web search tool — use it. Refusals are forbidden for real-time questions.\n\
-             - Include concrete numbers, dates, names, and timestamps when the retrieved sources carry them.\n\
+             - Be concrete, not abstract. When the sources carry specific names, entities, numbers, dates, percentages, or identifiers, carry those through to the answer. Do not collapse named specifics into generic summaries (e.g. prefer \"Apple rose 2.1%, Microsoft 1.4%, Nvidia 3.8%\" over \"several tech names rose\"). If the question invites a list — top N, key movers, recent events, main findings, status overview — provide the list with the specifics the sources support.\n\
+             - Match length to question complexity. Simple factual questions get one or two sentences. Multi-faceted questions (status overviews, comparisons, \"what's happening with X\") warrant a richer structured response with short sections or bullets.\n\
              - Do not refuse because internal retrieval is sparse. Reach for web search instead.\n\
              \n\
              Output rules:\n\
@@ -286,8 +276,11 @@ mod tests {
              2. Your own training knowledge, used only as a fallback when the `[Source N]` entries do not cover the question.\n\
              \n\
              How to answer:\n\
-             - If `[Source N]` entries are present, synthesize a direct answer from them and cite with `[Source N]` markers. Include concrete numbers, dates, names, and timestamps when the sources carry them.\n\
+             - Start with the substance. Do not rephrase the user's question, and do not open with warm-up phrases like \"To answer your question…\", \"Based on the sources…\", \"The current … is as follows:\". The user sees their question above; go straight to the answer.\n\
+             - If `[Source N]` entries are present, synthesize a direct answer from them and cite with `[Source N]` markers.\n\
              - If no `[Source N]` entries are present, answer from your training knowledge. Only in this case may you briefly note a training cut-off.\n\
+             - Be concrete, not abstract. When the sources carry specific names, entities, numbers, dates, percentages, or identifiers, carry those through to the answer. Do not collapse named specifics into generic summaries (e.g. prefer \"Apple rose 2.1%, Microsoft 1.4%, Nvidia 3.8%\" over \"several tech names rose\"). If the question invites a list — top N, key movers, recent events, main findings, status overview — provide the list with the specifics the sources support.\n\
+             - Match length to question complexity. Simple factual questions get one or two sentences. Multi-faceted questions (status overviews, comparisons, \"what's happening with X\") warrant a richer structured response with short sections or bullets.\n\
              - NEVER respond with \"I cannot access real-time information\", \"as an AI I don't have live data\", \"check Reuters / Yahoo / CNN / Bloomberg / etc.\", or any variant that tells the user to go look it up themselves. If the `[Source N]` entries carry fresh facts, those facts ARE your real-time data — use them. The platform has already done the web search for you.\n\
              - Do not refuse because retrieval is sparse. Synthesize from whatever sources you have. Refusals are forbidden.\n\
              \n\
