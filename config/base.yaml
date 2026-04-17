@@ -66,6 +66,7 @@ search:
   component_layout:
     order:
       - llm_answer
+      - assets
       - sources
       - suggestions
   history:
