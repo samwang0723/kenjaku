@@ -105,7 +105,12 @@ impl GeminiProvider {
                 },
                 "suggestions": {"type": "ARRAY", "items": {"type": "STRING"}}
             },
-            "required": ["message", "suggestions"],
+            // All three fields required so Gemini always emits the
+            // full shape. Empty `assets: []` is valid per the prompt;
+            // the server-side parser accepts it. Making `assets`
+            // required keeps the contract consistent with the prompt
+            // text in `prompts/generate_merged.md`.
+            "required": ["message", "assets", "suggestions"],
             "propertyOrdering": ["message", "assets", "suggestions"]
         })
     }
@@ -424,12 +429,17 @@ impl LlmProvider for GeminiProvider {
         // raw accumulated JSON can be final-parsed for assets +
         // suggestions on the terminal event.
         //
-        // Wrap in `Arc<Mutex<...>>` because `filter_map`'s closure is
-        // `FnMut` but the inner `async move` block we return needs to
-        // capture the parser across await points — a bare `&mut` won't
-        // satisfy both requirements. The mutex is uncontended (the
-        // stream is single-consumer by construction).
-        let parser = std::sync::Arc::new(std::sync::Mutex::new(MergedJsonStreamParser::new()));
+        // Wrap in `Arc<tokio::sync::Mutex<...>>` because `filter_map`'s
+        // closure is `FnMut` but the inner `async move` block we
+        // return needs to capture the parser across await points — a
+        // bare `&mut` won't satisfy both requirements. The mutex is
+        // uncontended (the stream is single-consumer by construction),
+        // but we use the async-aware Tokio mutex rather than
+        // `std::sync::Mutex` so the lock yields cooperatively if the
+        // runtime ever has to reschedule under it — a blocking lock
+        // inside `filter_map`'s async body could stall the executor
+        // thread even with zero contention.
+        let parser = std::sync::Arc::new(tokio::sync::Mutex::new(MergedJsonStreamParser::new()));
 
         let event_stream = response.bytes_stream().eventsource();
         let stream = event_stream.filter_map(move |event_result| {
@@ -449,8 +459,7 @@ impl LlmProvider for GeminiProvider {
                             // signals via `finishReason` on the last
                             // content event). Finalize the parser and
                             // emit any assets/suggestions we buffered.
-                            let (assets, suggestions) =
-                                parser.lock().expect("parser mutex").finalize();
+                            let (assets, suggestions) = parser.lock().await.finalize();
                             return Some(Ok(StreamChunk {
                                 delta: String::new(),
                                 chunk_type: StreamChunkType::Answer,
@@ -502,7 +511,7 @@ impl LlmProvider for GeminiProvider {
 
                         // Feed the raw JSON slice through the parser.
                         // Produces (delta_to_emit, _parser_state).
-                        let (delta, _state) = parser.lock().expect("parser mutex").push(&text);
+                        let (delta, _state) = parser.lock().await.push(&text);
 
                         // Extract grounding sources — still honored
                         // even in merged-JSON mode for future-proofing.
@@ -567,7 +576,7 @@ impl LlmProvider for GeminiProvider {
                         // to recover assets + suggestions from the
                         // fully buffered JSON.
                         let (assets, suggestions) = if finished {
-                            let (a, s) = parser.lock().expect("parser mutex").finalize();
+                            let (a, s) = parser.lock().await.finalize();
                             (Some(a), Some(s))
                         } else {
                             (None, None)
@@ -1351,12 +1360,25 @@ fn consume_message_char(rest: &str, pending_escape: bool) -> CharStep {
             'b' => '\u{0008}',
             'f' => '\u{000C}',
             'u' => {
-                // `\uXXXX` — forward verbatim per design note.
-                // Emit the backslash + 'u' then advance only 1 byte;
-                // the remaining hex digits are emitted by subsequent
-                // calls as plain chars. The final `serde_json::from_str`
-                // still handles them correctly for assets/suggestions.
-                return CharStep::Emit('\\', c.len_utf8(), false);
+                // `\uXXXX` — forward the literal escape across the
+                // chunk boundary. Emit just the `\`; advance 0 bytes so
+                // the next iteration (with `pending_escape=false`) sees
+                // the `u` as a plain char and emits it, followed by
+                // the 4 hex digits. Net output: literal `\u1234`.
+                //
+                // TRADE-OFF: the streamed delta contains the literal
+                // escape instead of the decoded codepoint. Acceptable
+                // for two reasons: (1) Gemini output is almost
+                // exclusively native UTF-8, not escaped — `\u` appears
+                // mostly for surrogate pairs / control chars; (2) the
+                // non-streaming path's terminal `serde_json::from_str`
+                // decodes these correctly, and the assets/suggestions
+                // parse also passes through a full JSON decode. Only
+                // the streaming answer delta is affected.
+                //
+                // Future: decode `\uXXXX` in place when the 4 hex
+                // digits are available. Currently deferred.
+                return CharStep::Emit('\\', 0, false);
             }
             other => other, // invalid escape — pass through
         };
@@ -1981,6 +2003,33 @@ mod tests {
         let (d1, _) = parser.push(r#"{"message":"line1\"#);
         let (d2, _) = parser.push(r#"nline2","assets":[],"suggestions":[]}"#);
         assert_eq!(format!("{d1}{d2}"), "line1\nline2");
+    }
+
+    /// Regression: chunk boundary split between `\` and `u` of a
+    /// `\uXXXX` escape. Earlier implementation consumed the `u` but
+    /// emitted only `\`, dropping the `u` (flagged by Copilot on PR #30).
+    /// The fix is to emit `\` and keep `u` in the buffer so the next
+    /// iteration emits it as a plain char. Net delta contains the
+    /// literal `\u1234` sequence.
+    #[test]
+    fn stream_parser_split_before_unicode_escape() {
+        let mut parser = MergedJsonStreamParser::new();
+        // Chunk 1 ends on the lone backslash. Chunk 2 begins with `u1234`.
+        let (d1, _) = parser.push(r#"{"message":"pre\"#);
+        let (d2, _) = parser.push(r#"u1234post","assets":[],"suggestions":[]}"#);
+        // The full delta must preserve the literal escape sequence —
+        // the `u` is NOT silently dropped.
+        assert_eq!(format!("{d1}{d2}"), "pre\\u1234post");
+    }
+
+    /// Same regression, single-chunk form — proves the non-pending
+    /// branch also keeps `u` in the buffer (it already did via
+    /// advance=1, but the test locks the behavior).
+    #[test]
+    fn stream_parser_unicode_escape_single_chunk() {
+        let mut parser = MergedJsonStreamParser::new();
+        let (delta, _) = parser.push(r#"{"message":"a\u00e9b","assets":[],"suggestions":[]}"#);
+        assert_eq!(delta, "a\\u00e9b");
     }
 
     /// Split inside a multi-byte UTF-8 character. The outer SSE framing

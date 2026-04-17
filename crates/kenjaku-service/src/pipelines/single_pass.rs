@@ -139,7 +139,6 @@ impl SinglePassPipeline {
         accumulated_suggestions: Vec<String>,
         accumulated_assets: Vec<kenjaku_core::types::assets::Asset>,
     ) -> StreamDoneMetadata {
-        let _ = accumulated_answer;
         let grounding_sources_was_empty = grounding_sources.is_empty();
 
         // Record the generator's LlmCall (harvested from the final SSE
