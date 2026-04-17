@@ -136,3 +136,23 @@ rate_limit:
   plan_free_per_second: 1          # reserved — not yet enforced
   plan_pro_per_second: 4           # reserved — not yet enforced
   plan_enterprise_per_second: 100  # reserved — not yet enforced
+
+# Preamble call-shape selector. Controls how `classify_intent` +
+# `translate` are issued to the LLM provider. The downstream
+# `generate` + `suggest` calls are unaffected by this setting.
+#
+# Modes:
+#   - parallel_preamble: today's behavior. classify_intent ∥ translate
+#     issued as two parallel LLM calls. Critical-path latency is
+#     bounded by the slower of the two (~1.2s typical). 4 LLM calls
+#     per request total.
+#   - merged_preamble:   classify_intent + translate + locale-detect
+#                        collapsed into a single Gemini structured-
+#                        output call. Saves one HTTP round-trip and
+#                        ~30% of preamble input tokens. 3 LLM calls
+#                        per request total.
+#
+# Default `parallel_preamble` preserves byte-for-byte legacy behavior.
+# Flip to `merged_preamble` per environment to A/B latency + cost.
+pipeline:
+  preamble_mode: merged_preamble

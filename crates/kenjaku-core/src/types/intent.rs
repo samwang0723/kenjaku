@@ -35,6 +35,24 @@ impl Intent {
             Intent::Unknown => "unknown",
         }
     }
+
+    /// Parse an Intent from the raw string an LLM produced. Tolerates
+    /// the common variants (`how-to`, `howto`) that LLMs occasionally
+    /// emit even when the prompt asks for `how_to`. Anything off-list
+    /// downgrades to `Unknown` rather than failing — preprocessing
+    /// must never block search on a fuzzy classifier output.
+    pub fn from_raw(raw: &str) -> Intent {
+        match raw.trim().to_lowercase().as_str() {
+            "factual" => Intent::Factual,
+            "navigational" => Intent::Navigational,
+            "how_to" | "howto" | "how-to" => Intent::HowTo,
+            "comparison" => Intent::Comparison,
+            "troubleshooting" => Intent::Troubleshooting,
+            "exploratory" => Intent::Exploratory,
+            "conversational" => Intent::Conversational,
+            _ => Intent::Unknown,
+        }
+    }
 }
 
 impl std::fmt::Display for Intent {

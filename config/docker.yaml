@@ -19,3 +19,8 @@ tenancy:
     issuer: "kenjaku-dev"
     audience: "kenjaku-api"
     public_key_path: "/app/config/dev/public.pem"
+
+# Phase A merged-preamble experiment. Flip to parallel_preamble to revert.
+# See PR #27 for design + smoke-test gate results.
+pipeline:
+  preamble_mode: merged_preamble

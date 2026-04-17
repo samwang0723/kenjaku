@@ -14,19 +14,24 @@
 
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use futures::Stream;
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
+use kenjaku_core::config::PreambleMode;
 use kenjaku_core::error::Result;
 use kenjaku_core::traits::brain::Brain;
 use kenjaku_core::traits::classifier::Classifier;
 use kenjaku_core::traits::generator::Generator;
+use kenjaku_core::traits::llm::LlmProvider;
 use kenjaku_core::traits::translator::Translator;
-use kenjaku_core::types::intent::IntentClassification;
-use kenjaku_core::types::locale::Locale;
+use kenjaku_core::types::intent::{Intent, IntentClassification};
+use kenjaku_core::types::locale::{DetectedLocale, Locale};
 use kenjaku_core::types::message::Message;
+use kenjaku_core::types::preprocess::QueryPreprocessing;
 use kenjaku_core::types::search::{LlmResponse, RetrievedChunk, StreamChunk, TranslationResult};
 use kenjaku_core::types::usage::LlmCall;
 
@@ -40,9 +45,22 @@ pub struct CompositeBrain {
     classifier: Arc<dyn Classifier>,
     translator: Arc<dyn Translator>,
     generator: Arc<dyn Generator>,
+    /// Preamble call-shape selector. Controls whether `preprocess`
+    /// runs the parallel classify+translate pair (default) or routes
+    /// through `preprocessor.preprocess_query` for a single merged
+    /// LLM call. Wired from `config.pipeline.preamble_mode` at startup.
+    mode: PreambleMode,
+    /// Optional `LlmProvider` used by the merged-preamble path. Only
+    /// consulted when `mode == MergedPreamble`. `None` causes a graceful
+    /// fallback to the parallel path even in `merged_preamble` mode
+    /// (with a warning log) so misconfiguration never blocks search.
+    preprocessor: Option<Arc<dyn LlmProvider>>,
 }
 
 impl CompositeBrain {
+    /// Construct a `CompositeBrain` in `parallel_preamble` mode
+    /// (today's default). Use [`CompositeBrain::with_mode`] for
+    /// `merged_preamble`.
     pub fn new(
         classifier: Arc<dyn Classifier>,
         translator: Arc<dyn Translator>,
@@ -52,6 +70,28 @@ impl CompositeBrain {
             classifier,
             translator,
             generator,
+            mode: PreambleMode::ParallelPreamble,
+            preprocessor: None,
+        }
+    }
+
+    /// Construct a `CompositeBrain` with an explicit preamble mode.
+    /// In `merged_preamble` mode the `preprocessor` is the
+    /// `LlmProvider` used for the merged-preamble call; pass the same
+    /// `Arc` you gave to the `Generator`.
+    pub fn with_mode(
+        classifier: Arc<dyn Classifier>,
+        translator: Arc<dyn Translator>,
+        generator: Arc<dyn Generator>,
+        mode: PreambleMode,
+        preprocessor: Option<Arc<dyn LlmProvider>>,
+    ) -> Self {
+        Self {
+            classifier,
+            translator,
+            generator,
+            mode,
+            preprocessor,
         }
     }
 }
@@ -72,6 +112,71 @@ impl Brain for CompositeBrain {
         cancel: &CancellationToken,
     ) -> Result<(TranslationResult, Option<LlmCall>)> {
         self.translator.translate(query, cancel).await
+    }
+
+    /// Phase A: when `mode == MergedPreamble` and a preprocessor is
+    /// wired, route through `LlmProvider::preprocess_query` for one
+    /// merged Gemini call. Otherwise (parallel_preamble mode, or
+    /// merged_preamble without a preprocessor wired) fall back to the
+    /// parallel classify+translate pair.
+    async fn preprocess(
+        &self,
+        query: &str,
+        cancel: &CancellationToken,
+    ) -> Result<(QueryPreprocessing, Vec<LlmCall>)> {
+        match (self.mode, &self.preprocessor) {
+            (PreambleMode::MergedPreamble, Some(llm)) => {
+                if cancel.is_cancelled() {
+                    return Err(kenjaku_core::error::Error::Internal(
+                        "request cancelled".to_string(),
+                    ));
+                }
+                let started = Instant::now();
+                match llm.preprocess_query(query).await {
+                    Ok((preprocessing, usage)) => {
+                        let latency_ms = started.elapsed().as_millis() as u64;
+                        let calls = usage
+                            .map(|u| {
+                                vec![LlmCall {
+                                    purpose: "preprocess".to_string(),
+                                    model: self.generator.model_name().to_string(),
+                                    input_tokens: u.prompt_tokens,
+                                    output_tokens: u.completion_tokens,
+                                    cost_usd: u.cost_usd.unwrap_or(0.0),
+                                    latency_ms,
+                                }]
+                            })
+                            .unwrap_or_default();
+                        Ok((preprocessing, calls))
+                    }
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            "merged preprocess_query failed, falling back to parallel classify+translate"
+                        );
+                        parallel_preprocess(
+                            self.classifier.as_ref(),
+                            self.translator.as_ref(),
+                            query,
+                            cancel,
+                        )
+                        .await
+                    }
+                }
+            }
+            // parallel_preamble mode, or merged_preamble without a
+            // preprocessor wired — run the parallel classify+translate
+            // pair (today's default).
+            _ => {
+                parallel_preprocess(
+                    self.classifier.as_ref(),
+                    self.translator.as_ref(),
+                    query,
+                    cancel,
+                )
+                .await
+            }
+        }
     }
 
     async fn generate(
@@ -114,6 +219,68 @@ impl Brain for CompositeBrain {
     fn model_name(&self) -> &str {
         self.generator.model_name()
     }
+}
+
+/// Run `classify_intent` and `translate` in parallel and assemble a
+/// `(QueryPreprocessing, Vec<LlmCall>)` tuple. Mirrors the
+/// `Brain::preprocess` trait default impl but uses the concrete
+/// sub-traits directly so we don't recurse through the trait dispatch
+/// table.
+///
+/// **Graceful degradation:** an error in either sub-call is absorbed —
+/// the failing side defaults to (Unknown intent) or (raw query, fallback
+/// locale) respectively, and the surviving side's `LlmCall` is still
+/// recorded. Translate failures emit `DetectedLocale::Unsupported {
+/// tag: "" }` so `resolve_translation` records them as `FallbackEn`
+/// (matches the pre-merge pipeline's provenance signal).
+async fn parallel_preprocess(
+    classifier: &dyn Classifier,
+    translator: &dyn Translator,
+    query: &str,
+    cancel: &CancellationToken,
+) -> Result<(QueryPreprocessing, Vec<LlmCall>)> {
+    let (intent_result, translate_result) = futures::join!(
+        classifier.classify(query, cancel),
+        translator.translate(query, cancel),
+    );
+    let mut calls = Vec::with_capacity(2);
+    let intent = match intent_result {
+        Ok((classification, call)) => {
+            if let Some(c) = call {
+                calls.push(c);
+            }
+            classification
+        }
+        Err(e) => {
+            warn!(error = %e, "classify_intent failed, defaulting to Unknown");
+            IntentClassification {
+                intent: Intent::Unknown,
+                confidence: 0.0,
+            }
+        }
+    };
+    let translation = match translate_result {
+        Ok((tr, call)) => {
+            if let Some(c) = call {
+                calls.push(c);
+            }
+            tr
+        }
+        Err(e) => {
+            warn!(error = %e, "translate failed, falling back to (raw, fallback_en)");
+            TranslationResult {
+                normalized: query.to_string(),
+                detected_locale: DetectedLocale::Unsupported { tag: String::new() },
+            }
+        }
+    };
+    Ok((
+        QueryPreprocessing {
+            intent,
+            translation,
+        },
+        calls,
+    ))
 }
 
 #[cfg(test)]

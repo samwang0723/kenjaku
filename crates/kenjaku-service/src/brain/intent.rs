@@ -65,8 +65,7 @@ impl IntentClassifier for LlmIntentClassifier {
             latency_ms,
         });
 
-        let raw = response.answer.trim().to_lowercase();
-        let intent = parse_intent(&raw);
+        let intent = Intent::from_raw(&response.answer);
 
         Ok((
             IntentClassification {
@@ -78,18 +77,9 @@ impl IntentClassifier for LlmIntentClassifier {
     }
 }
 
-fn parse_intent(raw: &str) -> Intent {
-    match raw {
-        "factual" => Intent::Factual,
-        "navigational" => Intent::Navigational,
-        "how_to" | "howto" | "how-to" => Intent::HowTo,
-        "comparison" => Intent::Comparison,
-        "troubleshooting" => Intent::Troubleshooting,
-        "exploratory" => Intent::Exploratory,
-        "conversational" => Intent::Conversational,
-        _ => Intent::Unknown,
-    }
-}
+// Intent parsing moved to `Intent::from_raw` in kenjaku-core so the
+// merged-preamble path in `GeminiProvider::preprocess_query` can use
+// the same logic. See `crates/kenjaku-core/src/types/intent.rs`.
 
 #[cfg(test)]
 mod tests {
@@ -97,21 +87,33 @@ mod tests {
 
     #[test]
     fn test_parse_intent_valid() {
-        assert_eq!(parse_intent("factual"), Intent::Factual);
-        assert_eq!(parse_intent("navigational"), Intent::Navigational);
-        assert_eq!(parse_intent("how_to"), Intent::HowTo);
-        assert_eq!(parse_intent("howto"), Intent::HowTo);
-        assert_eq!(parse_intent("how-to"), Intent::HowTo);
-        assert_eq!(parse_intent("comparison"), Intent::Comparison);
-        assert_eq!(parse_intent("troubleshooting"), Intent::Troubleshooting);
-        assert_eq!(parse_intent("exploratory"), Intent::Exploratory);
-        assert_eq!(parse_intent("conversational"), Intent::Conversational);
+        assert_eq!(Intent::from_raw("factual"), Intent::Factual);
+        assert_eq!(Intent::from_raw("navigational"), Intent::Navigational);
+        assert_eq!(Intent::from_raw("how_to"), Intent::HowTo);
+        assert_eq!(Intent::from_raw("howto"), Intent::HowTo);
+        assert_eq!(Intent::from_raw("how-to"), Intent::HowTo);
+        assert_eq!(Intent::from_raw("comparison"), Intent::Comparison);
+        assert_eq!(Intent::from_raw("troubleshooting"), Intent::Troubleshooting);
+        assert_eq!(Intent::from_raw("exploratory"), Intent::Exploratory);
+        assert_eq!(Intent::from_raw("conversational"), Intent::Conversational);
     }
 
     #[test]
     fn test_parse_intent_unknown() {
-        assert_eq!(parse_intent(""), Intent::Unknown);
-        assert_eq!(parse_intent("garbage"), Intent::Unknown);
-        assert_eq!(parse_intent("FACTUAL"), Intent::Unknown); // case sensitive after lowering
+        assert_eq!(Intent::from_raw(""), Intent::Unknown);
+        assert_eq!(Intent::from_raw("garbage"), Intent::Unknown);
+    }
+
+    #[test]
+    fn test_parse_intent_case_insensitive() {
+        // Promoted helper now lowercases before matching, so uppercase
+        // and mixed-case inputs are accepted (LLMs occasionally emit
+        // these even when prompted for snake_case).
+        assert_eq!(Intent::from_raw("FACTUAL"), Intent::Factual);
+        assert_eq!(Intent::from_raw("How_To"), Intent::HowTo);
+        assert_eq!(
+            Intent::from_raw("  conversational  "),
+            Intent::Conversational
+        );
     }
 }

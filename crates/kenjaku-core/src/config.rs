@@ -29,6 +29,15 @@ pub struct AppConfig {
     /// `key_strategy = ip` preserves pre-3c.2 behavior byte-for-byte.
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
+    /// Preamble call-shape selector. Default
+    /// `preamble_mode = parallel_preamble` preserves today's 4-call
+    /// layout (classify ∥ translate, generate, suggest).
+    /// `preamble_mode = merged_preamble` collapses the preamble pair
+    /// into one merged Gemini call with structured-output JSON,
+    /// dropping to 3 LLM calls per request total. Generate + suggest
+    /// are unchanged regardless of this setting.
+    #[serde(default)]
+    pub pipeline: PipelineConfig,
 }
 
 impl AppConfig {
@@ -277,6 +286,35 @@ fn default_chunk_size() -> usize {
 
 fn default_chunk_overlap() -> usize {
     50
+}
+
+/// Preamble call-shape selector — controls how the
+/// `classify_intent` + `translate` preamble pair is issued to the LLM
+/// provider. The downstream `generate` + `suggest` calls are unaffected
+/// by this setting (4-call total in `parallel_preamble`, 3-call total
+/// in `merged_preamble`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineConfig {
+    #[serde(default)]
+    pub preamble_mode: PreambleMode,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreambleMode {
+    /// Today's behavior: `classify_intent` and `translate` issued as
+    /// two parallel LLM calls via `tokio::join!`. Critical-path
+    /// latency is bounded by the slower of the two (~1.2s typical).
+    /// 4 LLM calls per request total (preamble pair + generate +
+    /// suggest).
+    #[default]
+    ParallelPreamble,
+    /// Phase A: `classify_intent` + `translate` + locale-detect
+    /// collapsed into a single Gemini structured-output call. Saves
+    /// one HTTP round-trip and ~30% of preamble input tokens. 3 LLM
+    /// calls per request total (merged preamble + generate +
+    /// suggest).
+    MergedPreamble,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1011,6 +1049,7 @@ contextualizer:
                 },
             },
             rate_limit: RateLimitConfig::default(),
+            pipeline: PipelineConfig::default(),
         };
 
         let result = cfg.validate_secrets();
@@ -1107,6 +1146,7 @@ contextualizer:
                 },
             },
             rate_limit: RateLimitConfig::default(),
+            pipeline: PipelineConfig::default(),
         };
 
         assert!(cfg.validate_secrets().is_ok());
@@ -1377,6 +1417,7 @@ clock_skew_secs: 60
                 },
             },
             rate_limit: RateLimitConfig::default(),
+            pipeline: PipelineConfig::default(),
         };
         let err = cfg.validate_secrets().unwrap_err().to_string();
         assert!(err.contains("tenancy.jwt.issuer"), "got: {err}");
