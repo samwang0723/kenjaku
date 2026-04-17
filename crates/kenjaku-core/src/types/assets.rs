@@ -69,7 +69,10 @@ mod tests {
         assert_eq!(AssetType::from_raw("  STOCK  "), Some(AssetType::Stock));
         assert_eq!(AssetType::from_raw("equity"), Some(AssetType::Stock));
         assert_eq!(AssetType::from_raw("crypto"), Some(AssetType::Crypto));
-        assert_eq!(AssetType::from_raw("cryptocurrency"), Some(AssetType::Crypto));
+        assert_eq!(
+            AssetType::from_raw("cryptocurrency"),
+            Some(AssetType::Crypto)
+        );
         assert_eq!(AssetType::from_raw("etf"), None);
         assert_eq!(AssetType::from_raw(""), None);
     }

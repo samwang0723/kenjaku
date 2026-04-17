@@ -1155,11 +1155,12 @@ contextualizer:
     #[test]
     fn test_default_component_layout() {
         let layout = ComponentLayout::default();
-        assert_eq!(layout.order.len(), 3);
+        assert_eq!(layout.order.len(), 4);
         assert_eq!(
             layout.order,
             vec![
                 crate::types::component::ComponentType::LlmAnswer,
+                crate::types::component::ComponentType::Assets,
                 crate::types::component::ComponentType::Sources,
                 crate::types::component::ComponentType::Suggestions,
             ]

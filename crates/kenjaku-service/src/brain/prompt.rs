@@ -59,26 +59,24 @@ pub fn build_search_prompt(query: &str, context: &str, answer_locale: Locale) ->
     )
 }
 
-/// Build the per-request system instruction for the answer call.
-/// Pins the answer language, sets source-handling rules, and keeps
-/// wording generic so we don't trip Gemini preview models into
-/// interpreting literal tool names as client-side function calls.
+/// Build the per-request system instruction for the merged-JSON
+/// answer call. Pins the answer language, sets source-handling rules,
+/// and carries the `{message, assets, suggestions}` output contract
+/// the provider asks Gemini for via `responseSchema`.
 ///
-/// Two variants, selected by `has_builtin_web_tool`:
+/// Two source-rules variants, selected by `has_builtin_web_tool`:
 /// - **true** — the `google_search` grounding tool is attached to
-///   this request. The model can reach for live web facts itself.
-///   Prompt language encourages it to do so for real-time questions
-///   and forbids the "I cannot access real-time data" refusal.
+///   this request. (Currently unused — merged-JSON mode forbids the
+///   tool since Gemini rejects `tools` + `responseSchema` together.
+///   Retained for future providers that can mix both.)
 /// - **false** — no tool is attached; a separate `WebSearchProvider`
 ///   (Brave) has already pre-injected fresh web results as
-///   `[Source N]` chunks in the user turn. Prompt language tells
-///   the model those chunks ARE its real-time data and that it must
-///   synthesize from them without deferring the user elsewhere.
+///   `[Source N]` chunks in the user turn. This is the production
+///   path.
 ///
 /// Returns the raw text string. The caller wraps it in
 /// `Message::system_text(...)` or passes it to the LLM provider's
 /// wire format converter.
-///
 pub fn build_search_system_instruction(
     answer_locale: Locale,
     has_builtin_web_tool: bool,
@@ -96,7 +94,7 @@ pub fn build_search_system_instruction(
     // template itself plus anything the source-rules block ever
     // introduces in the future).
     prompts::render(
-        prompts::SYSTEM_INSTRUCTION,
+        prompts::GENERATE_MERGED,
         &[
             ("source_rules", source_rules),
             ("locale_display", display),
@@ -207,10 +205,10 @@ mod tests {
     #[test]
     fn system_instruction_with_web_tool_en() {
         let text = build_search_system_instruction(Locale::En, true);
-        assert!(text.starts_with("You are a helpful document search assistant."));
+        assert!(text.starts_with("You are a helpful document search assistant"));
         assert!(text.contains("Your inputs, in priority order:"));
         assert!(text.contains("built-in web search capability"));
-        assert!(text.contains("Write the final answer in English (BCP-47 `en`)"));
+        assert!(text.contains("in English (BCP-47 `en`)"));
         assert!(!text.contains("Your only inputs are:"));
     }
 
@@ -218,23 +216,23 @@ mod tests {
     #[test]
     fn system_instruction_without_web_tool_en() {
         let text = build_search_system_instruction(Locale::En, false);
-        assert!(text.starts_with("You are a helpful document search assistant."));
+        assert!(text.starts_with("You are a helpful document search assistant"));
         assert!(text.contains("Your only inputs are:"));
         assert!(text.contains("platform has already done the web search for you"));
-        assert!(text.contains("Write the final answer in English (BCP-47 `en`)"));
+        assert!(text.contains("in English (BCP-47 `en`)"));
         assert!(!text.contains("built-in web search capability"));
     }
 
     #[test]
     fn system_instruction_with_web_tool_zh() {
         let text = build_search_system_instruction(Locale::ZhTw, true);
-        assert!(text.contains("Write the final answer in 繁體中文 (BCP-47 `zh-TW`)"));
+        assert!(text.contains("in 繁體中文 (BCP-47 `zh-TW`)"));
     }
 
     #[test]
     fn system_instruction_without_web_tool_zh() {
         let text = build_search_system_instruction(Locale::Zh, false);
-        assert!(text.contains("Write the final answer in 简体中文 (BCP-47 `zh`)"));
+        assert!(text.contains("in 简体中文 (BCP-47 `zh`)"));
     }
 
     // Structural tests: verify the rendering assembly logic without

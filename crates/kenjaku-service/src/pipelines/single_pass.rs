@@ -389,27 +389,28 @@ impl SearchPipeline for SinglePassPipeline {
         // LlmResponse.suggestions is populated directly, no separate
         // suggest() round-trip. Fall back to chunk titles when the
         // model under-delivered (rare — see merged_preamble tests).
-        let (suggestions, suggestion_source) =
-            if llm_response.suggestions.len() >= self.suggestion_count {
-                (
-                    llm_response.suggestions[..self.suggestion_count].to_vec(),
-                    SuggestionSource::Llm,
-                )
-            } else {
-                warn!(
-                    count = llm_response.suggestions.len(),
-                    needed = self.suggestion_count,
-                    "Merged-JSON response returned fewer suggestions than needed, falling back to chunk titles"
-                );
-                (
-                    chunks
-                        .iter()
-                        .map(|c| c.title.clone())
-                        .take(self.suggestion_count)
-                        .collect(),
-                    SuggestionSource::VectorStore,
-                )
-            };
+        let (suggestions, suggestion_source) = if llm_response.suggestions.len()
+            >= self.suggestion_count
+        {
+            (
+                llm_response.suggestions[..self.suggestion_count].to_vec(),
+                SuggestionSource::Llm,
+            )
+        } else {
+            warn!(
+                count = llm_response.suggestions.len(),
+                needed = self.suggestion_count,
+                "Merged-JSON response returned fewer suggestions than needed, falling back to chunk titles"
+            );
+            (
+                chunks
+                    .iter()
+                    .map(|c| c.title.clone())
+                    .take(self.suggestion_count)
+                    .collect(),
+                SuggestionSource::VectorStore,
+            )
+        };
 
         // Step 6: Assemble components — includes Assets component when
         // the merged-JSON response extracted any.
@@ -841,6 +842,8 @@ mod tests {
                     sources: vec![],
                     model: "mock-model".to_string(),
                     usage: None,
+                    assets: Vec::new(),
+                    suggestions: self.suggestions.clone(),
                 },
                 Some(call),
             ))
@@ -864,25 +867,10 @@ mod tests {
                     total_tokens: 150,
                     cost_usd: Some(0.001),
                 }),
+                assets: None,
+                suggestions: None,
             };
             Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
-        }
-
-        async fn suggest(
-            &self,
-            _query: &str,
-            _answer: &str,
-            _cancel: &CancellationToken,
-        ) -> Result<(Vec<String>, Option<LlmCall>)> {
-            let call = LlmCall {
-                purpose: "suggest".to_string(),
-                model: "mock-model".to_string(),
-                input_tokens: 30,
-                output_tokens: 40,
-                cost_usd: 0.0005,
-                latency_ms: 1,
-            };
-            Ok((self.suggestions.clone(), Some(call)))
         }
     }
 
@@ -1287,8 +1275,21 @@ mod tests {
             snippet: Some("snippet".into()),
         }];
 
+        let suggestions = vec![
+            "Suggestion 1".to_string(),
+            "Suggestion 2".to_string(),
+            "Suggestion 3".to_string(),
+        ];
+
         let done = pipeline
-            .complete_stream(ctx, "accumulated answer", grounding_sources, None, Vec::new(), Vec::new())
+            .complete_stream(
+                ctx,
+                "accumulated answer",
+                grounding_sources,
+                None,
+                suggestions,
+                Vec::new(),
+            )
             .await;
 
         // Grounding sources come first, then internal sources
@@ -1299,7 +1300,7 @@ mod tests {
         // Gemini grounding flag should be set
         assert!(done.grounding.gemini_grounding_used);
 
-        // Suggestions from the brain
+        // Suggestions forwarded from the merged-JSON terminal chunk
         assert_eq!(done.suggestions.len(), 3);
     }
 
@@ -1336,7 +1337,14 @@ mod tests {
         }];
 
         let done = pipeline
-            .complete_stream(ctx, "answer", grounding_sources, None, Vec::new(), Vec::new())
+            .complete_stream(
+                ctx,
+                "answer",
+                grounding_sources,
+                None,
+                Vec::new(),
+                Vec::new(),
+            )
             .await;
 
         // Only one source after dedup -- grounding wins because it's first
@@ -1369,7 +1377,9 @@ mod tests {
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
-        let done = pipeline.complete_stream(ctx, "answer", vec![], None).await;
+        let done = pipeline
+            .complete_stream(ctx, "answer", vec![], None, Vec::new(), Vec::new())
+            .await;
 
         assert_eq!(done.sources.len(), 1);
         assert!(!done.grounding.gemini_grounding_used);
@@ -1397,7 +1407,7 @@ mod tests {
         };
 
         let _done = pipeline
-            .complete_stream(ctx, "streamed answer", vec![], None)
+            .complete_stream(ctx, "streamed answer", vec![], None, Vec::new(), Vec::new())
             .await;
 
         let record = rx.try_recv().unwrap();
@@ -1429,7 +1439,7 @@ mod tests {
         };
 
         let _done = pipeline
-            .complete_stream(ctx, "history answer", vec![], None)
+            .complete_stream(ctx, "history answer", vec![], None, Vec::new(), Vec::new())
             .await;
 
         let history = pipeline
@@ -1461,7 +1471,9 @@ mod tests {
             _cancel_guard: CancelGuard::new(CancellationToken::new()),
         };
 
-        let _done = pipeline.complete_stream(ctx, "", vec![], None).await;
+        let _done = pipeline
+            .complete_stream(ctx, "", vec![], None, Vec::new(), Vec::new())
+            .await;
 
         let history = pipeline
             .history_store
@@ -1647,11 +1659,12 @@ mod tests {
 
         let usage = response.metadata.usage;
         // MockBrain emits an LlmCall for each of: classify_intent,
-        // translate, generate, suggest.
+        // translate, generate. Merged-JSON removed the separate suggest
+        // call — suggestions now ride on the generate response.
         assert_eq!(
             usage.calls.len(),
-            4,
-            "expected 4 LLM calls (classify + translate + generate + suggest), got {:?}",
+            3,
+            "expected 3 LLM calls (classify + translate + generate), got {:?}",
             usage.calls.iter().map(|c| &c.purpose).collect::<Vec<_>>()
         );
         assert!(usage.total_tokens > 0);
@@ -1663,7 +1676,6 @@ mod tests {
         assert!(purposes.contains(&"classify_intent"));
         assert!(purposes.contains(&"translate"));
         assert!(purposes.contains(&"generate"));
-        assert!(purposes.contains(&"suggest"));
     }
 
     /// When the translator fails, its `LlmCall` is absent from usage —
@@ -1681,9 +1693,10 @@ mod tests {
             .unwrap();
 
         let usage = response.metadata.usage;
-        // classify_intent, generate, suggest — translate failed so no
-        // call is recorded for it.
-        assert_eq!(usage.calls.len(), 3);
+        // classify_intent + generate — translate failed so no call is
+        // recorded for it, and suggestions now ride on the merged
+        // generate JSON (no separate suggest call).
+        assert_eq!(usage.calls.len(), 2);
         assert!(usage.calls.iter().all(|c| c.purpose != "translate"));
     }
 
@@ -1735,11 +1748,19 @@ mod tests {
         };
 
         let done = pipeline
-            .complete_stream(ctx, "answer", vec![], Some(generator_call))
+            .complete_stream(
+                ctx,
+                "answer",
+                vec![],
+                Some(generator_call),
+                Vec::new(),
+                Vec::new(),
+            )
             .await;
 
-        // classify (preseed) + generate_stream + suggest (from MockBrain)
-        assert_eq!(done.usage.calls.len(), 3);
+        // preamble classify_intent (preseed) + streaming generate_stream.
+        // No separate suggest call any more — merged JSON handles it.
+        assert_eq!(done.usage.calls.len(), 2);
         let purposes: Vec<&str> = done
             .usage
             .calls
@@ -1748,7 +1769,6 @@ mod tests {
             .collect();
         assert!(purposes.contains(&"classify_intent"));
         assert!(purposes.contains(&"generate_stream"));
-        assert!(purposes.contains(&"suggest"));
         assert!(done.usage.total_tokens > 0);
         assert!(done.usage.estimated_cost_usd > 0.0);
     }

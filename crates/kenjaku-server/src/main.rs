@@ -79,17 +79,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Create providers
     let embedding_provider = Arc::from(create_embedding_provider(config.embedding.clone())?);
-    // Attach Gemini's built-in `google_search` tool only when no
-    // external `WebSearchProvider` is wired in. If `web_search.enabled`
-    // is true, Brave (or whichever provider) pre-injects fresh web
-    // results as synthetic `[Source N]` chunks — google_search becomes
-    // redundant and we skip it to save tokens and latency. When
-    // disabled, google_search is the fallback source of live facts.
-    let use_google_search_tool = !config.web_search.enabled;
-    let llm_provider = Arc::new(GeminiProvider::new(
-        config.llm.clone(),
-        use_google_search_tool,
-    ));
+    // Merged-JSON generate mode: Gemini cannot mix `responseSchema`
+    // with built-in tools, so the `google_search` grounding tool is
+    // never attached here. Web freshness is supplied by the separate
+    // `WebSearchProvider` tier (Brave) which pre-injects synthetic
+    // `[Source N]` chunks into the retrieved context.
+    let llm_provider = Arc::new(GeminiProvider::new(config.llm.clone()));
 
     // Create repositories
     let feedback_repo = FeedbackRepository::new(pg_pool.clone());
@@ -162,10 +157,14 @@ async fn main() -> anyhow::Result<()> {
     // Phase 2 sub-capabilities (Classifier, Translator, Generator).
     // Phase 3 can swap any of the three Arcs below to point at a
     // different provider without touching the pipeline or CompositeBrain.
+    // `has_web_grounding: false` — merged-JSON mode never attaches
+    // Gemini's built-in `google_search` tool because it's incompatible
+    // with `responseSchema`. The flag is retained on the trait for
+    // future providers that can mix both.
     let gemini_brain = Arc::new(GeminiBrain::new(
         llm_provider.clone(),
         intent_classifier,
-        use_google_search_tool,
+        false,
         config.llm.model.clone(),
     ));
 

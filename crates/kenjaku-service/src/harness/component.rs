@@ -74,6 +74,8 @@ mod tests {
             }],
             model: "gemini-2.0-flash-lite".to_string(),
             usage: None,
+            assets: Vec::new(),
+            suggestions: Vec::new(),
         };
 
         let suggestions = vec![
@@ -107,6 +109,8 @@ mod tests {
             sources: vec![],
             model: "test".to_string(),
             usage: None,
+            assets: Vec::new(),
+            suggestions: Vec::new(),
         };
 
         let components = service.assemble(
