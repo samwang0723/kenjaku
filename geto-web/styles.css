@@ -2197,12 +2197,12 @@ body.admin-mode .scroll-area { padding-bottom: 0 !important; }
 .login-field input,
 .login-field select {
   font-family: inherit;
-  padding: 12px 14px;
+  padding: 10px 14px;
   background: var(--bg-input);
   color: var(--text-primary);
   border: 1.5px solid rgba(255, 117, 145, 0.4);
   border-radius: 12px;
-  font-size: 16px;
+  font-size: 14px;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .login-field input::placeholder { color: #7B849B; }
