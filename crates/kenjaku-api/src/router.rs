@@ -3,9 +3,10 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::extract::Extension;
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::key_extractor::SmartIpKeyExtractor;
 use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
@@ -18,6 +19,7 @@ use crate::extractors::SessionLocaleLookup;
 use crate::handlers;
 use crate::middleware::auth::tenant_auth_middleware;
 use crate::middleware::rate_limit::TenantPrincipalIpExtractor;
+use crate::middleware::require_admin::require_admin;
 
 /// Build the API router with all routes, rate limiting, and security layers.
 ///
@@ -72,7 +74,54 @@ pub fn build_router(
         .layer(GovernorLayer {
             config: governor_conf,
         })
+        .layer(auth_layer.clone());
+
+    // /admin/users/* — same auth middleware PLUS require_admin. The
+    // rate-limit layer is NOT re-applied here (it's added at the
+    // /api/v1 merge below via a separate router so both api_routes
+    // and admin_routes share the same bucket).
+    let admin_routes = Router::new()
+        .route(
+            "/admin/users",
+            get(handlers::admin_users::list_users).post(handlers::admin_users::create_user),
+        )
+        .route(
+            "/admin/users/{id}",
+            patch(handlers::admin_users::update_user).delete(handlers::admin_users::delete_user),
+        )
+        .route(
+            "/admin/users/{id}/reset-password",
+            post(handlers::admin_users::reset_password),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_admin,
+        ))
         .layer(auth_layer);
+
+    // /auth/* — login route ONLY. Skips tenant_auth_middleware (pre-
+    // auth, no tenant context exists yet). Gets its own tighter
+    // per-IP governor: 5 req / 60s with burst 3, chosen to slow down
+    // credential-stuffing without crippling a forgetful user retrying
+    // a typo. Pre-auth == no TenantContext, so we use the plain
+    // SmartIpKeyExtractor (the tenant-aware extractor would just fall
+    // back to "public" here anyway).
+    let login_governor = Arc::new(
+        GovernorConfigBuilder::default()
+            // `tower_governor` uses per-ms internally. 5 per 60s with
+            // burst 3 is the spec: set per_second=0 by using the
+            // precise `period` setter.
+            .period(Duration::from_secs(12))
+            .burst_size(3)
+            .key_extractor(SmartIpKeyExtractor)
+            .finish()
+            .expect("login rate limiter config"),
+    );
+    let auth_routes = Router::new()
+        .route("/auth/login", post(handlers::auth::login))
+        .layer(GovernorLayer {
+            config: login_governor,
+        });
 
     // Health routes — no auth, no rate limiting (load balancer probes).
     let health_routes = Router::new()
@@ -80,7 +129,7 @@ pub fn build_router(
         .route("/ready", get(handlers::health::ready));
 
     Router::new()
-        .nest("/api/v1", api_routes)
+        .nest("/api/v1", api_routes.merge(admin_routes).merge(auth_routes))
         .merge(health_routes)
         .layer(TimeoutLayer::new(Duration::from_secs(
             server_config.request_timeout_secs,

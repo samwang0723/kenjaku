@@ -21,8 +21,8 @@
 //! caller (login handler) therefore cannot distinguish the four cases
 //! and leak which column tripped the check.
 
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use chrono::{DateTime, Utc};
 use rand_core::OsRng;
 use sqlx::{PgPool, Row};
@@ -170,8 +170,8 @@ impl UsersRepository {
     /// enabled-check (usually via [`UsersRepository::verify_password`]
     /// which flattens miss / disabled / wrong-password into one error).
     #[instrument(skip(self))]
-    // nosemgrep: tenant-scope-required — pre-auth lookup: no TenantContext exists yet on POST /auth/login
     pub async fn find_by_email(&self, email: &str) -> Result<Option<UserRow>> {
+        // nosemgrep: tenant-scope-required — pre-auth lookup: no TenantContext exists yet on POST /auth/login
         let row = sqlx::query(
             r#"
             SELECT id, tenant_id, email, password_hash, role, enabled, created_at, last_login_at
@@ -305,8 +305,8 @@ impl UsersRepository {
     /// key; the `tenant_id` hint on the semgrep rule is satisfied by
     /// the nosemgrep comment below.
     #[instrument(skip(self))]
-    // nosemgrep: tenant-scope-required — UPDATE by PK only; tenant_id already validated in verify_password
     pub async fn touch_last_login(&self, id: Uuid) -> Result<()> {
+        // nosemgrep: tenant-scope-required — UPDATE by PK only; tenant_id already validated in verify_password
         sqlx::query(
             r#"
             UPDATE users SET last_login_at = NOW()
@@ -339,8 +339,7 @@ impl UsersRepository {
             // Timing-balance: run a dummy argon2 verify so the "no such
             // user" path takes roughly the same wall-clock time as
             // "user exists, wrong password". The result is discarded.
-            const DUMMY_HASH: &str =
-                "$argon2id$v=19$m=19456,t=2,p=1$ZHVtbXlfc2FsdF9mb3JfY29tcA$DdI7HYa/qQlGAfjTMH+3CUOBxfYMZi9i3N7VpY8f9UY";
+            const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$ZHVtbXlfc2FsdF9mb3JfY29tcA$DdI7HYa/qQlGAfjTMH+3CUOBxfYMZi9i3N7VpY8f9UY";
             if let Ok(ph) = PasswordHash::new(DUMMY_HASH) {
                 let _ = Argon2::default().verify_password(password.as_bytes(), &ph);
             }
@@ -458,7 +457,11 @@ mod tests {
         let hash = UsersRepository::hash_password(pw).unwrap();
         let ph = PasswordHash::new(&hash).unwrap();
         // Correct password verifies.
-        assert!(Argon2::default().verify_password(pw.as_bytes(), &ph).is_ok());
+        assert!(
+            Argon2::default()
+                .verify_password(pw.as_bytes(), &ph)
+                .is_ok()
+        );
         // Wrong password rejects.
         assert!(
             Argon2::default()

@@ -5,8 +5,8 @@ pub mod middleware;
 pub mod router;
 
 use kenjaku_core::config::{RateLimitConfig, TenancyConfig};
-use kenjaku_infra::auth::JwtValidator;
-use kenjaku_infra::postgres::TenantsCache;
+use kenjaku_infra::auth::{JwtMinter, JwtValidator};
+use kenjaku_infra::postgres::{TenantsCache, UsersRepository};
 use kenjaku_infra::qdrant::QdrantClient;
 use kenjaku_infra::redis::RedisClient;
 use std::sync::Arc;
@@ -36,6 +36,12 @@ pub struct AppState {
     pub tenants_cache: Arc<TenantsCache>,
     /// JWT validator — always constructed at startup (Phase 3e).
     pub jwt_validator: Arc<JwtValidator>,
+    /// JWT minter — constructed at startup for `POST /auth/login`
+    /// (auth-login-rbac). Uses the matching private key PEM so minted
+    /// tokens validate under `jwt_validator` in the same process.
+    pub jwt_minter: Arc<JwtMinter>,
+    /// Users repository — powers `/auth/login` + `/admin/users/*`.
+    pub users_repo: UsersRepository,
     /// Clone of `AppConfig.tenancy` — used for collection name template.
     pub tenancy_config: TenancyConfig,
     /// Clone of `AppConfig.rate_limit` — read by the
