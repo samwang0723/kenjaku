@@ -71,15 +71,27 @@ pub enum AuthErrorCode {
     /// deliberately flattens all these cases so attackers cannot
     /// enumerate which specific check rejected them.
     Unauthorized,
+    /// `KNJK-4011` — 401: login attempt with wrong email, wrong password,
+    /// or a disabled user. Uniform error surface; no enumeration of
+    /// which of those three conditions tripped the check.
+    InvalidCredentials,
     /// `KNJK-4031` — 403: token validated but the claimed `tenant_id`
     /// is not in the tenants cache.
     TenantNotFound,
     /// `KNJK-4032` — 403: tenant exists but plan-tier / status check
     /// failed (suspended account, revoked tenant, etc.).
     TenantSuspended,
+    /// `KNJK-4033` — 403: authenticated caller is not an admin for the
+    /// tenant they're trying to mutate. Emitted by `require_admin`
+    /// middleware on every `/api/v1/admin/*` route.
+    AdminForbidden,
     /// `KNJK-4291` — 429: per-tenant rate limit exceeded (distinct from
     /// the per-IP limit, which produces a different response).
     TenantRateLimitExceeded,
+    /// `KNJK-4292` — 429: per-IP login-rate limit tripped. Separate from
+    /// `TenantRateLimitExceeded` (4291) because the login route runs
+    /// pre-auth — no `TenantContext` exists to attribute against.
+    LoginRateLimitExceeded,
     /// `KNJK-5031` — 503: pipeline variant unavailable (e.g. requested
     /// pipeline isn't registered, all replicas busy). Used by the
     /// pipeline selector in 3c.2+ flows.
@@ -91,9 +103,12 @@ impl AuthErrorCode {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Unauthorized => "KNJK-4010",
+            Self::InvalidCredentials => "KNJK-4011",
             Self::TenantNotFound => "KNJK-4031",
             Self::TenantSuspended => "KNJK-4032",
+            Self::AdminForbidden => "KNJK-4033",
             Self::TenantRateLimitExceeded => "KNJK-4291",
+            Self::LoginRateLimitExceeded => "KNJK-4292",
             Self::PipelineUnavailable => "KNJK-5031",
         }
     }
@@ -102,9 +117,12 @@ impl AuthErrorCode {
     pub fn http_status(&self) -> u16 {
         match self {
             Self::Unauthorized => 401,
+            Self::InvalidCredentials => 401,
             Self::TenantNotFound => 403,
             Self::TenantSuspended => 403,
+            Self::AdminForbidden => 403,
             Self::TenantRateLimitExceeded => 429,
+            Self::LoginRateLimitExceeded => 429,
             Self::PipelineUnavailable => 503,
         }
     }
@@ -114,9 +132,12 @@ impl AuthErrorCode {
     pub fn as_public_label(&self) -> &'static str {
         match self {
             Self::Unauthorized => "Unauthorized tenant",
+            Self::InvalidCredentials => "Invalid email or password",
             Self::TenantNotFound => "Tenant not found",
             Self::TenantSuspended => "Tenant suspended",
+            Self::AdminForbidden => "Admin access required",
             Self::TenantRateLimitExceeded => "Tenant rate limit exceeded",
+            Self::LoginRateLimitExceeded => "Login rate limit exceeded",
             Self::PipelineUnavailable => "Pipeline unavailable",
         }
     }
@@ -198,17 +219,54 @@ mod tests {
         assert_eq!(code.as_public_label(), "Pipeline unavailable");
     }
 
+    // ---- auth-login-rbac: three new codes (4011, 4033, 4292) -------------
+
+    #[test]
+    fn test_auth_error_code_knjk_4011_invalid_credentials() {
+        let code = AuthErrorCode::InvalidCredentials;
+        assert_eq!(code.code(), "KNJK-4011");
+        assert_eq!(code.http_status(), 401);
+        assert_eq!(code.as_public_label(), "Invalid email or password");
+    }
+
+    #[test]
+    fn test_auth_error_code_knjk_4033_admin_forbidden() {
+        let code = AuthErrorCode::AdminForbidden;
+        assert_eq!(code.code(), "KNJK-4033");
+        assert_eq!(code.http_status(), 403);
+        assert_eq!(code.as_public_label(), "Admin access required");
+    }
+
+    #[test]
+    fn test_auth_error_code_knjk_4292_login_rate_limit() {
+        // Distinct code from 4291 (tenant rate limit) — login runs
+        // pre-auth so there's no TenantContext to attribute against.
+        let code = AuthErrorCode::LoginRateLimitExceeded;
+        assert_eq!(code.code(), "KNJK-4292");
+        assert_eq!(code.http_status(), 429);
+        assert_eq!(code.as_public_label(), "Login rate limit exceeded");
+    }
+
     // ---- user_message mapping: generic, no internal leak -----------------
+
+    /// All AuthErrorCode variants enumerated explicitly so the
+    /// compiler flags a missing entry when a new variant is added.
+    fn all_auth_codes() -> [AuthErrorCode; 8] {
+        [
+            AuthErrorCode::Unauthorized,
+            AuthErrorCode::InvalidCredentials,
+            AuthErrorCode::TenantNotFound,
+            AuthErrorCode::TenantSuspended,
+            AuthErrorCode::AdminForbidden,
+            AuthErrorCode::TenantRateLimitExceeded,
+            AuthErrorCode::LoginRateLimitExceeded,
+            AuthErrorCode::PipelineUnavailable,
+        ]
+    }
 
     #[test]
     fn test_tenant_auth_user_message_uses_public_label_only() {
-        for code in [
-            AuthErrorCode::Unauthorized,
-            AuthErrorCode::TenantNotFound,
-            AuthErrorCode::TenantSuspended,
-            AuthErrorCode::TenantRateLimitExceeded,
-            AuthErrorCode::PipelineUnavailable,
-        ] {
+        for code in all_auth_codes() {
             let err = Error::TenantAuth(code);
             let msg = err.user_message();
             // Public label only — no stack trace, no debug fmt, no KNJK-XXXX
@@ -230,16 +288,26 @@ mod tests {
         // Defensive: if a handler accidentally uses format!("{e}"), the
         // output must still be safe. This mirrors `user_message()` on
         // purpose — both paths yield the generic label.
-        for code in [
-            AuthErrorCode::Unauthorized,
-            AuthErrorCode::TenantNotFound,
-            AuthErrorCode::TenantSuspended,
-            AuthErrorCode::TenantRateLimitExceeded,
-            AuthErrorCode::PipelineUnavailable,
-        ] {
+        for code in all_auth_codes() {
             let err = Error::TenantAuth(code);
             assert_eq!(format!("{err}"), code.as_public_label());
         }
+    }
+
+    #[test]
+    fn test_auth_error_codes_are_unique() {
+        // Regression guard: the `KNJK-XXXX` codes must be pairwise
+        // distinct so log pipelines and runbooks can split on them
+        // without collisions. Enumerates via `all_auth_codes()`.
+        let codes: Vec<&'static str> = all_auth_codes().iter().map(|c| c.code()).collect();
+        let mut sorted = codes.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            codes.len(),
+            "KNJK codes must be unique across variants: {codes:?}"
+        );
     }
 
     // ---- Pre-3c.1 invariants unchanged (regression guard) ----------------

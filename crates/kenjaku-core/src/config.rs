@@ -74,6 +74,13 @@ impl AppConfig {
             if jwt.public_key_path.is_empty() {
                 missing.push("tenancy.jwt.public_key_path");
             }
+            // auth-login-rbac: private_key_path powers the login-handler's
+            // JwtMinter. A deployment that skips minting can switch
+            // validation to pre-issued tokens only — at which point this
+            // check becomes the operator's explicit opt-out signal.
+            if jwt.private_key_path.is_empty() {
+                missing.push("tenancy.jwt.private_key_path");
+            }
         }
 
         if missing.is_empty() {
@@ -667,9 +674,9 @@ pub struct TenancyConfig {
     pub jwt: JwtConfig,
 }
 
-/// JWT validator configuration.
+/// JWT validator + minter configuration.
 ///
-/// Every field is required. `serde` default of empty strings is
+/// Most fields are required. `serde` default of empty strings is
 /// deliberate: we want missing fields to surface a precise "missing X"
 /// startup error via `validate_secrets()` rather than a serde parse
 /// error.
@@ -689,6 +696,22 @@ pub struct JwtConfig {
     /// bytes via environment-backed configuration sources.
     #[serde(default)]
     pub public_key_path: String,
+    /// Filesystem path to a PEM-encoded PRIVATE key (RSA or EC), used by
+    /// the login handler's `JwtMinter`. Separate from `public_key_path`
+    /// so a deployment that only *verifies* JWTs (externally issued)
+    /// can omit this value.
+    ///
+    /// Phase auth-login-rbac: required for the `POST /auth/login`
+    /// flow; `validate_secrets()` enforces non-empty at startup.
+    /// `JwtMinter::from_config` performs the same fail-fast `is_file()`
+    /// + size cap checks as the validator loader.
+    #[serde(default)]
+    pub private_key_path: String,
+    /// TTL applied by `JwtMinter::mint` to newly minted tokens (seconds).
+    /// Default 86400 (24h). No refresh-token flow in v1 — clients
+    /// re-login on expiry.
+    #[serde(default = "default_jwt_ttl")]
+    pub ttl_seconds: u64,
     /// Allowed signature algorithm. Strict single-algorithm allowlist —
     /// no downgrade path. `HS*`, `PS*`, and `none` are not representable
     /// in [`JwtAlgorithm`] by construction.
@@ -705,6 +728,12 @@ fn default_jwt_algorithm() -> JwtAlgorithm {
 }
 fn default_clock_skew_secs() -> u64 {
     30
+}
+fn default_jwt_ttl() -> u64 {
+    // 24h — documented session lifetime. Short enough that a leaked
+    // token has a bounded blast radius; long enough that operators
+    // don't sign in multiple times per work day.
+    86_400
 }
 
 /// Strict asymmetric-only JWT algorithm allowlist.
@@ -921,6 +950,7 @@ tenancy:
     issuer: "kenjaku-dev"
     audience: "kenjaku-api"
     public_key_path: "config/dev/public.pem"
+    private_key_path: "config/dev/private.pem"
 "#;
         let mut f = std::fs::File::create(config_dir.join("base.yaml")).unwrap();
         f.write_all(base_yaml.as_bytes()).unwrap();
@@ -1044,6 +1074,8 @@ contextualizer:
                     issuer: "kenjaku-dev".into(),
                     audience: "kenjaku-api".into(),
                     public_key_path: "config/dev/public.pem".into(),
+                    private_key_path: "config/dev/private.pem".into(),
+                    ttl_seconds: 86_400,
                     algorithm: JwtAlgorithm::RS256,
                     clock_skew_secs: 30,
                 },
@@ -1141,6 +1173,8 @@ contextualizer:
                     issuer: "kenjaku-dev".into(),
                     audience: "kenjaku-api".into(),
                     public_key_path: "config/dev/public.pem".into(),
+                    private_key_path: "config/dev/private.pem".into(),
+                    ttl_seconds: 86_400,
                     algorithm: JwtAlgorithm::RS256,
                     clock_skew_secs: 30,
                 },
@@ -1310,6 +1344,8 @@ key_prefix: "loc:"
         assert_eq!(cfg.issuer, "");
         assert_eq!(cfg.audience, "");
         assert_eq!(cfg.public_key_path, "");
+        assert_eq!(cfg.private_key_path, "");
+        assert_eq!(cfg.ttl_seconds, 86_400);
         assert_eq!(cfg.algorithm, JwtAlgorithm::RS256);
         assert_eq!(cfg.clock_skew_secs, 30);
     }
@@ -1320,6 +1356,8 @@ key_prefix: "loc:"
 issuer: "kenjaku-auth"
 audience: "kenjaku-api"
 public_key_path: "/run/secrets/jwt_pub.pem"
+private_key_path: "/run/secrets/jwt_priv.pem"
+ttl_seconds: 3600
 algorithm: "ES384"
 clock_skew_secs: 60
 "#;
@@ -1327,6 +1365,8 @@ clock_skew_secs: 60
         assert_eq!(cfg.issuer, "kenjaku-auth");
         assert_eq!(cfg.audience, "kenjaku-api");
         assert_eq!(cfg.public_key_path, "/run/secrets/jwt_pub.pem");
+        assert_eq!(cfg.private_key_path, "/run/secrets/jwt_priv.pem");
+        assert_eq!(cfg.ttl_seconds, 3_600);
         assert_eq!(cfg.algorithm, JwtAlgorithm::ES384);
         assert_eq!(cfg.clock_skew_secs, 60);
     }
@@ -1413,6 +1453,8 @@ clock_skew_secs: 60
                     issuer: String::new(),
                     audience: String::new(),
                     public_key_path: String::new(),
+                    private_key_path: String::new(),
+                    ttl_seconds: 86_400,
                     algorithm: JwtAlgorithm::RS256,
                     clock_skew_secs: 30,
                 },
@@ -1424,6 +1466,7 @@ clock_skew_secs: 60
         assert!(err.contains("tenancy.jwt.issuer"), "got: {err}");
         assert!(err.contains("tenancy.jwt.audience"), "got: {err}");
         assert!(err.contains("tenancy.jwt.public_key_path"), "got: {err}");
+        assert!(err.contains("tenancy.jwt.private_key_path"), "got: {err}");
     }
 
     // ---- Phase 3c.2: rate-limit key strategy -----------------------------
