@@ -1670,6 +1670,15 @@ searchInput.addEventListener('keydown', function(e) {
 updateCharCounter();
 
 document.getElementById('backBtn').addEventListener('click', function() {
+  // If we're in the admin sub-view, the back button should return to
+  // the authed search view — not trigger a conversation reset. The
+  // admin IIFE exposes `showAppAfterAuth` via window for this bridge.
+  if (document.body.classList.contains('admin-mode')) {
+    if (typeof window.showAppAfterAuth === 'function') {
+      window.showAppAfterAuth();
+    }
+    return;
+  }
   showSearchView();
   clearConversationState();
 });
@@ -1721,6 +1730,10 @@ loadPills();
     views.login.style.display = '';
     signoutRow.style.display = 'none';
     adminGearBtn.style.display = 'none';
+    // body.login-mode hides the persistent chrome (bottom search bar,
+    // back button, progress bar) so the login screen stands alone.
+    document.body.classList.add('login-mode');
+    document.body.classList.remove('admin-mode');
     // Pre-fill only when local env.
     if (currentEnv === 'local') {
       loginEmail.value = DEV_DEFAULTS.email;
@@ -1734,12 +1747,20 @@ loadPills();
     views.search.style.display = '';
     signoutRow.style.display = '';
     adminGearBtn.style.display = CACHED_ROLE === 'admin' ? '' : 'none';
+    document.body.classList.remove('login-mode');
+    document.body.classList.remove('admin-mode');
   }
+  // Bridge for the outer back-button handler to exit admin view.
+  window.showAppAfterAuth = showAppAfterAuth;
 
   function showAdminView() {
     hideAll();
     views.admin.style.display = '';
     signoutRow.style.display = '';
+    // admin-mode hides bottom-bar + progress-bar but keeps the header
+    // back-button visible so users can return to search.
+    document.body.classList.remove('login-mode');
+    document.body.classList.add('admin-mode');
     loadTeam();
     renderTenantInfo();
   }

@@ -2165,18 +2165,32 @@ body {
   flex-direction: column;
   gap: 12px;
 }
+/* .login-field IS a <label> element wrapping a caption <span> + input.
+   Caption styling goes on the direct-child span, not a nested label. */
 .login-field {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-.login-field label {
+.login-field > span {
   font-size: 10px;
   font-weight: 500;
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+
+/* View-scoped chrome hiding. Login stands alone (no bottom bar, no
+   back button). Admin hides the search bar but keeps the back button
+   so users can return to search. Header pill row (env + locale) stays
+   visible on both — users may need to pick language pre-auth. */
+body.login-mode .bottom-bar,
+body.login-mode .progress-bar,
+body.login-mode .header-back-btn,
+body.admin-mode .bottom-bar,
+body.admin-mode .progress-bar { display: none !important; }
+body.login-mode .scroll-area,
+body.admin-mode .scroll-area { padding-bottom: 0 !important; }
 .login-field input,
 .login-field select {
   font-family: inherit;
