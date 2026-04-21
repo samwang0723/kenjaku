@@ -104,13 +104,13 @@
                 <span data-i18n="invite_email">Email</span>
                 <input type="email" id="inviteEmail" required>
               </label>
-              <label class="login-field">
+              <div class="login-field">
                 <span data-i18n="invite_role">Role</span>
-                <select id="inviteRole">
-                  <option value="member" data-i18n="role_member">Member</option>
-                  <option value="admin" data-i18n="role_admin">Admin</option>
-                </select>
-              </label>
+                <div class="role-seg" id="inviteRole" role="radiogroup" aria-label="Role">
+                  <button type="button" class="role-seg-opt is-active" data-value="member" role="radio" aria-checked="true"><span data-i18n="role_member">Member</span></button>
+                  <button type="button" class="role-seg-opt" data-value="admin" role="radio" aria-checked="false"><span data-i18n="role_admin">Admin</span></button>
+                </div>
+              </div>
               <label class="login-field">
                 <span data-i18n="invite_password">Password (min 12 chars)</span>
                 <input type="password" id="invitePassword" autocomplete="new-password" minlength="12" required>

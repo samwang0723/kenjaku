@@ -1957,6 +1957,31 @@ loadPills();
     }
   });
 
+  // Segmented role picker — default 'member', click to switch.
+  // Stores the selected value on inviteRole.dataset.value so the
+  // submit handler stays a one-liner.
+  inviteRole.dataset.value = 'member';
+  inviteRole.querySelectorAll('.role-seg-opt').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var v = btn.getAttribute('data-value');
+      inviteRole.dataset.value = v;
+      inviteRole.querySelectorAll('.role-seg-opt').forEach(function (b) {
+        var on = b === btn;
+        b.classList.toggle('is-active', on);
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+      });
+    });
+  });
+  function resetRoleSeg() {
+    inviteRole.dataset.value = 'member';
+    inviteRole.querySelectorAll('.role-seg-opt').forEach(function (b) {
+      var on = b.getAttribute('data-value') === 'member';
+      b.classList.toggle('is-active', on);
+      b.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+  }
+  window.__kenjaku_resetRoleSeg = resetRoleSeg;
+
   // Central API wrapper — adds Authorization + auto-logout on 401.
   // Used by new admin calls + the login flow itself. Existing
   // fetch() calls elsewhere already go through getAuthHeaders();
@@ -2142,7 +2167,7 @@ loadPills();
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: inviteEmail.value.trim(),
-          role: inviteRole.value,
+          role: inviteRole.dataset.value || 'member',
           password: invitePassword.value,
         }),
       });
@@ -2156,6 +2181,7 @@ loadPills();
       inviteStatus.textContent = 'Invited ' + (envelope.data && envelope.data.email);
       inviteEmail.value = '';
       invitePassword.value = '';
+      if (typeof window.__kenjaku_resetRoleSeg === 'function') window.__kenjaku_resetRoleSeg();
       loadTeam();
     } catch (err) {
       if (err.message !== 'unauthenticated') {

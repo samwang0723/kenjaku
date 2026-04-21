@@ -2395,6 +2395,57 @@ body.admin-mode .scroll-area { padding-bottom: 0 !important; }
   font-weight: 500;
 }
 
+/* ----- Segmented role picker -------------------------------
+   Phone-native 2-option switcher for the invite form. Replaces
+   a <select> which rendered with the OS-default chevron. Shares
+   the input container's font-size + padding rhythm so it slots
+   into the vertical form flow without looking like a control
+   from a different design system. */
+.role-seg {
+  display: flex;
+  background: var(--bg-input);
+  border: 1.5px solid rgba(255, 117, 145, 0.4);
+  border-radius: 12px;
+  padding: 4px;
+  gap: 4px;
+  font-family: inherit;
+}
+/* Prefix with .role-seg to out-weigh the generic .invite-form button
+   rule (which sets a solid pink background for the primary CTA). */
+.role-seg .role-seg-opt {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  box-shadow: none;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+.role-seg .role-seg-opt:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.03); }
+.role-seg .role-seg-opt.is-active {
+  background: linear-gradient(90deg, rgba(180, 168, 240, 0.22), rgba(180, 168, 240, 0.12));
+  color: var(--accent-violet);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.15), 0 0 12px rgba(180, 168, 240, 0.2);
+}
+/* When an admin role is active, shift to gold to match the team-card chip. */
+.role-seg .role-seg-opt.is-active[data-value="admin"] {
+  background: linear-gradient(90deg, rgba(199, 160, 74, 0.28), rgba(199, 160, 74, 0.14));
+  color: var(--accent-orange);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.15), 0 0 12px rgba(199, 160, 74, 0.24);
+}
+.role-seg:focus-within {
+  border-color: rgba(255, 117, 145, 0.85);
+  box-shadow: 0 0 16px rgba(255, 117, 145, 0.2);
+}
+
 /* ----- Gear pill (matches env-pill language) ----- */
 .env-pill-gear {
   padding: 3px 8px;
