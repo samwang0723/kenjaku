@@ -2131,3 +2131,203 @@ body {
   font-size: 10px;
   color: var(--text-secondary);
 }
+
+/* ===== auth-login-rbac ===================================== */
+.login-view {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+.login-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 8px;
+}
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.login-field {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: var(--text-secondary);
+  gap: 4px;
+}
+.login-field input,
+.login-field select {
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  font-size: 14px;
+}
+.login-field input:focus,
+.login-field select:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.login-submit {
+  background: var(--text-primary);
+  color: #111;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  margin-top: 4px;
+}
+.login-submit:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+.login-error {
+  color: #FF6B63;
+  font-size: 12px;
+  min-height: 16px;
+}
+
+/* ----- Admin view ----- */
+.admin-view {
+  padding: 12px 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.admin-section {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.admin-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+}
+.invite-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.team-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.team-card {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.team-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.team-card-email {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.team-card-chip {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+}
+.team-card-chip.role-admin {
+  background: rgba(255, 214, 102, 0.18);
+  color: #FFD666;
+}
+.team-card-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6DD58C;
+  display: inline-block;
+  margin-left: 6px;
+}
+.team-card-dot.disabled {
+  background: #FF6B63;
+}
+.team-card-last {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.team-card-actions {
+  display: none;
+  margin-top: 10px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.team-card.expanded .team-card-actions {
+  display: flex;
+}
+.team-action-btn {
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.team-action-btn.destructive {
+  border-color: rgba(255, 107, 99, 0.5);
+  color: #FF6B63;
+}
+.tenant-info {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+/* ----- Gear pill ----- */
+.env-pill-gear {
+  padding: 4px 8px;
+  font-size: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ----- Sign out row ----- */
+.signout-row {
+  text-align: center;
+  margin-top: 12px;
+  padding-bottom: 16px;
+}
+.signout-btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.signout-btn:hover {
+  color: var(--text-secondary);
+  border-color: rgba(255, 255, 255, 0.2);
+}

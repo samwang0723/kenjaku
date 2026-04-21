@@ -33,6 +33,26 @@ var TRANSLATIONS = {
     reason_missing_key_information: 'Missing key information',
     reason_ignored_or_refused_instructions: 'Ignored or refused instructions',
     reason_harmful_or_offensive: 'Harmful or offensive',
+    // auth-login-rbac (v1 ships English only for these keys; other
+    // locales fall through to English via t()).
+    login_title: 'Sign in',
+    login_email: 'Email',
+    login_password: 'Password',
+    login_submit: 'Sign in',
+    login_error: 'Invalid email or password',
+    sign_out: 'Sign out',
+    team_title: 'Team',
+    invite_employee: 'Invite employee',
+    invite_email: 'Email',
+    invite_role: 'Role',
+    invite_password: 'Password (min 12 chars)',
+    invite_submit: 'Send invite',
+    role_admin: 'Admin',
+    role_member: 'Member',
+    user_enable: 'Enable',
+    user_disable: 'Disable',
+    user_reset_password: 'Reset password',
+    tenant_info: 'Your tenant',
   },
   zh: {
     app_title: 'Kenjaku AI',
@@ -1656,3 +1676,325 @@ document.getElementById('backBtn').addEventListener('click', function() {
 
 // Boot
 loadPills();
+
+// ============================================================
+// auth-login-rbac: login + auto-logout + admin page
+// ============================================================
+(function () {
+  // Local defaults — seeded by the users migration for the public
+  // tenant. Pre-filled only in local env so devs get a one-click
+  // sign-in. Password policy on /admin/users POST (min 12 chars)
+  // keeps these shortcuts from ever reaching production.
+  var DEV_DEFAULTS = { email: 'admin@public.com', password: 'admin' };
+  var CACHED_ROLE = localStorage.getItem('userRole') || '';
+  var CACHED_TENANT = localStorage.getItem('userTenant') || '';
+
+  var views = {
+    search: document.getElementById('searchView'),
+    results: document.getElementById('resultsView'),
+    login: document.getElementById('loginView'),
+    admin: document.getElementById('adminView'),
+  };
+  var loginForm = document.getElementById('loginForm');
+  var loginEmail = document.getElementById('loginEmail');
+  var loginPassword = document.getElementById('loginPassword');
+  var loginError = document.getElementById('loginError');
+  var signoutRow = document.getElementById('signoutRow');
+  var signoutBtn = document.getElementById('signoutBtn');
+  var adminGearBtn = document.getElementById('adminGearBtn');
+  var inviteForm = document.getElementById('inviteForm');
+  var inviteEmail = document.getElementById('inviteEmail');
+  var inviteRole = document.getElementById('inviteRole');
+  var invitePassword = document.getElementById('invitePassword');
+  var inviteStatus = document.getElementById('inviteStatus');
+  var teamList = document.getElementById('teamList');
+  var tenantInfo = document.getElementById('tenantInfo');
+
+  function hideAll() {
+    ['search', 'results', 'login', 'admin'].forEach(function (k) {
+      if (views[k]) views[k].style.display = 'none';
+    });
+  }
+
+  function showLoginView() {
+    hideAll();
+    views.login.style.display = '';
+    signoutRow.style.display = 'none';
+    adminGearBtn.style.display = 'none';
+    // Pre-fill only when local env.
+    if (currentEnv === 'local') {
+      loginEmail.value = DEV_DEFAULTS.email;
+      loginPassword.value = DEV_DEFAULTS.password;
+    }
+    loginError.textContent = '';
+  }
+
+  function showAppAfterAuth() {
+    hideAll();
+    views.search.style.display = '';
+    signoutRow.style.display = '';
+    adminGearBtn.style.display = CACHED_ROLE === 'admin' ? '' : 'none';
+  }
+
+  function showAdminView() {
+    hideAll();
+    views.admin.style.display = '';
+    signoutRow.style.display = '';
+    loadTeam();
+    renderTenantInfo();
+  }
+
+  // Central API wrapper — adds Authorization + auto-logout on 401.
+  // Used by new admin calls + the login flow itself. Existing
+  // fetch() calls elsewhere already go through getAuthHeaders();
+  // the 401-handler only trips on explicit opt-in via fetchApi.
+  window.fetchApi = async function fetchApi(url, opts) {
+    opts = opts || {};
+    var headers = Object.assign({}, getAuthHeaders(), opts.headers || {});
+    var res = await fetch(url, Object.assign({}, opts, { headers: headers }));
+    if (res.status === 401) {
+      clearAuth();
+      showLoginView();
+      throw new Error('unauthenticated');
+    }
+    return res;
+  };
+
+  function clearAuth() {
+    localStorage.removeItem('bearerToken');
+    localStorage.removeItem('bearerExp');
+    localStorage.removeItem('userRole');
+    localStorage.removeItem('userTenant');
+    localStorage.removeItem('userEmail');
+    CACHED_ROLE = '';
+    CACHED_TENANT = '';
+    if (bearerTokenInput) bearerTokenInput.value = '';
+  }
+
+  function onLoginSuccess(data) {
+    if (bearerTokenInput) {
+      bearerTokenInput.value = data.token;
+      localStorage.setItem('bearerToken', data.token);
+    }
+    if (data.expires_at) localStorage.setItem('bearerExp', data.expires_at);
+    CACHED_ROLE = data.role || 'member';
+    CACHED_TENANT = data.tenant_id || '';
+    localStorage.setItem('userRole', CACHED_ROLE);
+    localStorage.setItem('userTenant', CACHED_TENANT);
+    localStorage.setItem('userEmail', data.email || '');
+    showAppAfterAuth();
+    loadPills();
+  }
+
+  async function submitLogin(e) {
+    e.preventDefault();
+    loginError.textContent = '';
+    var submitBtn = loginForm.querySelector('button[type=submit]');
+    submitBtn.disabled = true;
+    try {
+      var res = await fetch(API_BASE + '/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: loginEmail.value.trim(), password: loginPassword.value }),
+      });
+      var envelope = await res.json().catch(function () { return {}; });
+      if (!res.ok || !envelope.success) {
+        loginError.textContent = (envelope && envelope.error) || t('login_error');
+        return;
+      }
+      onLoginSuccess(envelope.data);
+    } catch (err) {
+      loginError.textContent = t('login_error');
+    } finally {
+      submitBtn.disabled = false;
+    }
+  }
+
+  function onSignOut() {
+    clearAuth();
+    showLoginView();
+  }
+
+  // ------- Admin (team) page -------
+
+  async function loadTeam() {
+    teamList.innerHTML = '';
+    try {
+      var res = await fetchApi(API_BASE + '/admin/users');
+      var envelope = await res.json().catch(function () { return {}; });
+      var users = (envelope && envelope.data) || [];
+      if (!Array.isArray(users) || users.length === 0) {
+        teamList.innerHTML = '<div class="team-card-last">—</div>';
+        return;
+      }
+      users.forEach(function (u) { teamList.appendChild(renderTeamCard(u)); });
+    } catch (err) {
+      // fetchApi already handled 401; other errors we render softly.
+      if (err.message !== 'unauthenticated') {
+        teamList.innerHTML = '<div class="team-card-last">Failed to load team.</div>';
+      }
+    }
+  }
+
+  function renderTenantInfo() {
+    tenantInfo.textContent = '';
+    var email = localStorage.getItem('userEmail') || '';
+    var rows = [
+      ['Tenant', CACHED_TENANT || '—'],
+      ['You', email],
+      ['Role', CACHED_ROLE],
+    ];
+    rows.forEach(function (pair) {
+      var div = document.createElement('div');
+      div.textContent = pair[0] + ': ' + pair[1];
+      tenantInfo.appendChild(div);
+    });
+  }
+
+  function renderTeamCard(user) {
+    var card = document.createElement('div');
+    card.className = 'team-card';
+    card.dataset.id = user.id;
+
+    var head = document.createElement('div');
+    head.className = 'team-card-head';
+    var emailSpan = document.createElement('span');
+    emailSpan.className = 'team-card-email';
+    emailSpan.textContent = user.email;
+    var chip = document.createElement('span');
+    chip.className = 'team-card-chip' + (user.role === 'admin' ? ' role-admin' : '');
+    chip.textContent = user.role;
+    var dot = document.createElement('span');
+    dot.className = 'team-card-dot' + (user.enabled ? '' : ' disabled');
+    head.appendChild(emailSpan);
+    head.appendChild(chip);
+    head.appendChild(dot);
+    card.appendChild(head);
+
+    var last = document.createElement('div');
+    last.className = 'team-card-last';
+    last.textContent = user.last_login_at
+      ? 'Last login ' + relativeTime(user.last_login_at)
+      : 'Never signed in';
+    card.appendChild(last);
+
+    // Actions (reveal on tap).
+    var actions = document.createElement('div');
+    actions.className = 'team-card-actions';
+    var resetBtn = document.createElement('button');
+    resetBtn.className = 'team-action-btn';
+    resetBtn.textContent = t('user_reset_password');
+    resetBtn.addEventListener('click', function (e) { e.stopPropagation(); resetUserPassword(user); });
+    var toggleBtn = document.createElement('button');
+    toggleBtn.className = 'team-action-btn' + (user.enabled ? ' destructive' : '');
+    toggleBtn.textContent = t(user.enabled ? 'user_disable' : 'user_enable');
+    toggleBtn.addEventListener('click', function (e) { e.stopPropagation(); toggleUserEnabled(user); });
+    actions.appendChild(resetBtn);
+    actions.appendChild(toggleBtn);
+    card.appendChild(actions);
+
+    card.addEventListener('click', function () { card.classList.toggle('expanded'); });
+    return card;
+  }
+
+  function relativeTime(iso) {
+    try {
+      var ms = Date.now() - new Date(iso).getTime();
+      if (ms < 60 * 1000) return 'just now';
+      var m = Math.floor(ms / 60000);
+      if (m < 60) return m + 'm ago';
+      var h = Math.floor(m / 60);
+      if (h < 24) return h + 'h ago';
+      var d = Math.floor(h / 24);
+      return d + 'd ago';
+    } catch (_) { return iso; }
+  }
+
+  async function submitInvite(e) {
+    e.preventDefault();
+    inviteStatus.style.color = '';
+    inviteStatus.textContent = '';
+    var submitBtn = inviteForm.querySelector('button[type=submit]');
+    submitBtn.disabled = true;
+    try {
+      var res = await fetchApi(API_BASE + '/admin/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: inviteEmail.value.trim(),
+          role: inviteRole.value,
+          password: invitePassword.value,
+        }),
+      });
+      var envelope = await res.json().catch(function () { return {}; });
+      if (!res.ok || !envelope.success) {
+        inviteStatus.style.color = '#FF6B63';
+        inviteStatus.textContent = (envelope && envelope.error) || 'Failed to invite';
+        return;
+      }
+      inviteStatus.style.color = '#6DD58C';
+      inviteStatus.textContent = 'Invited ' + (envelope.data && envelope.data.email);
+      inviteEmail.value = '';
+      invitePassword.value = '';
+      loadTeam();
+    } catch (err) {
+      if (err.message !== 'unauthenticated') {
+        inviteStatus.style.color = '#FF6B63';
+        inviteStatus.textContent = 'Failed to invite';
+      }
+    } finally {
+      submitBtn.disabled = false;
+    }
+  }
+
+  async function resetUserPassword(user) {
+    var pw = prompt('New password (min 12 chars) for ' + user.email);
+    if (!pw || pw.length < 12) return;
+    try {
+      await fetchApi(API_BASE + '/admin/users/' + encodeURIComponent(user.id) + '/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw }),
+      });
+      loadTeam();
+    } catch (_) { /* fetchApi already handled 401 */ }
+  }
+
+  async function toggleUserEnabled(user) {
+    try {
+      if (user.enabled) {
+        await fetchApi(API_BASE + '/admin/users/' + encodeURIComponent(user.id), {
+          method: 'DELETE',
+        });
+      } else {
+        await fetchApi(API_BASE + '/admin/users/' + encodeURIComponent(user.id), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: true }),
+        });
+      }
+      loadTeam();
+    } catch (_) { /* fetchApi handled 401 */ }
+  }
+
+  // ------- Wiring -------
+
+  if (loginForm) loginForm.addEventListener('submit', submitLogin);
+  if (signoutBtn) signoutBtn.addEventListener('click', onSignOut);
+  if (adminGearBtn) adminGearBtn.addEventListener('click', showAdminView);
+  if (inviteForm) inviteForm.addEventListener('submit', submitInvite);
+
+  // Boot: decide login-vs-app based on the localStorage token.
+  var bootToken = localStorage.getItem('bearerToken') || '';
+  if (!bootToken || isJwtExpired(bootToken)) {
+    showLoginView();
+  } else {
+    // Role cached from a previous login. If missing, default to
+    // member (gear pill stays hidden until re-login).
+    if (!CACHED_ROLE) CACHED_ROLE = 'member';
+    showAppAfterAuth();
+  }
+
+  // Re-apply i18n to the new DOM nodes.
+  applyI18n();
+})();

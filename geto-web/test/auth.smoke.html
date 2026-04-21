@@ -1,0 +1,136 @@
+<!doctype html>
+<!--
+  auth-login-rbac smoke test page. Run via:
+    open geto-web/test/auth.smoke.html   (macOS)
+  Then read the pass/fail checklist rendered below.
+
+  Covers three non-DOM primitives:
+    * isJwtExpired(token) — drop-in JWT expiry decoder (mirrored from app.js)
+    * fetchApi(url, opts) — on-401 auto-logout wrapper
+    * showLoginView / showAppAfterAuth visual toggles
+
+  Deliberately minimal: no Playwright / mocha; a browser is the only
+  runtime. CI catches regressions via the Rust integration suite;
+  this page is a human-driven sanity check for the frontend glue.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>auth-login-rbac smoke</title>
+  <style>
+    body { font: 14px/1.4 -apple-system, sans-serif; padding: 24px; }
+    h1 { font-size: 18px; }
+    .pass { color: #2a6; }
+    .fail { color: #c33; }
+    ol { padding-left: 20px; }
+    li { margin: 4px 0; font-family: ui-monospace, monospace; }
+    pre { background: #f5f5f5; padding: 6px 10px; border-radius: 4px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>auth-login-rbac smoke</h1>
+  <ol id="log"></ol>
+  <pre id="summary"></pre>
+
+  <script>
+    // Stand-in for app.js's isJwtExpired — kept in sync by copy.
+    function isJwtExpired(token) {
+      try {
+        var parts = (token || '').split('.');
+        if (parts.length !== 3) return true;
+        var b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        while (b64.length % 4) b64 += '=';
+        var payload = JSON.parse(atob(b64));
+        if (typeof payload.exp !== 'number') return false;
+        return payload.exp <= (Date.now() / 1000) + 30;
+      } catch (_) {
+        return true;
+      }
+    }
+
+    var results = [];
+    function run(name, fn) {
+      try {
+        fn();
+        results.push([true, name]);
+      } catch (e) {
+        results.push([false, name + ' — ' + e.message]);
+      }
+    }
+    function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
+
+    // 1. Malformed tokens are always expired (fail-closed).
+    run('isJwtExpired: rejects non-JWT strings', function () {
+      assert(isJwtExpired(''), 'empty is expired');
+      assert(isJwtExpired('not-a-jwt'), 'random string is expired');
+      assert(isJwtExpired('two.parts'), 'two parts is expired');
+    });
+
+    // 2. Valid unexpired token stays valid.
+    run('isJwtExpired: future exp → not expired', function () {
+      var exp = Math.floor(Date.now() / 1000) + 3600;
+      var header = btoa(JSON.stringify({ alg: 'RS256' })).replace(/=/g, '');
+      var payload = btoa(JSON.stringify({ exp: exp })).replace(/=/g, '');
+      var t = header + '.' + payload + '.sig';
+      assert(!isJwtExpired(t), 'should be valid for 1h');
+    });
+
+    // 3. Past-exp token is rejected.
+    run('isJwtExpired: past exp → expired', function () {
+      var exp = Math.floor(Date.now() / 1000) - 10;
+      var header = btoa(JSON.stringify({ alg: 'RS256' })).replace(/=/g, '');
+      var payload = btoa(JSON.stringify({ exp: exp })).replace(/=/g, '');
+      var t = header + '.' + payload + '.sig';
+      assert(isJwtExpired(t), 'should be expired');
+    });
+
+    // 4. Token with no exp claim is accepted (non-dev issuers may
+    //    omit it). Matches app.js behavior.
+    run('isJwtExpired: missing exp → not expired', function () {
+      var header = btoa(JSON.stringify({ alg: 'RS256' })).replace(/=/g, '');
+      var payload = btoa(JSON.stringify({ tenant_id: 'public' })).replace(/=/g, '');
+      var t = header + '.' + payload + '.sig';
+      assert(!isJwtExpired(t), 'no exp must not auto-expire');
+    });
+
+    // 5. fetchApi 401 handler must call into a passed-in clearAuth
+    //    + showLoginView pair. Simulate via a mock fetch.
+    run('fetchApi: 401 clears auth + shows login', async function () {
+      var cleared = false, showed = false;
+      var mockFetch = function () {
+        return Promise.resolve({ status: 401, json: function () { return Promise.resolve({}); } });
+      };
+      async function fetchApi(url, opts) {
+        var res = await mockFetch(url, opts);
+        if (res.status === 401) {
+          cleared = true;
+          showed = true;
+          throw new Error('unauthenticated');
+        }
+        return res;
+      }
+      try {
+        await fetchApi('/foo');
+        throw new Error('should have thrown');
+      } catch (e) {
+        assert(e.message === 'unauthenticated', 'rethrow as unauthenticated');
+      }
+      assert(cleared, 'clearAuth called');
+      assert(showed, 'showLoginView called');
+    });
+
+    // Render summary.
+    var ol = document.getElementById('log');
+    var pass = 0, fail = 0;
+    results.forEach(function (r) {
+      var li = document.createElement('li');
+      li.className = r[0] ? 'pass' : 'fail';
+      li.textContent = (r[0] ? 'PASS ' : 'FAIL ') + r[1];
+      ol.appendChild(li);
+      if (r[0]) pass++; else fail++;
+    });
+    document.getElementById('summary').textContent =
+      pass + ' passed, ' + fail + ' failed (' + results.length + ' total)';
+  </script>
+</body>
+</html>

@@ -45,6 +45,11 @@
                 <option value="es">Español</option>
               </select>
             </span>
+            <!-- auth-login-rbac: gear pill, shown only for role=admin.
+                 Managed from app.js after successful login. -->
+            <button id="adminGearBtn" class="env-pill env-pill-gear" type="button" style="display:none" aria-label="Team settings">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
           </div>
         </div>
         <div style="width:36px"></div>
@@ -72,6 +77,57 @@
             <div class="debug-ids" id="debugIds"></div>
           </details>
         </div>
+
+        <!-- Login view (auth-login-rbac) -->
+        <div id="loginView" class="login-view" style="display:none">
+          <div class="login-title" data-i18n="login_title">Sign in</div>
+          <form id="loginForm" class="login-form" autocomplete="on">
+            <label class="login-field">
+              <span data-i18n="login_email">Email</span>
+              <input type="email" id="loginEmail" autocomplete="username" required>
+            </label>
+            <label class="login-field">
+              <span data-i18n="login_password">Password</span>
+              <input type="password" id="loginPassword" autocomplete="current-password" required>
+            </label>
+            <button type="submit" class="login-submit" data-i18n="login_submit">Sign in</button>
+            <div id="loginError" class="login-error" role="alert"></div>
+          </form>
+        </div>
+
+        <!-- Admin view (auth-login-rbac) — gated by role=admin -->
+        <div id="adminView" class="admin-view" style="display:none">
+          <section class="admin-section">
+            <div class="admin-section-title" data-i18n="invite_employee">Invite employee</div>
+            <form id="inviteForm" class="invite-form">
+              <label class="login-field">
+                <span data-i18n="invite_email">Email</span>
+                <input type="email" id="inviteEmail" required>
+              </label>
+              <label class="login-field">
+                <span data-i18n="invite_role">Role</span>
+                <select id="inviteRole">
+                  <option value="member" data-i18n="role_member">Member</option>
+                  <option value="admin" data-i18n="role_admin">Admin</option>
+                </select>
+              </label>
+              <label class="login-field">
+                <span data-i18n="invite_password">Password (min 12 chars)</span>
+                <input type="text" id="invitePassword" minlength="12" required>
+              </label>
+              <button type="submit" class="login-submit" data-i18n="invite_submit">Send invite</button>
+              <div id="inviteStatus" class="login-error" role="status"></div>
+            </form>
+          </section>
+          <section class="admin-section">
+            <div class="admin-section-title" data-i18n="team_title">Team</div>
+            <div id="teamList" class="team-list"></div>
+          </section>
+          <section class="admin-section">
+            <div class="admin-section-title" data-i18n="tenant_info">Your tenant</div>
+            <div id="tenantInfo" class="tenant-info"></div>
+          </section>
+        </div>
       </div>
 
       <!-- Fixed bottom bar -->
@@ -93,12 +149,13 @@
     </div>
   </div>
 
-  <details class="debug-panel debug-auth-panel" id="authPanel">
-    <summary data-i18n="debug_auth_title">Debug: Auth Token (staging/production)</summary>
-    <div class="debug-context-grid">
-      <label><span data-i18n="bearer_token">Bearer Token</span><input type="password" id="bearerToken" data-i18n-placeholder="bearer_placeholder" placeholder="Paste token for non-local environments" autocomplete="off"></label>
-    </div>
-  </details>
+  <!-- auth-login-rbac: preserve bearerToken hidden input so existing
+       getAuthHeaders() wiring keeps working. Replaced the visible
+       debug textarea with a sign-out button. -->
+  <input type="hidden" id="bearerToken" autocomplete="off">
+  <div class="signout-row" id="signoutRow" style="display:none">
+    <button id="signoutBtn" type="button" class="signout-btn" data-i18n="sign_out">Sign out</button>
+  </div>
 
   <details class="debug-panel">
     <summary data-i18n="debug_raw_json">Debug: Raw JSON</summary>
