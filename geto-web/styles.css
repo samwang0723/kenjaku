@@ -209,7 +209,7 @@ body {
   font-size: 10px;
   font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
   display: inline-flex;
   align-items: center;
   padding: 3px 8px;
@@ -349,7 +349,7 @@ body {
   color: var(--accent-blue);
   font-family: 'SF Mono', 'Menlo', monospace;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.02em;
   margin-top: 10px;
   margin-bottom: 2px;
   padding-bottom: 2px;
@@ -984,7 +984,7 @@ body {
   font-weight: 400;
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
   color: var(--accent-blue);
   border-bottom: 1px solid var(--border);
 }
@@ -1478,7 +1478,7 @@ body {
   font-size: 13px;
   font-weight: 400;
   color: #FFD666;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.02em;
   list-style: none;
   user-select: none;
 }
@@ -1539,7 +1539,7 @@ body {
   color: #7AB8FF;
   text-transform: uppercase;
   font-weight: 400;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
 }
 .debug-info .tag-tier {
   background: rgba(123,104,238,0.15);
@@ -2177,8 +2177,7 @@ body {
   font-size: 13px;
   font-weight: 500;
   color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
 }
 
 /* View-scoped chrome hiding. Login stands alone (no bottom bar, no
@@ -2252,11 +2251,10 @@ body.admin-mode .scroll-area { padding-bottom: 0 !important; }
   padding: 14px 16px;
 }
 .admin-section-title {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--accent-violet);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.02em;
   margin-bottom: 14px;
 }
 .invite-form {
@@ -2291,7 +2289,7 @@ body.admin-mode .scroll-area { padding-bottom: 0 !important; }
   font-weight: 600;
   font-size: 13px;
   cursor: pointer;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.02em;
   transition: box-shadow 0.15s ease;
 }
 .invite-form button:hover { box-shadow: 0 0 16px rgba(255, 117, 145, 0.35); }
@@ -2330,8 +2328,7 @@ body.admin-mode .scroll-area { padding-bottom: 0 !important; }
   border-radius: 999px;
   background: rgba(180, 168, 240, 0.18);
   color: var(--accent-violet);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
   font-weight: 500;
 }
 .team-card-chip.role-admin {
@@ -2472,8 +2469,7 @@ body.login-mode .header-gear-btn { visibility: hidden !important; }
   padding: 6px 14px;
   font-size: 11px;
   cursor: pointer;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.02em;
   font-weight: 500;
   transition: color 0.15s ease, border-color 0.15s ease;
 }
