@@ -589,6 +589,11 @@ if (localeSwitcher) {
     applyI18n();
     renderLocaleLabel();
     loadPills();
+    // Notify dynamically-rendered surfaces (team list, tenant info
+    // card, invite form role chips) that they need to re-render.
+    // applyI18n() only updates static [data-i18n] nodes; the auth
+    // IIFE owns its own render functions and listens for this event.
+    document.dispatchEvent(new CustomEvent('kenjakuLocaleChanged'));
   });
 }
 applyI18n();
@@ -1938,6 +1943,19 @@ loadPills();
     loadTeam();
     renderTenantInfo();
   }
+
+  // Re-render dynamic admin surfaces on locale change. Static text
+  // (section titles, select <option>s) is handled by the global
+  // applyI18n(); the team card bodies + tenant info rows are JS-
+  // generated so they need explicit re-render.
+  document.addEventListener('kenjakuLocaleChanged', function () {
+    if (document.body.classList.contains('admin-mode')
+        && views.admin.style.display !== 'none'
+        && views.admin.offsetHeight > 0) {
+      loadTeam();
+      renderTenantInfo();
+    }
+  });
 
   // Central API wrapper — adds Authorization + auto-logout on 401.
   // Used by new admin calls + the login flow itself. Existing
