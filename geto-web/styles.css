@@ -2183,12 +2183,15 @@ body {
 /* View-scoped chrome hiding. Login stands alone (no bottom bar, no
    back button). Admin hides the search bar but keeps the back button
    so users can return to search. Header pill row (env + locale) stays
-   visible on both — users may need to pick language pre-auth. */
+   visible on both — users may need to pick language pre-auth.
+
+   Back-button uses visibility:hidden (not display:none) so its slot
+   stays in the flex layout and the header title stays centered. */
 body.login-mode .bottom-bar,
 body.login-mode .progress-bar,
-body.login-mode .header-back-btn,
 body.admin-mode .bottom-bar,
 body.admin-mode .progress-bar { display: none !important; }
+body.login-mode .header-back-btn { visibility: hidden !important; }
 body.login-mode .scroll-area,
 body.admin-mode .scroll-area { padding-bottom: 0 !important; }
 .login-field input,
