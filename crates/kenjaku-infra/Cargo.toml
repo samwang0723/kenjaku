@@ -58,6 +58,12 @@ tracing-opentelemetry = { workspace = true }
 # v10 requires exactly one backend feature; mutually exclusive.
 jsonwebtoken = { version = "10.3", features = ["aws_lc_rs"] }
 
+# Password hashing for the users repo (argon2id via PHC string). See
+# workspace Cargo.toml for rationale. `argon2` re-exports the
+# `password-hash` traits we need for hash + verify.
+argon2 = { workspace = true }
+rand_core = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true }
 tokio-test = { workspace = true }

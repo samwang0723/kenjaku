@@ -169,6 +169,8 @@ fn validator() -> Arc<JwtValidator> {
         issuer: TEST_ISSUER.into(),
         audience: TEST_AUDIENCE.into(),
         public_key_path: "<test>".into(),
+        private_key_path: "<test>".into(),
+        ttl_seconds: 3600,
         algorithm: JwtAlgorithm::RS256,
         clock_skew_secs: 5,
     };

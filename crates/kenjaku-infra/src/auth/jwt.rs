@@ -46,7 +46,8 @@
 //!    for forward-compat and diagnostics, but DO NOT use it for
 //!    authorization decisions.
 
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
+use chrono::{DateTime, Utc};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
@@ -79,12 +80,17 @@ pub struct TenantClaims {
     /// Optional principal identifier (user / service account).
     /// Validated by [`PrincipalId`]'s serde impl — same rules as
     /// `tenant_id`.
-    #[serde(default)]
+    ///
+    /// `skip_serializing_if` keeps the claim absent on the wire when
+    /// `None` — the JWT spec rejects null-valued optional claims, and
+    /// `JwtMinter::mint` would otherwise emit `"principal_id": null`
+    /// which round-trips fine but is non-canonical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal_id: Option<PrincipalId>,
     /// Optional plan-tier hint — DO NOT use for authorization
     /// decisions. See module docs. Tokens may omit this advisory
     /// claim without failing validation.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_tier: Option<PlanTier>,
     /// Expiration time (Unix seconds). Required.
     pub exp: u64,
@@ -97,7 +103,11 @@ pub struct TenantClaims {
     pub iat: u64,
     /// Not-before time (Unix seconds). Optional per JWT spec; when
     /// present `jsonwebtoken` rejects tokens whose `nbf > now + leeway`.
-    #[serde(default)]
+    ///
+    /// `skip_serializing_if` — see `principal_id` above. Minting a
+    /// token with `nbf: null` makes `jsonwebtoken::decode` reject the
+    /// token because the spec does not permit nullable numeric claims.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nbf: Option<u64>,
 }
 
@@ -260,6 +270,126 @@ fn build_decoding_key(
 }
 
 // =====================================================================
+// JwtMinter — server-side JWT issuance for POST /api/v1/auth/login.
+// =====================================================================
+
+/// Mints RS256/ES* JWTs symmetric with [`JwtValidator`]'s expectations.
+///
+/// Construction takes the PRIVATE key PEM bytes + a [`JwtConfig`] (for
+/// `issuer`, `audience`, `algorithm`, `ttl_seconds`). The claims shape
+/// matches [`TenantClaims`] exactly — so a freshly minted token can be
+/// fed straight back through `JwtValidator::validate` in the same
+/// process for round-trip tests, and in production every minted token
+/// passes the middleware check at the next request.
+///
+/// # `Debug` redaction
+///
+/// Same policy as `JwtValidator` — the custom `Debug` impl hides the
+/// `encoding_key` field. Logging a minter prints only
+/// `JwtMinter { algorithm: RS256, ttl_seconds: 86400 }`.
+pub struct JwtMinter {
+    encoding_key: EncodingKey,
+    algorithm: JwtAlgorithm,
+    issuer: String,
+    audience: String,
+    ttl_seconds: u64,
+}
+
+impl std::fmt::Debug for JwtMinter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JwtMinter")
+            .field("algorithm", &self.algorithm)
+            .field("ttl_seconds", &self.ttl_seconds)
+            .finish_non_exhaustive()
+    }
+}
+
+impl JwtMinter {
+    /// Build a minter from config + pre-loaded private-key PEM bytes.
+    ///
+    /// Like [`JwtValidator::new`], this module is deliberately
+    /// filesystem-free. The server bootstrap reads the private key
+    /// from `config.tenancy.jwt.private_key_path` and hands bytes in.
+    pub fn new(config: &JwtConfig, private_key_pem: &[u8]) -> Result<Self> {
+        if private_key_pem.is_empty() {
+            return Err(Error::Config("JWT private key PEM is empty".to_string()));
+        }
+        let encoding_key = build_encoding_key(private_key_pem, config.algorithm).map_err(|e| {
+            Error::Config(format!(
+                "failed to parse JWT private key as {:?}: {e}",
+                config.algorithm
+            ))
+        })?;
+        Ok(Self {
+            encoding_key,
+            algorithm: config.algorithm,
+            issuer: config.issuer.clone(),
+            audience: config.audience.clone(),
+            ttl_seconds: config.ttl_seconds,
+        })
+    }
+
+    /// The algorithm this minter produces tokens under.
+    pub fn algorithm(&self) -> JwtAlgorithm {
+        self.algorithm
+    }
+
+    /// Mint a token for `(tenant_id, principal_id, plan_tier)` with a
+    /// `ttl` override in seconds; `None` uses `ttl_seconds` from config.
+    ///
+    /// Returns `(token, exp_utc)` so handlers can both echo the
+    /// expiration to the client and set it in their own bookkeeping
+    /// without re-parsing the JWT.
+    pub fn mint(
+        &self,
+        tenant_id: &TenantId,
+        principal_id: Option<&PrincipalId>,
+        plan_tier: Option<PlanTier>,
+        ttl: Option<u64>,
+    ) -> Result<(String, DateTime<Utc>)> {
+        let now = Utc::now();
+        let ttl = ttl.unwrap_or(self.ttl_seconds);
+        let exp = now + chrono::Duration::seconds(ttl as i64);
+
+        let claims = TenantClaims {
+            tenant_id: tenant_id.clone(),
+            principal_id: principal_id.cloned(),
+            plan_tier,
+            exp: exp.timestamp() as u64,
+            iss: self.issuer.clone(),
+            aud: self.audience.clone(),
+            iat: now.timestamp() as u64,
+            nbf: None,
+        };
+
+        let header = Header::new(algorithm_to_jwt(self.algorithm));
+        let token = encode(&header, &claims, &self.encoding_key).map_err(|e| {
+            // Startup-error severity: encoding should only fail on a
+            // malformed key — which the DI layer caught earlier.
+            // Surface as Internal so the handler returns a generic 500
+            // rather than leaking crypto internals.
+            debug!(target: "kenjaku_infra::auth", kind = ?e.kind(), "JWT mint failed");
+            Error::Internal("JWT mint failed".to_string())
+        })?;
+        Ok((token, exp))
+    }
+}
+
+/// Parse a PRIVATE-key PEM into an `EncodingKey` for the given
+/// algorithm. Mirrors [`build_decoding_key`].
+fn build_encoding_key(
+    pem_bytes: &[u8],
+    alg: JwtAlgorithm,
+) -> std::result::Result<EncodingKey, jsonwebtoken::errors::Error> {
+    match alg {
+        JwtAlgorithm::RS256 | JwtAlgorithm::RS384 | JwtAlgorithm::RS512 => {
+            EncodingKey::from_rsa_pem(pem_bytes)
+        }
+        JwtAlgorithm::ES256 | JwtAlgorithm::ES384 => EncodingKey::from_ec_pem(pem_bytes),
+    }
+}
+
+// =====================================================================
 // Tests
 // =====================================================================
 
@@ -331,6 +461,8 @@ mod tests {
             issuer: TEST_ISSUER.to_string(),
             audience: TEST_AUDIENCE.to_string(),
             public_key_path: "<test-only>".to_string(),
+            private_key_path: "<test-only>".to_string(),
+            ttl_seconds: 3600,
             algorithm: JwtAlgorithm::RS256,
             clock_skew_secs: 5,
         };
@@ -724,6 +856,8 @@ mod tests {
             issuer: TEST_ISSUER.into(),
             audience: TEST_AUDIENCE.into(),
             public_key_path: "<unused>".into(),
+            private_key_path: "<unused>".into(),
+            ttl_seconds: 3600,
             algorithm: JwtAlgorithm::RS256,
             clock_skew_secs: 30,
         };
@@ -740,6 +874,8 @@ mod tests {
             issuer: TEST_ISSUER.into(),
             audience: TEST_AUDIENCE.into(),
             public_key_path: "<unused>".into(),
+            private_key_path: "<unused>".into(),
+            ttl_seconds: 3600,
             algorithm: JwtAlgorithm::RS256,
             clock_skew_secs: 30,
         };
@@ -758,6 +894,8 @@ mod tests {
             issuer: TEST_ISSUER.into(),
             audience: TEST_AUDIENCE.into(),
             public_key_path: "<unused>".into(),
+            private_key_path: "<unused>".into(),
+            ttl_seconds: 3600,
             algorithm: JwtAlgorithm::ES256, // declares EC...
             clock_skew_secs: 30,
         };
@@ -776,6 +914,8 @@ mod tests {
             issuer: TEST_ISSUER.into(),
             audience: TEST_AUDIENCE.into(),
             public_key_path: "<unused>".into(),
+            private_key_path: "<unused>".into(),
+            ttl_seconds: 3600,
             algorithm: JwtAlgorithm::RS256,
             clock_skew_secs: 60,
         };
@@ -794,5 +934,136 @@ mod tests {
         c["iat"] = serde_json::json!(now - Duration::from_secs(7200).as_secs());
         let old = mint_rs256(&c);
         assert!(v.validate(&old).is_err(), "beyond-leeway must reject");
+    }
+
+    // =================================================================
+    // JwtMinter tests — auth-login-rbac
+    // =================================================================
+
+    fn make_minter(ttl: u64) -> JwtMinter {
+        let cfg = JwtConfig {
+            issuer: TEST_ISSUER.into(),
+            audience: TEST_AUDIENCE.into(),
+            public_key_path: "<test>".into(),
+            private_key_path: "<test>".into(),
+            ttl_seconds: ttl,
+            algorithm: JwtAlgorithm::RS256,
+            clock_skew_secs: 5,
+        };
+        JwtMinter::new(&cfg, keypair().private_pem.as_bytes()).expect("minter constructed")
+    }
+
+    #[test]
+    fn minter_roundtrips_token_through_validator() {
+        let minter = make_minter(300);
+        let v = make_validator();
+        let tid = TenantId::new("acme").unwrap();
+        let pid = PrincipalId::new("user-42").unwrap();
+        let (token, exp) = minter
+            .mint(&tid, Some(&pid), Some(PlanTier::Pro), None)
+            .expect("mint");
+
+        let claims = v.validate(&token).expect("validate minted token");
+        assert_eq!(claims.tenant_id.as_str(), "acme");
+        assert_eq!(
+            claims.principal_id.as_ref().map(|p| p.as_str()),
+            Some("user-42")
+        );
+        assert_eq!(claims.plan_tier, Some(PlanTier::Pro));
+        assert_eq!(claims.iss, TEST_ISSUER);
+        assert_eq!(claims.aud, TEST_AUDIENCE);
+
+        // Returned exp matches the claim (±1s rounding).
+        let exp_claim = claims.exp as i64;
+        let exp_returned = exp.timestamp();
+        assert!(
+            (exp_returned - exp_claim).abs() <= 1,
+            "returned exp ({exp_returned}) must match claim ({exp_claim})"
+        );
+    }
+
+    #[test]
+    fn minter_respects_config_ttl_when_no_override() {
+        // TTL=90s -> claim.exp ≈ now + 90.
+        let minter = make_minter(90);
+        let v = make_validator();
+        let tid = TenantId::new("public").unwrap();
+        let (token, _) = minter.mint(&tid, None, None, None).expect("mint");
+        let claims = v.validate(&token).expect("validate");
+        let delta = claims.exp as i64 - claims.iat as i64;
+        assert!(
+            (85..=95).contains(&delta),
+            "TTL must be ~90s, got delta={delta}"
+        );
+    }
+
+    #[test]
+    fn minter_honors_explicit_ttl_override() {
+        let minter = make_minter(86_400);
+        let v = make_validator();
+        let tid = TenantId::new("public").unwrap();
+        let (token, _) = minter.mint(&tid, None, None, Some(30)).expect("mint");
+        let claims = v.validate(&token).expect("validate");
+        let delta = claims.exp as i64 - claims.iat as i64;
+        assert!((25..=35).contains(&delta), "override TTL must be 30s");
+    }
+
+    #[test]
+    fn minter_without_principal_produces_token_without_principal_claim() {
+        let minter = make_minter(300);
+        let v = make_validator();
+        let tid = TenantId::new("public").unwrap();
+        let (token, _) = minter.mint(&tid, None, None, None).expect("mint");
+        let claims = v.validate(&token).expect("validate");
+        assert!(
+            claims.principal_id.is_none(),
+            "minting without principal_id must produce claim without it"
+        );
+    }
+
+    #[test]
+    fn minter_new_fails_on_empty_private_pem() {
+        let cfg = JwtConfig {
+            issuer: TEST_ISSUER.into(),
+            audience: TEST_AUDIENCE.into(),
+            public_key_path: "<t>".into(),
+            private_key_path: "<t>".into(),
+            ttl_seconds: 100,
+            algorithm: JwtAlgorithm::RS256,
+            clock_skew_secs: 5,
+        };
+        let err = JwtMinter::new(&cfg, b"").expect_err("empty pem must fail");
+        assert!(matches!(err, Error::Config(_)));
+    }
+
+    #[test]
+    fn minter_new_fails_on_garbage_pem() {
+        let cfg = JwtConfig {
+            issuer: TEST_ISSUER.into(),
+            audience: TEST_AUDIENCE.into(),
+            public_key_path: "<t>".into(),
+            private_key_path: "<t>".into(),
+            ttl_seconds: 100,
+            algorithm: JwtAlgorithm::RS256,
+            clock_skew_secs: 5,
+        };
+        let err = JwtMinter::new(&cfg, b"not a pem").expect_err("garbage must fail");
+        assert!(matches!(err, Error::Config(_)));
+    }
+
+    #[test]
+    fn minter_debug_does_not_leak_key_material() {
+        let minter = make_minter(300);
+        let dbg = format!("{minter:?}");
+        assert!(dbg.contains("RS256"));
+        assert!(dbg.contains("ttl_seconds"));
+        assert!(
+            !dbg.contains("PRIVATE"),
+            "Debug must not include PEM bytes: {dbg}"
+        );
+        assert!(
+            !dbg.contains("BEGIN"),
+            "Debug must not include BEGIN marker: {dbg}"
+        );
     }
 }

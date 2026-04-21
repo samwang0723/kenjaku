@@ -476,6 +476,8 @@ mod tests {
                 issuer: "kenjaku-test".into(),
                 audience: "kenjaku-api".into(),
                 public_key_path: public_key_path.into(),
+                private_key_path: "<unused-in-validator-tests>".into(),
+                ttl_seconds: 3600,
                 algorithm: JwtAlgorithm::RS256,
                 clock_skew_secs: 30,
             },
