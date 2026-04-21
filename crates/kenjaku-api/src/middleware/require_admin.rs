@@ -114,18 +114,27 @@ fn auth_error_response(code: AuthErrorCode) -> Response {
 
 #[cfg(test)]
 mod tests {
-    // Unit tests for require_admin require a live UsersRepository
-    // (it consults the `users` table). The happy/reject paths are
-    // covered by the admin-handlers integration test in
-    // `tests/admin_users.rs` which spins up an in-memory state with
-    // a seeded users table.
-    //
-    // This mod exists as a deliberate empty-test marker so future
-    // contributors grep `require_admin + tests` and land here first.
-    #[test]
-    fn require_admin_module_present() {
-        // No-op smoke: the function is exported and middleware wiring
-        // compiles against it — the real behavior is covered by the
-        // admin_users integration suite.
+    use super::*;
+    use axum::body::to_bytes;
+
+    // Full decision-tree behavior (happy admin, member reject,
+    // disabled reject, cross-tenant reject) is covered end-to-end by
+    // tests/login_flow.rs. The unit tests here pin the helper that
+    // formats the 403 response so its KNJK header shape cannot drift.
+
+    #[tokio::test]
+    async fn auth_error_response_for_admin_forbidden_emits_knjk_4033() {
+        let resp = auth_error_response(AuthErrorCode::AdminForbidden);
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let code = resp
+            .headers()
+            .get("x-knjk-error-code")
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_owned);
+        assert_eq!(code.as_deref(), Some("KNJK-4033"));
+        let bytes = to_bytes(resp.into_body(), 1024).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error"], "Admin access required");
+        assert_eq!(v["success"], false);
     }
 }

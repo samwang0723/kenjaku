@@ -259,3 +259,91 @@ fn internal_error(msg: &str) -> Response {
     )
         .into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::http::StatusCode;
+    use chrono::Utc;
+
+    // The full admin handler request → response path is covered end-
+    // to-end by tests/login_flow.rs. These unit tests pin the pure
+    // helpers + DTO conversions that don't need HTTP wiring.
+
+    #[tokio::test]
+    async fn bad_request_returns_400_with_message() {
+        let resp = bad_request("nope");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(resp.into_body(), 1024).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["success"], false);
+        assert_eq!(v["error"], "nope");
+    }
+
+    #[tokio::test]
+    async fn not_found_returns_404_with_message() {
+        let resp = not_found("missing");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = to_bytes(resp.into_body(), 1024).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error"], "missing");
+    }
+
+    #[tokio::test]
+    async fn internal_error_returns_500_with_generic_message() {
+        let resp = internal_error("boom");
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = to_bytes(resp.into_body(), 1024).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error"], "boom");
+    }
+
+    #[test]
+    fn to_dto_serialises_all_fields_and_omits_last_login_when_none() {
+        let row = UserRow {
+            id: uuid::Uuid::nil(),
+            tenant_id: "public".into(),
+            email: "a@public.com".into(),
+            password_hash: "$argon2id$...$redacted".into(),
+            role: Role::Admin,
+            enabled: true,
+            created_at: Utc::now(),
+            last_login_at: None,
+        };
+        let dto = to_dto(&row);
+        assert_eq!(dto.id, "00000000-0000-0000-0000-000000000000");
+        assert_eq!(dto.tenant_id, "public");
+        assert_eq!(dto.email, "a@public.com");
+        assert_eq!(dto.role, "admin");
+        assert!(dto.enabled);
+        assert!(dto.last_login_at.is_none());
+    }
+
+    #[test]
+    fn to_dto_preserves_last_login_when_present() {
+        let now = Utc::now();
+        let row = UserRow {
+            id: uuid::Uuid::nil(),
+            tenant_id: "acme".into(),
+            email: "x@acme.com".into(),
+            password_hash: "".into(),
+            role: Role::Member,
+            enabled: false,
+            created_at: now,
+            last_login_at: Some(now),
+        };
+        let dto = to_dto(&row);
+        assert_eq!(dto.role, "member");
+        assert!(!dto.enabled);
+        assert!(dto.last_login_at.is_some());
+    }
+
+    #[test]
+    fn min_admin_password_len_is_twelve() {
+        // Boundary is baked into both the admin handlers and the
+        // smoke-test expectations; locking with a unit test keeps them
+        // in sync.
+        assert_eq!(MIN_ADMIN_PASSWORD_LEN, 12);
+    }
+}

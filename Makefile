@@ -1,6 +1,6 @@
 .PHONY: build test run fmt lint clean dev-setup \
        docker-build docker-up docker-down docker-logs docker-test \
-       migrate migrate-revert ingest-url ingest-folder openapi check
+       migrate migrate-revert ingest-url ingest-folder openapi check seed-admin
 
 # ── Local Development ───────────────────────────────────────────
 build:
@@ -85,6 +85,26 @@ migrate:
 
 migrate-revert:
 	sqlx migrate revert --source migrations
+
+# auth-login-rbac: re-seed the default admin for a given tenant.
+# The migration already seeds admin@public.com / admin for the public
+# tenant at first-migrate-run time. Use this target after manually
+# creating another tenant (e.g. via psql INSERT INTO tenants) to drop
+# a default admin@{TENANT}.com / admin row. Idempotent via
+# ON CONFLICT (email) DO NOTHING.
+#
+# Usage: make seed-admin TENANT=acme
+# Requires: DATABASE_URL env var pointing at the live Postgres.
+seed-admin:
+	@if [ -z "$(TENANT)" ]; then echo "Usage: make seed-admin TENANT=acme"; exit 1; fi
+	@if [ -z "$$DATABASE_URL" ]; then echo "Set DATABASE_URL=postgres://user:pass@host:port/db"; exit 1; fi
+	@psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+	  "INSERT INTO users (tenant_id, email, password_hash, role, enabled) \
+	   VALUES ('$(TENANT)', 'admin@$(TENANT).com', \
+	           '$$argon2id$$v=19$$m=19456,t=2,p=1$$kV5cbB/pe1yU0qbAQ+DrJg$$LYugS7g4BpDxojre7o8MtG9ul+oOxsdQgVkH17x9nEU', \
+	           'admin', TRUE) \
+	   ON CONFLICT (email) DO NOTHING;"
+	@echo "Seeded admin@$(TENANT).com (password: admin)"
 
 # ── Ingestion (local) ───────────────────────────────────────────
 ingest-url:

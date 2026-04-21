@@ -148,3 +148,58 @@ fn internal_error_response() -> Response {
     let body = ApiResponse::<()>::err("Internal server error".to_string());
     (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    // The full login flow (happy path, wrong password, unknown email,
+    // disabled user, orphan tenant) lives in tests/login_flow.rs. The
+    // unit tests here pin the pure helpers + constants so they can't
+    // drift silently.
+
+    #[test]
+    fn max_login_lengths_are_reasonable_bounds() {
+        // RFC-5321 caps email at 320 bytes. The password cap is a
+        // defensive DoS bound since argon2 verification is bounded by
+        // the stored hash, not the input length.
+        assert_eq!(MAX_LOGIN_EMAIL_LEN, 320);
+        assert_eq!(MAX_LOGIN_PASSWORD_LEN, 1024);
+    }
+
+    #[tokio::test]
+    async fn auth_error_response_emits_knjk_header_for_invalid_credentials() {
+        let resp = auth_error_response(AuthErrorCode::InvalidCredentials);
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let header = resp
+            .headers()
+            .get("x-knjk-error-code")
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_owned);
+        assert_eq!(header.as_deref(), Some("KNJK-4011"));
+        let bytes = to_bytes(resp.into_body(), 1024).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error"], "Invalid email or password");
+        assert_eq!(v["success"], false);
+    }
+
+    #[tokio::test]
+    async fn auth_error_response_emits_knjk_header_for_login_rate_limit() {
+        let resp = auth_error_response(AuthErrorCode::LoginRateLimitExceeded);
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let header = resp
+            .headers()
+            .get("x-knjk-error-code")
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_owned);
+        assert_eq!(header.as_deref(), Some("KNJK-4292"));
+    }
+
+    #[tokio::test]
+    async fn internal_error_response_returns_500_without_knjk_header() {
+        let resp = internal_error_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(resp.headers().get("x-knjk-error-code").is_none());
+    }
+}
