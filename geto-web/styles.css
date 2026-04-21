@@ -2133,102 +2133,164 @@ body {
 }
 
 /* ===== auth-login-rbac ===================================== */
+/* All auth/admin chrome binds to the site tokens defined at :root.
+   Matches existing input container (pink focus ring, bg-input fill),
+   env-pill chip language (violet/gold accents, uppercase + tracked),
+   and the Inter font stack used everywhere else. */
+
 .login-view {
-  padding: 16px;
+  padding: 24px 20px;
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 12px;
+  gap: 16px;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
 }
 .login-title {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
   color: var(--text-primary);
+  letter-spacing: -0.01em;
+  text-align: center;
   margin-top: 8px;
+}
+.login-subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  margin-bottom: 8px;
 }
 .login-form {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 .login-field {
   display: flex;
   flex-direction: column;
-  font-size: 12px;
+  gap: 6px;
+}
+.login-field label {
+  font-size: 10px;
+  font-weight: 500;
   color: var(--text-secondary);
-  gap: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .login-field input,
 .login-field select {
-  padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.05);
+  font-family: inherit;
+  padding: 10px 14px;
+  background: var(--bg-input);
   color: var(--text-primary);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
+  border: 1.5px solid rgba(255, 117, 145, 0.4);
+  border-radius: 12px;
   font-size: 14px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
+.login-field input::placeholder { color: #7B849B; }
 .login-field input:focus,
 .login-field select:focus {
   outline: none;
-  border-color: rgba(255, 255, 255, 0.3);
+  border-color: rgba(255, 117, 145, 0.85);
+  box-shadow: 0 0 16px rgba(255, 117, 145, 0.25);
 }
 .login-submit {
-  background: var(--text-primary);
-  color: #111;
+  font-family: inherit;
+  background: linear-gradient(90deg, var(--accent-pink), #E85978);
+  color: #fff;
   border: none;
-  border-radius: 10px;
-  padding: 10px 14px;
+  border-radius: 12px;
+  padding: 12px 14px;
   font-weight: 600;
   font-size: 14px;
   cursor: pointer;
   margin-top: 4px;
+  transition: box-shadow 0.15s ease, transform 0.05s ease;
+  letter-spacing: 0.01em;
 }
-.login-submit:disabled {
-  opacity: 0.55;
-  cursor: wait;
-}
+.login-submit:hover { box-shadow: 0 0 24px rgba(255, 117, 145, 0.45); }
+.login-submit:active { transform: translateY(1px); }
+.login-submit:disabled { opacity: 0.55; cursor: wait; box-shadow: none; transform: none; }
 .login-error {
-  color: #FF6B63;
+  color: var(--accent-red);
   font-size: 12px;
   min-height: 16px;
+  text-align: center;
 }
 
 /* ----- Admin view ----- */
 .admin-view {
-  padding: 12px 16px 24px;
+  padding: 16px 20px 24px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
 }
 .admin-section {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  padding: 12px 14px;
+  background: var(--bg-card);
+  border: 1px solid rgba(180, 168, 240, 0.18);
+  border-radius: 14px;
+  padding: 14px 16px;
 }
 .admin-section-title {
-  font-size: 13px;
+  font-size: 10px;
   font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 10px;
+  color: var(--accent-violet);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 12px;
 }
 .invite-form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
+.invite-form input,
+.invite-form select {
+  font-family: inherit;
+  padding: 9px 12px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1.5px solid rgba(255, 117, 145, 0.4);
+  border-radius: 10px;
+  font-size: 13px;
+  transition: border-color 0.15s ease;
+}
+.invite-form input:focus,
+.invite-form select:focus {
+  outline: none;
+  border-color: rgba(255, 117, 145, 0.85);
+}
+.invite-form input::placeholder { color: #7B849B; }
+.invite-form button {
+  font-family: inherit;
+  background: var(--accent-pink);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  letter-spacing: 0.01em;
+  transition: box-shadow 0.15s ease;
+}
+.invite-form button:hover { box-shadow: 0 0 16px rgba(255, 117, 145, 0.35); }
 .team-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 .team-card {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  padding: 12px 14px;
   cursor: pointer;
+  transition: border-color 0.15s ease;
 }
+.team-card:hover { border-color: rgba(180, 168, 240, 0.3); }
 .team-card-head {
   display: flex;
   align-items: center;
@@ -2242,37 +2304,44 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  font-weight: 500;
 }
 .team-card-chip {
   font-size: 10px;
-  padding: 2px 8px;
+  padding: 3px 8px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text-secondary);
+  background: rgba(180, 168, 240, 0.18);
+  color: var(--accent-violet);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 500;
 }
 .team-card-chip.role-admin {
-  background: rgba(255, 214, 102, 0.18);
-  color: #FFD666;
+  background: rgba(199, 160, 74, 0.22);
+  color: var(--accent-orange);
 }
 .team-card-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #6DD58C;
+  background: var(--accent-green);
   display: inline-block;
   margin-left: 6px;
+  box-shadow: 0 0 8px rgba(111, 162, 101, 0.6);
 }
 .team-card-dot.disabled {
-  background: #FF6B63;
+  background: var(--accent-red);
+  box-shadow: none;
 }
 .team-card-last {
   font-size: 10px;
   color: var(--text-muted);
-  margin-top: 4px;
+  margin-top: 6px;
+  letter-spacing: 0.02em;
 }
 .team-card-actions {
   display: none;
-  margin-top: 10px;
+  margin-top: 12px;
   gap: 8px;
   flex-wrap: wrap;
 }
@@ -2280,52 +2349,70 @@ body {
   display: flex;
 }
 .team-action-btn {
-  padding: 6px 10px;
+  font-family: inherit;
+  padding: 6px 12px;
   border-radius: 8px;
   font-size: 11px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-primary);
+  font-weight: 500;
+  border: 1px solid rgba(180, 168, 240, 0.3);
+  background: transparent;
+  color: var(--accent-violet);
   cursor: pointer;
+  letter-spacing: 0.02em;
+  transition: background 0.15s ease;
 }
+.team-action-btn:hover { background: rgba(180, 168, 240, 0.1); }
 .team-action-btn.destructive {
-  border-color: rgba(255, 107, 99, 0.5);
-  color: #FF6B63;
+  border-color: rgba(192, 74, 74, 0.5);
+  color: var(--accent-red);
 }
+.team-action-btn.destructive:hover { background: rgba(192, 74, 74, 0.12); }
 .tenant-info {
   font-size: 12px;
   color: var(--text-secondary);
-  line-height: 1.6;
+  line-height: 1.7;
+}
+.tenant-info strong {
+  color: var(--text-primary);
+  font-weight: 500;
 }
 
-/* ----- Gear pill ----- */
+/* ----- Gear pill (matches env-pill language) ----- */
 .env-pill-gear {
-  padding: 4px 8px;
+  padding: 3px 8px;
   font-size: 10px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: var(--text-secondary);
-  border-radius: 999px;
+  background: rgba(180, 168, 240, 0.12);
+  border: 1px solid rgba(180, 168, 240, 0.2);
+  color: var(--accent-violet);
+  border-radius: 5px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  font-family: inherit;
+  transition: background 0.15s ease;
 }
+.env-pill-gear:hover { background: rgba(180, 168, 240, 0.22); }
 
 /* ----- Sign out row ----- */
 .signout-row {
   text-align: center;
-  margin-top: 12px;
+  margin-top: 16px;
   padding-bottom: 16px;
 }
 .signout-btn {
+  font-family: inherit;
   background: transparent;
   color: var(--text-muted);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 999px;
   padding: 6px 14px;
-  font-size: 12px;
+  font-size: 11px;
   cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 500;
+  transition: color 0.15s ease, border-color 0.15s ease;
 }
 .signout-btn:hover {
   color: var(--text-secondary);
