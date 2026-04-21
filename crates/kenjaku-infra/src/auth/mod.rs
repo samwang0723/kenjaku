@@ -7,4 +7,4 @@
 
 pub mod jwt;
 
-pub use jwt::{JwtValidator, TenantClaims};
+pub use jwt::{JwtMinter, JwtValidator, TenantClaims};

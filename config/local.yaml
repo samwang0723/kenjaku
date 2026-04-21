@@ -9,8 +9,11 @@ telemetry:
   log_level: "debug"
 
 # Phase 3e: tenancy is always on. Dev keypair provisioned via `make dev-setup`.
+# auth-login-rbac: private_key_path powers POST /auth/login minting.
 tenancy:
   jwt:
     issuer: "kenjaku-dev"
     audience: "kenjaku-api"
     public_key_path: "config/dev/public.pem"
+    private_key_path: "config/dev/private.pem"
+    ttl_seconds: 86400

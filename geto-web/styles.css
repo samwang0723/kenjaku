@@ -209,7 +209,7 @@ body {
   font-size: 10px;
   font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
   display: inline-flex;
   align-items: center;
   padding: 3px 8px;
@@ -349,7 +349,7 @@ body {
   color: var(--accent-blue);
   font-family: 'SF Mono', 'Menlo', monospace;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.02em;
   margin-top: 10px;
   margin-bottom: 2px;
   padding-bottom: 2px;
@@ -984,7 +984,7 @@ body {
   font-weight: 400;
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
   color: var(--accent-blue);
   border-bottom: 1px solid var(--border);
 }
@@ -1478,7 +1478,7 @@ body {
   font-size: 13px;
   font-weight: 400;
   color: #FFD666;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.02em;
   list-style: none;
   user-select: none;
 }
@@ -1539,7 +1539,7 @@ body {
   color: #7AB8FF;
   text-transform: uppercase;
   font-weight: 400;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
 }
 .debug-info .tag-tier {
   background: rgba(123,104,238,0.15);
@@ -2130,4 +2130,350 @@ body {
   padding: 0 4px;
   font-size: 10px;
   color: var(--text-secondary);
+}
+
+/* ===== auth-login-rbac ===================================== */
+/* All auth/admin chrome binds to the site tokens defined at :root.
+   Matches existing input container (pink focus ring, bg-input fill),
+   env-pill chip language (violet/gold accents, uppercase + tracked),
+   and the Inter font stack used everywhere else. */
+
+.login-view {
+  padding: 24px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 16px;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+  letter-spacing: 0.02em;
+}
+.login-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+  text-align: center;
+  margin-top: 8px;
+}
+.login-subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  margin-bottom: 8px;
+}
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* .login-field IS a <label> element wrapping a caption <span> + input.
+   Caption styling goes on the direct-child span, not a nested label. */
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.login-field > span {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+
+/* View-scoped chrome hiding. Login stands alone (no bottom bar, no
+   back button). Admin hides the search bar but keeps the back button
+   so users can return to search. Header pill row (env + locale) stays
+   visible on both — users may need to pick language pre-auth.
+
+   Back-button uses visibility:hidden (not display:none) so its slot
+   stays in the flex layout and the header title stays centered. */
+body.login-mode .bottom-bar,
+body.login-mode .progress-bar,
+body.admin-mode .bottom-bar,
+body.admin-mode .progress-bar { display: none !important; }
+body.login-mode .header-back-btn { visibility: hidden !important; }
+body.login-mode .scroll-area,
+body.admin-mode .scroll-area { padding-bottom: 0 !important; }
+.login-field input,
+.login-field select {
+  font-family: inherit;
+  padding: 12px 14px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1.5px solid rgba(255, 117, 145, 0.4);
+  border-radius: 12px;
+  font-size: 16px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.login-field input::placeholder { color: #7B849B; }
+.login-field input:focus,
+.login-field select:focus {
+  outline: none;
+  border-color: rgba(255, 117, 145, 0.85);
+  box-shadow: 0 0 16px rgba(255, 117, 145, 0.25);
+}
+.login-submit {
+  font-family: inherit;
+  background: linear-gradient(90deg, var(--accent-pink), #E85978);
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  padding: 13px 14px;
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+  margin-top: 4px;
+  transition: box-shadow 0.15s ease, transform 0.05s ease;
+  letter-spacing: 0.02em;
+}
+.login-submit:hover { box-shadow: 0 0 24px rgba(255, 117, 145, 0.45); }
+.login-submit:active { transform: translateY(1px); }
+.login-submit:disabled { opacity: 0.55; cursor: wait; box-shadow: none; transform: none; }
+.login-error {
+  color: var(--accent-red);
+  font-size: 12px;
+  min-height: 16px;
+  text-align: center;
+}
+
+/* ----- Admin view ----- */
+.admin-view {
+  padding: 16px 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+}
+.admin-section {
+  background: var(--bg-card);
+  border: 1px solid rgba(180, 168, 240, 0.18);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+.admin-section-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent-violet);
+  letter-spacing: 0.02em;
+  margin-bottom: 14px;
+}
+.invite-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.invite-form input,
+.invite-form select {
+  font-family: inherit;
+  padding: 9px 12px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1.5px solid rgba(255, 117, 145, 0.4);
+  border-radius: 10px;
+  font-size: 13px;
+  transition: border-color 0.15s ease;
+}
+.invite-form input:focus,
+.invite-form select:focus {
+  outline: none;
+  border-color: rgba(255, 117, 145, 0.85);
+}
+.invite-form input::placeholder { color: #7B849B; }
+.invite-form button {
+  font-family: inherit;
+  background: var(--accent-pink);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  transition: box-shadow 0.15s ease;
+}
+.invite-form button:hover { box-shadow: 0 0 16px rgba(255, 117, 145, 0.35); }
+.team-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.team-card {
+  background: var(--bg-input);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.team-card:hover { border-color: rgba(180, 168, 240, 0.3); }
+.team-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.team-card-email {
+  font-size: 14px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  font-weight: 500;
+}
+.team-card-chip {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(180, 168, 240, 0.18);
+  color: var(--accent-violet);
+  letter-spacing: 0.02em;
+  font-weight: 500;
+}
+.team-card-chip.role-admin {
+  background: rgba(199, 160, 74, 0.22);
+  color: var(--accent-orange);
+}
+.team-card-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-green);
+  display: inline-block;
+  margin-left: 6px;
+  box-shadow: 0 0 8px rgba(111, 162, 101, 0.6);
+}
+.team-card-dot.disabled {
+  background: var(--accent-red);
+  box-shadow: none;
+}
+.team-card-last {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 6px;
+  letter-spacing: 0.02em;
+}
+.team-card-actions {
+  display: none;
+  margin-top: 12px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.team-card.expanded .team-card-actions {
+  display: flex;
+}
+.team-action-btn {
+  font-family: inherit;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid rgba(180, 168, 240, 0.3);
+  background: transparent;
+  color: var(--accent-violet);
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  transition: background 0.15s ease;
+}
+.team-action-btn:hover { background: rgba(180, 168, 240, 0.1); }
+.team-action-btn.destructive {
+  border-color: rgba(192, 74, 74, 0.5);
+  color: var(--accent-red);
+}
+.team-action-btn.destructive:hover { background: rgba(192, 74, 74, 0.12); }
+.tenant-info {
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+.tenant-info strong {
+  color: var(--text-primary);
+  font-weight: 700;
+  margin-right: 2px;
+}
+
+/* ----- Segmented role picker -------------------------------
+   Phone-native 2-option switcher for the invite form. Replaces
+   a <select> which rendered with the OS-default chevron. Shares
+   the input container's font-size + padding rhythm so it slots
+   into the vertical form flow without looking like a control
+   from a different design system. */
+.role-seg {
+  display: flex;
+  background: var(--bg-input);
+  border: 1.5px solid rgba(255, 117, 145, 0.4);
+  border-radius: 12px;
+  padding: 4px;
+  gap: 4px;
+  font-family: inherit;
+}
+/* Prefix with .role-seg to out-weigh the generic .invite-form button
+   rule (which sets a solid pink background for the primary CTA). */
+.role-seg .role-seg-opt {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  box-shadow: none;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+.role-seg .role-seg-opt:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.03); }
+.role-seg .role-seg-opt.is-active {
+  background: linear-gradient(90deg, rgba(180, 168, 240, 0.22), rgba(180, 168, 240, 0.12));
+  color: var(--accent-violet);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.15), 0 0 12px rgba(180, 168, 240, 0.2);
+}
+/* When an admin role is active, shift to gold to match the team-card chip. */
+.role-seg .role-seg-opt.is-active[data-value="admin"] {
+  background: linear-gradient(90deg, rgba(199, 160, 74, 0.28), rgba(199, 160, 74, 0.14));
+  color: var(--accent-orange);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.15), 0 0 12px rgba(199, 160, 74, 0.24);
+}
+.role-seg:focus-within {
+  border-color: rgba(255, 117, 145, 0.85);
+  box-shadow: 0 0 16px rgba(255, 117, 145, 0.2);
+}
+
+/* ----- Gear button (right-header, mirrors back-btn shape + color) ----- */
+.header-gear-btn { color: var(--text-primary); }
+.header-gear-btn:hover { background: rgba(255, 255, 255, 0.1); }
+/* Hide the right-side gear when already inside the admin view —
+   the back button on the left handles the return trip. Use
+   visibility:hidden (not display:none) so the slot stays reserved
+   and the header title stays horizontally centered. */
+body.admin-mode .header-gear-btn,
+body.login-mode .header-gear-btn { visibility: hidden !important; }
+
+/* ----- Sign out row ----- */
+.signout-row {
+  text-align: center;
+  margin-top: 16px;
+  padding-bottom: 16px;
+}
+.signout-btn {
+  font-family: inherit;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 11px;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  font-weight: 500;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.signout-btn:hover {
+  color: var(--text-secondary);
+  border-color: rgba(255, 255, 255, 0.2);
 }

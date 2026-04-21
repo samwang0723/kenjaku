@@ -33,6 +33,32 @@ var TRANSLATIONS = {
     reason_missing_key_information: 'Missing key information',
     reason_ignored_or_refused_instructions: 'Ignored or refused instructions',
     reason_harmful_or_offensive: 'Harmful or offensive',
+    // auth-login-rbac (v1 ships English only for these keys; other
+    // locales fall through to English via t()).
+    login_title: 'Sign in',
+    login_email: 'Email',
+    login_password: 'Password',
+    login_submit: 'Sign in',
+    login_error: 'Invalid email or password',
+    sign_out: 'Sign out',
+    team_title: 'Team',
+    invite_employee: 'Invite employee',
+    invite_email: 'Email',
+    invite_role: 'Role',
+    invite_password: 'Password (min 12 chars)',
+    invite_submit: 'Send invite',
+    role_admin: 'Admin',
+    role_member: 'Member',
+    user_enable: 'Enable',
+    user_disable: 'Disable',
+    user_reset_password: 'Reset password',
+    tenant_info: 'Your tenant',
+    label_tenant: 'Tenant',
+    label_you: 'You',
+    label_role: 'Role',
+    last_login_prefix: 'Last login',
+    never_signed_in: 'Never signed in',
+    time_just_now: 'just now',
   },
   zh: {
     app_title: 'Kenjaku AI',
@@ -60,6 +86,30 @@ var TRANSLATIONS = {
     reason_missing_key_information: '缺少关键信息',
     reason_ignored_or_refused_instructions: '忽略或拒绝指令',
     reason_harmful_or_offensive: '有害或冒犯',
+    login_title: '登录',
+    login_email: '邮箱',
+    login_password: '密码',
+    login_submit: '登录',
+    login_error: '邮箱或密码错误',
+    sign_out: '退出登录',
+    team_title: '团队',
+    invite_employee: '邀请员工',
+    invite_email: '邮箱',
+    invite_role: '角色',
+    invite_password: '密码 (至少 12 位)',
+    invite_submit: '发送邀请',
+    role_admin: '管理员',
+    role_member: '成员',
+    user_enable: '启用',
+    user_disable: '停用',
+    user_reset_password: '重置密码',
+    tenant_info: '你的租户',
+    label_tenant: '租户',
+    label_you: '你',
+    label_role: '角色',
+    last_login_prefix: '最后登录',
+    never_signed_in: '从未登录',
+    time_just_now: '刚刚',
   },
   'zh-TW': {
     app_title: 'Kenjaku AI',
@@ -87,6 +137,30 @@ var TRANSLATIONS = {
     reason_missing_key_information: '缺少關鍵資訊',
     reason_ignored_or_refused_instructions: '忽略或拒絕指令',
     reason_harmful_or_offensive: '有害或冒犯',
+    login_title: '登入',
+    login_email: '電子郵件',
+    login_password: '密碼',
+    login_submit: '登入',
+    login_error: '電子郵件或密碼錯誤',
+    sign_out: '登出',
+    team_title: '團隊',
+    invite_employee: '邀請成員',
+    invite_email: '電子郵件',
+    invite_role: '角色',
+    invite_password: '密碼 (至少 12 字元)',
+    invite_submit: '送出邀請',
+    role_admin: '管理員',
+    role_member: '成員',
+    user_enable: '啟用',
+    user_disable: '停用',
+    user_reset_password: '重設密碼',
+    tenant_info: '你的租戶',
+    label_tenant: '租戶',
+    label_you: '你',
+    label_role: '角色',
+    last_login_prefix: '最後登入',
+    never_signed_in: '尚未登入',
+    time_just_now: '剛剛',
   },
   ja: {
     app_title: 'Kenjaku AI',
@@ -114,6 +188,30 @@ var TRANSLATIONS = {
     reason_missing_key_information: '重要な情報が不足',
     reason_ignored_or_refused_instructions: '指示を無視/拒否',
     reason_harmful_or_offensive: '有害または不適切',
+    login_title: 'サインイン',
+    login_email: 'メール',
+    login_password: 'パスワード',
+    login_submit: 'サインイン',
+    login_error: 'メールまたはパスワードが正しくありません',
+    sign_out: 'サインアウト',
+    team_title: 'チーム',
+    invite_employee: 'メンバーを招待',
+    invite_email: 'メール',
+    invite_role: 'ロール',
+    invite_password: 'パスワード (12文字以上)',
+    invite_submit: '招待を送信',
+    role_admin: '管理者',
+    role_member: 'メンバー',
+    user_enable: '有効化',
+    user_disable: '無効化',
+    user_reset_password: 'パスワードをリセット',
+    tenant_info: 'テナント情報',
+    label_tenant: 'テナント',
+    label_you: 'あなた',
+    label_role: 'ロール',
+    last_login_prefix: '最終ログイン',
+    never_signed_in: '未ログイン',
+    time_just_now: 'たった今',
   },
   ko: {
     app_title: 'Kenjaku AI',
@@ -141,6 +239,30 @@ var TRANSLATIONS = {
     reason_missing_key_information: '핵심 정보 누락',
     reason_ignored_or_refused_instructions: '지시 무시/거부',
     reason_harmful_or_offensive: '유해하거나 불쾌함',
+    login_title: '로그인',
+    login_email: '이메일',
+    login_password: '비밀번호',
+    login_submit: '로그인',
+    login_error: '이메일 또는 비밀번호가 올바르지 않습니다',
+    sign_out: '로그아웃',
+    team_title: '팀',
+    invite_employee: '직원 초대',
+    invite_email: '이메일',
+    invite_role: '역할',
+    invite_password: '비밀번호 (12자 이상)',
+    invite_submit: '초대 보내기',
+    role_admin: '관리자',
+    role_member: '구성원',
+    user_enable: '사용',
+    user_disable: '사용 중지',
+    user_reset_password: '비밀번호 재설정',
+    tenant_info: '테넌트 정보',
+    label_tenant: '테넌트',
+    label_you: '나',
+    label_role: '역할',
+    last_login_prefix: '마지막 로그인',
+    never_signed_in: '로그인 기록 없음',
+    time_just_now: '방금',
   },
   de: {
     app_title: 'Kenjaku AI',
@@ -168,6 +290,30 @@ var TRANSLATIONS = {
     reason_missing_key_information: 'Wichtige Informationen fehlen',
     reason_ignored_or_refused_instructions: 'Anweisungen ignoriert/abgelehnt',
     reason_harmful_or_offensive: 'Schädlich oder beleidigend',
+    login_title: 'Anmelden',
+    login_email: 'E-Mail',
+    login_password: 'Passwort',
+    login_submit: 'Anmelden',
+    login_error: 'E-Mail oder Passwort ungültig',
+    sign_out: 'Abmelden',
+    team_title: 'Team',
+    invite_employee: 'Mitarbeiter einladen',
+    invite_email: 'E-Mail',
+    invite_role: 'Rolle',
+    invite_password: 'Passwort (mind. 12 Zeichen)',
+    invite_submit: 'Einladung senden',
+    role_admin: 'Admin',
+    role_member: 'Mitglied',
+    user_enable: 'Aktivieren',
+    user_disable: 'Deaktivieren',
+    user_reset_password: 'Passwort zurücksetzen',
+    tenant_info: 'Dein Tenant',
+    label_tenant: 'Tenant',
+    label_you: 'Du',
+    label_role: 'Rolle',
+    last_login_prefix: 'Letzter Login',
+    never_signed_in: 'Noch nie angemeldet',
+    time_just_now: 'gerade eben',
   },
   fr: {
     app_title: 'Kenjaku AI',
@@ -195,6 +341,30 @@ var TRANSLATIONS = {
     reason_missing_key_information: 'Information clé manquante',
     reason_ignored_or_refused_instructions: 'Instructions ignorées/refusées',
     reason_harmful_or_offensive: 'Nuisible ou offensant',
+    login_title: 'Se connecter',
+    login_email: 'E-mail',
+    login_password: 'Mot de passe',
+    login_submit: 'Se connecter',
+    login_error: 'E-mail ou mot de passe incorrect',
+    sign_out: 'Se déconnecter',
+    team_title: 'Équipe',
+    invite_employee: 'Inviter un collaborateur',
+    invite_email: 'E-mail',
+    invite_role: 'Rôle',
+    invite_password: 'Mot de passe (12 car. min)',
+    invite_submit: 'Envoyer l\'invitation',
+    role_admin: 'Admin',
+    role_member: 'Membre',
+    user_enable: 'Activer',
+    user_disable: 'Désactiver',
+    user_reset_password: 'Réinitialiser le mot de passe',
+    tenant_info: 'Votre tenant',
+    label_tenant: 'Tenant',
+    label_you: 'Vous',
+    label_role: 'Rôle',
+    last_login_prefix: 'Dernière connexion',
+    never_signed_in: 'Jamais connecté',
+    time_just_now: 'à l\'instant',
   },
   es: {
     app_title: 'Kenjaku AI',
@@ -222,6 +392,30 @@ var TRANSLATIONS = {
     reason_missing_key_information: 'Falta información clave',
     reason_ignored_or_refused_instructions: 'Instrucciones ignoradas/rechazadas',
     reason_harmful_or_offensive: 'Dañino u ofensivo',
+    login_title: 'Iniciar sesión',
+    login_email: 'Correo',
+    login_password: 'Contraseña',
+    login_submit: 'Iniciar sesión',
+    login_error: 'Correo o contraseña incorrectos',
+    sign_out: 'Cerrar sesión',
+    team_title: 'Equipo',
+    invite_employee: 'Invitar empleado',
+    invite_email: 'Correo',
+    invite_role: 'Rol',
+    invite_password: 'Contraseña (mín. 12 caract.)',
+    invite_submit: 'Enviar invitación',
+    role_admin: 'Admin',
+    role_member: 'Miembro',
+    user_enable: 'Activar',
+    user_disable: 'Desactivar',
+    user_reset_password: 'Restablecer contraseña',
+    tenant_info: 'Tu tenant',
+    label_tenant: 'Tenant',
+    label_you: 'Tú',
+    label_role: 'Rol',
+    last_login_prefix: 'Última conexión',
+    never_signed_in: 'Nunca ha iniciado sesión',
+    time_just_now: 'ahora mismo',
   },
 };
 
@@ -395,6 +589,11 @@ if (localeSwitcher) {
     applyI18n();
     renderLocaleLabel();
     loadPills();
+    // Notify dynamically-rendered surfaces (team list, tenant info
+    // card, invite form role chips) that they need to re-render.
+    // applyI18n() only updates static [data-i18n] nodes; the auth
+    // IIFE owns its own render functions and listens for this event.
+    document.dispatchEvent(new CustomEvent('kenjakuLocaleChanged'));
   });
 }
 applyI18n();
@@ -1650,9 +1849,407 @@ searchInput.addEventListener('keydown', function(e) {
 updateCharCounter();
 
 document.getElementById('backBtn').addEventListener('click', function() {
+  // If we're in the admin sub-view, the back button should return to
+  // the authed search view — not trigger a conversation reset. The
+  // admin IIFE exposes `showAppAfterAuth` via window for this bridge.
+  if (document.body.classList.contains('admin-mode')) {
+    if (typeof window.showAppAfterAuth === 'function') {
+      window.showAppAfterAuth();
+    }
+    return;
+  }
   showSearchView();
   clearConversationState();
 });
 
 // Boot
 loadPills();
+
+// ============================================================
+// auth-login-rbac: login + auto-logout + admin page
+// ============================================================
+(function () {
+  // Local defaults — seeded by the users migration for the public
+  // tenant. Pre-filled only in local env so devs get a one-click
+  // sign-in. Password policy on /admin/users POST (min 12 chars)
+  // keeps these shortcuts from ever reaching production.
+  var DEV_DEFAULTS = { email: 'admin@public.com', password: 'admin' };
+  var CACHED_ROLE = localStorage.getItem('userRole') || '';
+  var CACHED_TENANT = localStorage.getItem('userTenant') || '';
+
+  var views = {
+    search: document.getElementById('searchView'),
+    results: document.getElementById('resultsView'),
+    login: document.getElementById('loginView'),
+    admin: document.getElementById('adminView'),
+  };
+  var loginForm = document.getElementById('loginForm');
+  var loginEmail = document.getElementById('loginEmail');
+  var loginPassword = document.getElementById('loginPassword');
+  var loginError = document.getElementById('loginError');
+  var signoutRow = document.getElementById('signoutRow');
+  var signoutBtn = document.getElementById('signoutBtn');
+  var adminGearBtn = document.getElementById('adminGearBtn');
+  var inviteForm = document.getElementById('inviteForm');
+  var inviteEmail = document.getElementById('inviteEmail');
+  var inviteRole = document.getElementById('inviteRole');
+  var invitePassword = document.getElementById('invitePassword');
+  var inviteStatus = document.getElementById('inviteStatus');
+  var teamList = document.getElementById('teamList');
+  var tenantInfo = document.getElementById('tenantInfo');
+
+  function hideAll() {
+    ['search', 'results', 'login', 'admin'].forEach(function (k) {
+      if (views[k]) views[k].style.display = 'none';
+    });
+  }
+
+  function showLoginView() {
+    hideAll();
+    views.login.style.display = '';
+    signoutRow.style.display = 'none';
+    // Keep the gear button's slot so the header stays centered;
+    // visibility:hidden (via body.login-mode CSS) handles the rest.
+    adminGearBtn.style.display = '';
+    adminGearBtn.style.visibility = '';
+    // body.login-mode hides the persistent chrome (bottom search bar,
+    // back button, progress bar) so the login screen stands alone.
+    document.body.classList.add('login-mode');
+    document.body.classList.remove('admin-mode');
+    // Pre-fill only when local env.
+    if (currentEnv === 'local') {
+      loginEmail.value = DEV_DEFAULTS.email;
+      loginPassword.value = DEV_DEFAULTS.password;
+    }
+    loginError.textContent = '';
+  }
+
+  function showAppAfterAuth() {
+    hideAll();
+    views.search.style.display = '';
+    signoutRow.style.display = '';
+    // Use visibility instead of display so member users still see a
+    // reserved slot on the right → title stays centered.
+    adminGearBtn.style.display = '';
+    adminGearBtn.style.visibility = CACHED_ROLE === 'admin' ? '' : 'hidden';
+    document.body.classList.remove('login-mode');
+    document.body.classList.remove('admin-mode');
+  }
+  // Bridge for the outer back-button handler to exit admin view.
+  window.showAppAfterAuth = showAppAfterAuth;
+
+  function showAdminView() {
+    hideAll();
+    views.admin.style.display = '';
+    signoutRow.style.display = '';
+    // admin-mode hides bottom-bar + progress-bar but keeps the header
+    // back-button visible so users can return to search.
+    document.body.classList.remove('login-mode');
+    document.body.classList.add('admin-mode');
+    loadTeam();
+    renderTenantInfo();
+  }
+
+  // Re-render dynamic admin surfaces on locale change. Static text
+  // (section titles, select <option>s) is handled by the global
+  // applyI18n(); the team card bodies + tenant info rows are JS-
+  // generated so they need explicit re-render.
+  document.addEventListener('kenjakuLocaleChanged', function () {
+    if (document.body.classList.contains('admin-mode')
+        && views.admin.style.display !== 'none'
+        && views.admin.offsetHeight > 0) {
+      loadTeam();
+      renderTenantInfo();
+    }
+  });
+
+  // Segmented role picker — default 'member', click to switch.
+  // Stores the selected value on inviteRole.dataset.value so the
+  // submit handler stays a one-liner.
+  inviteRole.dataset.value = 'member';
+  inviteRole.querySelectorAll('.role-seg-opt').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var v = btn.getAttribute('data-value');
+      inviteRole.dataset.value = v;
+      inviteRole.querySelectorAll('.role-seg-opt').forEach(function (b) {
+        var on = b === btn;
+        b.classList.toggle('is-active', on);
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+      });
+    });
+  });
+  function resetRoleSeg() {
+    inviteRole.dataset.value = 'member';
+    inviteRole.querySelectorAll('.role-seg-opt').forEach(function (b) {
+      var on = b.getAttribute('data-value') === 'member';
+      b.classList.toggle('is-active', on);
+      b.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+  }
+  window.__kenjaku_resetRoleSeg = resetRoleSeg;
+
+  // Central API wrapper — adds Authorization + auto-logout on 401.
+  // Used by new admin calls + the login flow itself. Existing
+  // fetch() calls elsewhere already go through getAuthHeaders();
+  // the 401-handler only trips on explicit opt-in via fetchApi.
+  window.fetchApi = async function fetchApi(url, opts) {
+    opts = opts || {};
+    var headers = Object.assign({}, getAuthHeaders(), opts.headers || {});
+    var res = await fetch(url, Object.assign({}, opts, { headers: headers }));
+    if (res.status === 401) {
+      clearAuth();
+      showLoginView();
+      throw new Error('unauthenticated');
+    }
+    return res;
+  };
+
+  function clearAuth() {
+    localStorage.removeItem('bearerToken');
+    localStorage.removeItem('bearerExp');
+    localStorage.removeItem('userRole');
+    localStorage.removeItem('userTenant');
+    localStorage.removeItem('userEmail');
+    CACHED_ROLE = '';
+    CACHED_TENANT = '';
+    if (bearerTokenInput) bearerTokenInput.value = '';
+  }
+
+  function onLoginSuccess(data) {
+    if (bearerTokenInput) {
+      bearerTokenInput.value = data.token;
+      localStorage.setItem('bearerToken', data.token);
+    }
+    if (data.expires_at) localStorage.setItem('bearerExp', data.expires_at);
+    CACHED_ROLE = data.role || 'member';
+    CACHED_TENANT = data.tenant_id || '';
+    localStorage.setItem('userRole', CACHED_ROLE);
+    localStorage.setItem('userTenant', CACHED_TENANT);
+    localStorage.setItem('userEmail', data.email || '');
+    showAppAfterAuth();
+    loadPills();
+  }
+
+  async function submitLogin(e) {
+    e.preventDefault();
+    loginError.textContent = '';
+    var submitBtn = loginForm.querySelector('button[type=submit]');
+    submitBtn.disabled = true;
+    try {
+      var res = await fetch(API_BASE + '/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: loginEmail.value.trim(), password: loginPassword.value }),
+      });
+      var envelope = await res.json().catch(function () { return {}; });
+      if (!res.ok || !envelope.success) {
+        loginError.textContent = (envelope && envelope.error) || t('login_error');
+        return;
+      }
+      onLoginSuccess(envelope.data);
+    } catch (err) {
+      loginError.textContent = t('login_error');
+    } finally {
+      submitBtn.disabled = false;
+    }
+  }
+
+  function onSignOut() {
+    clearAuth();
+    showLoginView();
+  }
+
+  // ------- Admin (team) page -------
+
+  async function loadTeam() {
+    teamList.innerHTML = '';
+    try {
+      var res = await fetchApi(API_BASE + '/admin/users');
+      var envelope = await res.json().catch(function () { return {}; });
+      var users = (envelope && envelope.data) || [];
+      if (!Array.isArray(users) || users.length === 0) {
+        teamList.innerHTML = '<div class="team-card-last">—</div>';
+        return;
+      }
+      users.forEach(function (u) { teamList.appendChild(renderTeamCard(u)); });
+    } catch (err) {
+      // fetchApi already handled 401; other errors we render softly.
+      if (err.message !== 'unauthenticated') {
+        teamList.innerHTML = '<div class="team-card-last">Failed to load team.</div>';
+      }
+    }
+  }
+
+  function renderTenantInfo() {
+    tenantInfo.textContent = '';
+    var email = localStorage.getItem('userEmail') || '';
+    var roleDisplay = CACHED_ROLE === 'admin'
+      ? t('role_admin')
+      : CACHED_ROLE === 'member' ? t('role_member') : CACHED_ROLE;
+    var rows = [
+      [t('label_tenant'), CACHED_TENANT || '—'],
+      [t('label_you'), email],
+      [t('label_role'), roleDisplay],
+    ];
+    rows.forEach(function (pair) {
+      var div = document.createElement('div');
+      var label = document.createElement('strong');
+      label.textContent = pair[0] + ':';
+      div.appendChild(label);
+      div.appendChild(document.createTextNode(' ' + pair[1]));
+      tenantInfo.appendChild(div);
+    });
+  }
+
+  function renderTeamCard(user) {
+    var card = document.createElement('div');
+    card.className = 'team-card';
+    card.dataset.id = user.id;
+
+    var head = document.createElement('div');
+    head.className = 'team-card-head';
+    var emailSpan = document.createElement('span');
+    emailSpan.className = 'team-card-email';
+    emailSpan.textContent = user.email;
+    var chip = document.createElement('span');
+    chip.className = 'team-card-chip' + (user.role === 'admin' ? ' role-admin' : '');
+    chip.textContent = user.role === 'admin' ? t('role_admin') : t('role_member');
+    var dot = document.createElement('span');
+    dot.className = 'team-card-dot' + (user.enabled ? '' : ' disabled');
+    head.appendChild(emailSpan);
+    head.appendChild(chip);
+    head.appendChild(dot);
+    card.appendChild(head);
+
+    var last = document.createElement('div');
+    last.className = 'team-card-last';
+    last.textContent = user.last_login_at
+      ? t('last_login_prefix') + ' ' + relativeTime(user.last_login_at)
+      : t('never_signed_in');
+    card.appendChild(last);
+
+    // Actions (reveal on tap).
+    var actions = document.createElement('div');
+    actions.className = 'team-card-actions';
+    var resetBtn = document.createElement('button');
+    resetBtn.className = 'team-action-btn';
+    resetBtn.textContent = t('user_reset_password');
+    resetBtn.addEventListener('click', function (e) { e.stopPropagation(); resetUserPassword(user); });
+    var toggleBtn = document.createElement('button');
+    toggleBtn.className = 'team-action-btn' + (user.enabled ? ' destructive' : '');
+    toggleBtn.textContent = t(user.enabled ? 'user_disable' : 'user_enable');
+    toggleBtn.addEventListener('click', function (e) { e.stopPropagation(); toggleUserEnabled(user); });
+    actions.appendChild(resetBtn);
+    actions.appendChild(toggleBtn);
+    card.appendChild(actions);
+
+    card.addEventListener('click', function () { card.classList.toggle('expanded'); });
+    return card;
+  }
+
+  function relativeTime(iso) {
+    try {
+      var ms = Date.now() - new Date(iso).getTime();
+      if (ms < 60 * 1000) return t('time_just_now');
+      var loc = (typeof userLocale !== 'undefined' && userLocale) ? userLocale : 'en';
+      // Intl.RelativeTimeFormat is in all modern browsers; handles
+      // locale-specific grammar (e.g. ja "5分前" vs en "5 min. ago").
+      var rtf = new Intl.RelativeTimeFormat(loc, { numeric: 'auto', style: 'short' });
+      var m = Math.floor(ms / 60000);
+      if (m < 60) return rtf.format(-m, 'minute');
+      var h = Math.floor(m / 60);
+      if (h < 24) return rtf.format(-h, 'hour');
+      var d = Math.floor(h / 24);
+      return rtf.format(-d, 'day');
+    } catch (_) { return iso; }
+  }
+
+  async function submitInvite(e) {
+    e.preventDefault();
+    inviteStatus.style.color = '';
+    inviteStatus.textContent = '';
+    var submitBtn = inviteForm.querySelector('button[type=submit]');
+    submitBtn.disabled = true;
+    try {
+      var res = await fetchApi(API_BASE + '/admin/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: inviteEmail.value.trim(),
+          role: inviteRole.dataset.value || 'member',
+          password: invitePassword.value,
+        }),
+      });
+      var envelope = await res.json().catch(function () { return {}; });
+      if (!res.ok || !envelope.success) {
+        inviteStatus.style.color = '#FF6B63';
+        inviteStatus.textContent = (envelope && envelope.error) || 'Failed to invite';
+        return;
+      }
+      inviteStatus.style.color = '#6DD58C';
+      inviteStatus.textContent = 'Invited ' + (envelope.data && envelope.data.email);
+      inviteEmail.value = '';
+      invitePassword.value = '';
+      if (typeof window.__kenjaku_resetRoleSeg === 'function') window.__kenjaku_resetRoleSeg();
+      loadTeam();
+    } catch (err) {
+      if (err.message !== 'unauthenticated') {
+        inviteStatus.style.color = '#FF6B63';
+        inviteStatus.textContent = 'Failed to invite';
+      }
+    } finally {
+      submitBtn.disabled = false;
+    }
+  }
+
+  async function resetUserPassword(user) {
+    var pw = prompt('New password (min 12 chars) for ' + user.email);
+    if (!pw || pw.length < 12) return;
+    try {
+      await fetchApi(API_BASE + '/admin/users/' + encodeURIComponent(user.id) + '/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw }),
+      });
+      loadTeam();
+    } catch (_) { /* fetchApi already handled 401 */ }
+  }
+
+  async function toggleUserEnabled(user) {
+    try {
+      if (user.enabled) {
+        await fetchApi(API_BASE + '/admin/users/' + encodeURIComponent(user.id), {
+          method: 'DELETE',
+        });
+      } else {
+        await fetchApi(API_BASE + '/admin/users/' + encodeURIComponent(user.id), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: true }),
+        });
+      }
+      loadTeam();
+    } catch (_) { /* fetchApi handled 401 */ }
+  }
+
+  // ------- Wiring -------
+
+  if (loginForm) loginForm.addEventListener('submit', submitLogin);
+  if (signoutBtn) signoutBtn.addEventListener('click', onSignOut);
+  if (adminGearBtn) adminGearBtn.addEventListener('click', showAdminView);
+  if (inviteForm) inviteForm.addEventListener('submit', submitInvite);
+
+  // Boot: decide login-vs-app based on the localStorage token.
+  var bootToken = localStorage.getItem('bearerToken') || '';
+  if (!bootToken || isJwtExpired(bootToken)) {
+    showLoginView();
+  } else {
+    // Role cached from a previous login. If missing, default to
+    // member (gear pill stays hidden until re-login).
+    if (!CACHED_ROLE) CACHED_ROLE = 'member';
+    showAppAfterAuth();
+  }
+
+  // Re-apply i18n to the new DOM nodes.
+  applyI18n();
+})();

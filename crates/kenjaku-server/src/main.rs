@@ -14,13 +14,14 @@ use kenjaku_core::traits::generator::Generator;
 use kenjaku_core::traits::tool::Tool;
 use kenjaku_core::traits::translator::Translator;
 use kenjaku_core::types::tool::ToolConfig;
-use kenjaku_infra::auth::JwtValidator;
+use kenjaku_infra::auth::{JwtMinter, JwtValidator};
 use kenjaku_infra::clustering::LinfaClusterer;
 use kenjaku_infra::embedding::create_embedding_provider;
 use kenjaku_infra::llm::GeminiProvider;
 use kenjaku_infra::postgres::{
     ConversationRepository, DefaultSuggestionsRepository, FeedbackRepository,
-    RefreshBatchesRepository, TenantsCache, TrendingRepository, create_pool, run_migrations,
+    RefreshBatchesRepository, TenantsCache, TrendingRepository, UsersRepository, create_pool,
+    run_migrations,
 };
 use kenjaku_infra::qdrant::QdrantClient;
 use kenjaku_infra::redis::{LocaleMemoryRedis, RedisClient};
@@ -312,6 +313,8 @@ async fn main() -> anyhow::Result<()> {
     info!(tenant_count = tenants_cache.len(), "TenantsCache loaded");
 
     let jwt_validator = load_jwt_validator(&config.tenancy).await?;
+    let jwt_minter = load_jwt_minter(&config.tenancy).await?;
+    let users_repo = UsersRepository::new(pg_pool.clone());
     info!(
         key_strategy = ?config.rate_limit.key_strategy,
         "Tenancy auth state (always on)"
@@ -329,6 +332,8 @@ async fn main() -> anyhow::Result<()> {
         pg_pool,
         tenants_cache,
         jwt_validator,
+        jwt_minter,
+        users_repo,
         tenancy_config: config.tenancy.clone(),
         rate_limit_config: config.rate_limit.clone(),
     });
@@ -425,6 +430,55 @@ async fn load_jwt_validator(cfg: &TenancyConfig) -> KenjakuResult<Arc<JwtValidat
     Ok(Arc::new(validator))
 }
 
+/// Build the JWT minter for `POST /auth/login`.
+///
+/// Mirrors `load_jwt_validator` — `is_file()` check, 16 KiB cap,
+/// fingerprint audit log (never the bytes). `tenancy.jwt.private_key_path`
+/// is required (enforced by `AppConfig::validate_secrets` at startup).
+async fn load_jwt_minter(cfg: &TenancyConfig) -> KenjakuResult<Arc<JwtMinter>> {
+    let jwt = &cfg.jwt;
+
+    const MAX_PEM_BYTES: u64 = 16 * 1024;
+
+    let path = Path::new(&jwt.private_key_path);
+    let meta = tokio::fs::metadata(path).await.map_err(|e| {
+        Error::Config(format!(
+            "JWT private_key_path {} cannot be stat'd: {e}",
+            jwt.private_key_path
+        ))
+    })?;
+    if !meta.is_file() {
+        return Err(Error::Config(format!(
+            "JWT private_key_path {} is not a regular file",
+            jwt.private_key_path
+        )));
+    }
+    if meta.len() > MAX_PEM_BYTES {
+        return Err(Error::Config(format!(
+            "JWT private_key_path {} exceeds {MAX_PEM_BYTES} byte cap (got {} bytes)",
+            jwt.private_key_path,
+            meta.len()
+        )));
+    }
+
+    let pem = tokio::fs::read(path).await.map_err(|e| {
+        Error::Config(format!(
+            "JWT private_key_path {} read failed: {e}",
+            jwt.private_key_path
+        ))
+    })?;
+    let minter = JwtMinter::new(jwt, &pem)?;
+    let fingerprint = sha256_first_8(&pem);
+    info!(
+        path = %jwt.private_key_path,
+        algorithm = jwt.algorithm.as_str(),
+        ttl_seconds = jwt.ttl_seconds,
+        fingerprint = %fingerprint,
+        "JWT minter constructed"
+    );
+    Ok(Arc::new(minter))
+}
+
 /// SHA-256 of `bytes`, first 4 bytes hex-encoded (8 chars). Used only
 /// for the JWT public-key audit log — operators can correlate
 /// "this fingerprint is what's deployed" without ever printing the
@@ -476,6 +530,8 @@ mod tests {
                 issuer: "kenjaku-test".into(),
                 audience: "kenjaku-api".into(),
                 public_key_path: public_key_path.into(),
+                private_key_path: "<unused-in-validator-tests>".into(),
+                ttl_seconds: 3600,
                 algorithm: JwtAlgorithm::RS256,
                 clock_skew_secs: 30,
             },

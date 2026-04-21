@@ -46,3 +46,7 @@ reqwest = { workspace = true }
 jsonwebtoken = { version = "10.3", features = ["aws_lc_rs"] }
 rsa = { version = "0.9", features = ["pem"] }
 rand = "0.8"
+# Integration tests reuse the argon2 verifier via the infra repo's
+# pub fn hash_password (already in workspace deps).
+argon2 = { workspace = true }
+uuid = { workspace = true }

@@ -14,11 +14,16 @@ telemetry:
   log_level: "kenjaku_infra=debug,info"
 
 # Phase 3e: tenancy is always on. Dev keypair mounted from host.
+# auth-login-rbac: private_key_path now required for POST /auth/login
+# minting. The same make-dev-setup flow that creates public.pem also
+# produces private.pem next to it.
 tenancy:
   jwt:
     issuer: "kenjaku-dev"
     audience: "kenjaku-api"
     public_key_path: "/app/config/dev/public.pem"
+    private_key_path: "/app/config/dev/private.pem"
+    ttl_seconds: 86400
 
 # Phase A merged-preamble experiment. Flip to parallel_preamble to revert.
 # See PR #27 for design + smoke-test gate results.
