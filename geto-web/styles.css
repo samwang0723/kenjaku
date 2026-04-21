@@ -2392,7 +2392,8 @@ body.admin-mode .scroll-area { padding-bottom: 0 !important; }
 }
 .tenant-info strong {
   color: var(--text-primary);
-  font-weight: 500;
+  font-weight: 700;
+  margin-right: 2px;
 }
 
 /* ----- Segmented role picker -------------------------------
@@ -2446,22 +2447,15 @@ body.admin-mode .scroll-area { padding-bottom: 0 !important; }
   box-shadow: 0 0 16px rgba(255, 117, 145, 0.2);
 }
 
-/* ----- Gear pill (matches env-pill language) ----- */
-.env-pill-gear {
-  padding: 3px 8px;
-  font-size: 10px;
-  background: rgba(180, 168, 240, 0.12);
-  border: 1px solid rgba(180, 168, 240, 0.2);
-  color: var(--accent-violet);
-  border-radius: 5px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-family: inherit;
-  transition: background 0.15s ease;
-}
-.env-pill-gear:hover { background: rgba(180, 168, 240, 0.22); }
+/* ----- Gear button (right-header, mirrors back-btn shape + color) ----- */
+.header-gear-btn { color: var(--text-primary); }
+.header-gear-btn:hover { background: rgba(255, 255, 255, 0.1); }
+/* Hide the right-side gear when already inside the admin view —
+   the back button on the left handles the return trip. Use
+   visibility:hidden (not display:none) so the slot stays reserved
+   and the header title stays horizontally centered. */
+body.admin-mode .header-gear-btn,
+body.login-mode .header-gear-btn { visibility: hidden !important; }
 
 /* ----- Sign out row ----- */
 .signout-row {

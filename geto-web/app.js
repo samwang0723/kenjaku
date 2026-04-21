@@ -1908,7 +1908,10 @@ loadPills();
     hideAll();
     views.login.style.display = '';
     signoutRow.style.display = 'none';
-    adminGearBtn.style.display = 'none';
+    // Keep the gear button's slot so the header stays centered;
+    // visibility:hidden (via body.login-mode CSS) handles the rest.
+    adminGearBtn.style.display = '';
+    adminGearBtn.style.visibility = '';
     // body.login-mode hides the persistent chrome (bottom search bar,
     // back button, progress bar) so the login screen stands alone.
     document.body.classList.add('login-mode');
@@ -1925,7 +1928,10 @@ loadPills();
     hideAll();
     views.search.style.display = '';
     signoutRow.style.display = '';
-    adminGearBtn.style.display = CACHED_ROLE === 'admin' ? '' : 'none';
+    // Use visibility instead of display so member users still see a
+    // reserved slot on the right → title stays centered.
+    adminGearBtn.style.display = '';
+    adminGearBtn.style.visibility = CACHED_ROLE === 'admin' ? '' : 'hidden';
     document.body.classList.remove('login-mode');
     document.body.classList.remove('admin-mode');
   }
@@ -2087,7 +2093,10 @@ loadPills();
     ];
     rows.forEach(function (pair) {
       var div = document.createElement('div');
-      div.textContent = pair[0] + ': ' + pair[1];
+      var label = document.createElement('strong');
+      label.textContent = pair[0] + ':';
+      div.appendChild(label);
+      div.appendChild(document.createTextNode(' ' + pair[1]));
       tenantInfo.appendChild(div);
     });
   }
