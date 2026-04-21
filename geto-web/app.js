@@ -53,6 +53,12 @@ var TRANSLATIONS = {
     user_disable: 'Disable',
     user_reset_password: 'Reset password',
     tenant_info: 'Your tenant',
+    label_tenant: 'Tenant',
+    label_you: 'You',
+    label_role: 'Role',
+    last_login_prefix: 'Last login',
+    never_signed_in: 'Never signed in',
+    time_just_now: 'just now',
   },
   zh: {
     app_title: 'Kenjaku AI',
@@ -98,6 +104,12 @@ var TRANSLATIONS = {
     user_disable: '停用',
     user_reset_password: '重置密码',
     tenant_info: '你的租户',
+    label_tenant: '租户',
+    label_you: '你',
+    label_role: '角色',
+    last_login_prefix: '最后登录',
+    never_signed_in: '从未登录',
+    time_just_now: '刚刚',
   },
   'zh-TW': {
     app_title: 'Kenjaku AI',
@@ -143,6 +155,12 @@ var TRANSLATIONS = {
     user_disable: '停用',
     user_reset_password: '重設密碼',
     tenant_info: '你的租戶',
+    label_tenant: '租戶',
+    label_you: '你',
+    label_role: '角色',
+    last_login_prefix: '最後登入',
+    never_signed_in: '尚未登入',
+    time_just_now: '剛剛',
   },
   ja: {
     app_title: 'Kenjaku AI',
@@ -188,6 +206,12 @@ var TRANSLATIONS = {
     user_disable: '無効化',
     user_reset_password: 'パスワードをリセット',
     tenant_info: 'テナント情報',
+    label_tenant: 'テナント',
+    label_you: 'あなた',
+    label_role: 'ロール',
+    last_login_prefix: '最終ログイン',
+    never_signed_in: '未ログイン',
+    time_just_now: 'たった今',
   },
   ko: {
     app_title: 'Kenjaku AI',
@@ -233,6 +257,12 @@ var TRANSLATIONS = {
     user_disable: '사용 중지',
     user_reset_password: '비밀번호 재설정',
     tenant_info: '테넌트 정보',
+    label_tenant: '테넌트',
+    label_you: '나',
+    label_role: '역할',
+    last_login_prefix: '마지막 로그인',
+    never_signed_in: '로그인 기록 없음',
+    time_just_now: '방금',
   },
   de: {
     app_title: 'Kenjaku AI',
@@ -278,6 +308,12 @@ var TRANSLATIONS = {
     user_disable: 'Deaktivieren',
     user_reset_password: 'Passwort zurücksetzen',
     tenant_info: 'Dein Tenant',
+    label_tenant: 'Tenant',
+    label_you: 'Du',
+    label_role: 'Rolle',
+    last_login_prefix: 'Letzter Login',
+    never_signed_in: 'Noch nie angemeldet',
+    time_just_now: 'gerade eben',
   },
   fr: {
     app_title: 'Kenjaku AI',
@@ -323,6 +359,12 @@ var TRANSLATIONS = {
     user_disable: 'Désactiver',
     user_reset_password: 'Réinitialiser le mot de passe',
     tenant_info: 'Votre tenant',
+    label_tenant: 'Tenant',
+    label_you: 'Vous',
+    label_role: 'Rôle',
+    last_login_prefix: 'Dernière connexion',
+    never_signed_in: 'Jamais connecté',
+    time_just_now: 'à l\'instant',
   },
   es: {
     app_title: 'Kenjaku AI',
@@ -368,6 +410,12 @@ var TRANSLATIONS = {
     user_disable: 'Desactivar',
     user_reset_password: 'Restablecer contraseña',
     tenant_info: 'Tu tenant',
+    label_tenant: 'Tenant',
+    label_you: 'Tú',
+    label_role: 'Rol',
+    last_login_prefix: 'Última conexión',
+    never_signed_in: 'Nunca ha iniciado sesión',
+    time_just_now: 'ahora mismo',
   },
 };
 
@@ -1986,10 +2034,13 @@ loadPills();
   function renderTenantInfo() {
     tenantInfo.textContent = '';
     var email = localStorage.getItem('userEmail') || '';
+    var roleDisplay = CACHED_ROLE === 'admin'
+      ? t('role_admin')
+      : CACHED_ROLE === 'member' ? t('role_member') : CACHED_ROLE;
     var rows = [
-      ['Tenant', CACHED_TENANT || '—'],
-      ['You', email],
-      ['Role', CACHED_ROLE],
+      [t('label_tenant'), CACHED_TENANT || '—'],
+      [t('label_you'), email],
+      [t('label_role'), roleDisplay],
     ];
     rows.forEach(function (pair) {
       var div = document.createElement('div');
@@ -2010,7 +2061,7 @@ loadPills();
     emailSpan.textContent = user.email;
     var chip = document.createElement('span');
     chip.className = 'team-card-chip' + (user.role === 'admin' ? ' role-admin' : '');
-    chip.textContent = user.role;
+    chip.textContent = user.role === 'admin' ? t('role_admin') : t('role_member');
     var dot = document.createElement('span');
     dot.className = 'team-card-dot' + (user.enabled ? '' : ' disabled');
     head.appendChild(emailSpan);
@@ -2021,8 +2072,8 @@ loadPills();
     var last = document.createElement('div');
     last.className = 'team-card-last';
     last.textContent = user.last_login_at
-      ? 'Last login ' + relativeTime(user.last_login_at)
-      : 'Never signed in';
+      ? t('last_login_prefix') + ' ' + relativeTime(user.last_login_at)
+      : t('never_signed_in');
     card.appendChild(last);
 
     // Actions (reveal on tap).
@@ -2047,13 +2098,17 @@ loadPills();
   function relativeTime(iso) {
     try {
       var ms = Date.now() - new Date(iso).getTime();
-      if (ms < 60 * 1000) return 'just now';
+      if (ms < 60 * 1000) return t('time_just_now');
+      var loc = (typeof userLocale !== 'undefined' && userLocale) ? userLocale : 'en';
+      // Intl.RelativeTimeFormat is in all modern browsers; handles
+      // locale-specific grammar (e.g. ja "5分前" vs en "5 min. ago").
+      var rtf = new Intl.RelativeTimeFormat(loc, { numeric: 'auto', style: 'short' });
       var m = Math.floor(ms / 60000);
-      if (m < 60) return m + 'm ago';
+      if (m < 60) return rtf.format(-m, 'minute');
       var h = Math.floor(m / 60);
-      if (h < 24) return h + 'h ago';
+      if (h < 24) return rtf.format(-h, 'hour');
       var d = Math.floor(h / 24);
-      return d + 'd ago';
+      return rtf.format(-d, 'day');
     } catch (_) { return iso; }
   }
 

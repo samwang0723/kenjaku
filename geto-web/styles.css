@@ -2174,7 +2174,7 @@ body {
   gap: 6px;
 }
 .login-field > span {
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--text-secondary);
   text-transform: uppercase;
@@ -2198,12 +2198,12 @@ body.admin-mode .scroll-area { padding-bottom: 0 !important; }
 .login-field input,
 .login-field select {
   font-family: inherit;
-  padding: 10px 14px;
+  padding: 12px 14px;
   background: var(--bg-input);
   color: var(--text-primary);
   border: 1.5px solid rgba(255, 117, 145, 0.4);
   border-radius: 12px;
-  font-size: 14px;
+  font-size: 16px;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .login-field input::placeholder { color: #7B849B; }
@@ -2219,13 +2219,13 @@ body.admin-mode .scroll-area { padding-bottom: 0 !important; }
   color: #fff;
   border: none;
   border-radius: 12px;
-  padding: 12px 14px;
+  padding: 13px 14px;
   font-weight: 600;
-  font-size: 14px;
+  font-size: 15px;
   cursor: pointer;
   margin-top: 4px;
   transition: box-shadow 0.15s ease, transform 0.05s ease;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.02em;
 }
 .login-submit:hover { box-shadow: 0 0 24px rgba(255, 117, 145, 0.45); }
 .login-submit:active { transform: translateY(1px); }
@@ -2252,12 +2252,12 @@ body.admin-mode .scroll-area { padding-bottom: 0 !important; }
   padding: 14px 16px;
 }
 .admin-section-title {
-  font-size: 10px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--accent-violet);
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 .invite-form {
   display: flex;
@@ -2316,7 +2316,7 @@ body.admin-mode .scroll-area { padding-bottom: 0 !important; }
   gap: 8px;
 }
 .team-card-email {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2325,8 +2325,8 @@ body.admin-mode .scroll-area { padding-bottom: 0 !important; }
   font-weight: 500;
 }
 .team-card-chip {
-  font-size: 10px;
-  padding: 3px 8px;
+  font-size: 11px;
+  padding: 3px 9px;
   border-radius: 999px;
   background: rgba(180, 168, 240, 0.18);
   color: var(--accent-violet);
@@ -2352,7 +2352,7 @@ body.admin-mode .scroll-area { padding-bottom: 0 !important; }
   box-shadow: none;
 }
 .team-card-last {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
   margin-top: 6px;
   letter-spacing: 0.02em;
@@ -2386,7 +2386,7 @@ body.admin-mode .scroll-area { padding-bottom: 0 !important; }
 }
 .team-action-btn.destructive:hover { background: rgba(192, 74, 74, 0.12); }
 .tenant-info {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-secondary);
   line-height: 1.7;
 }
